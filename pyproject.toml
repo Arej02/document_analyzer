@@ -7,11 +7,35 @@ authors = [
     { name = "Arej02", email = "khadkaarya20@outlook.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "asyncpg>=0.31.0",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "openai>=1.0.0",
+    "pyjwt[crypto]>=2.14.0",
+    "python-dotenv>=1.0.1",
+    "python-multipart>=0.0.32",
+    "sentence-transformers>=6.1.0",
+    "supabase>=2.31.0",
+    "uvicorn[standard]>=0.53.0",
+]
 
 [project.scripts]
 document-analyzer = "document_analyzer:main"
+document-analyzer-worker = "document_analyzer.worker.run:main"
+
+[tool.uv.build-backend]
+module-root = "backend"
 
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
