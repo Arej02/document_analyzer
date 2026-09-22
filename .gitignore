@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.json
+*.db
+__pycache__/
+# Composer-managed PHP deps (backend/php) — fetched via `composer install`,
+# same treatment as node_modules/.venv: lockfile is committed, vendor isn't.
+backend/php/vendor/
+backend/php/composer.pharnode_modules/
+__pycache__/
+*.pyc
+.venv/
+.env
+node_modules/
