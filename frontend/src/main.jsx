@@ -48,7 +48,10 @@ const GithubIcon = () => (
 // clickable: ProjectDetailPage's own job history isn't gated on latest_job_id
 // the way this row's status text is.
 function ProjectsList({ onSelectProject }) {
-  const [projects, setProjects] = useState([])
+  // null = still loading; [] = loaded, genuinely empty — kept distinct so a
+  // brand-new user with zero ingested repos sees an explicit message instead
+  // of the same blank render a mid-flight fetch would otherwise also produce.
+  const [projects, setProjects] = useState(null)
   const [error, setError] = useState(null)
   const apiFetch = useApiFetch()
 
@@ -63,7 +66,10 @@ function ProjectsList({ onSelectProject }) {
   }, [])
 
   if (error) return <p className="error">{error}</p>
-  if (!projects.length) return null
+  if (!projects) return <p className="summary-loading">Loading repositories…</p>
+  if (!projects.length) {
+    return <p className="summary-loading">No repositories ingested yet — analyze one above to get started.</p>
+  }
 
   return (
     <>
@@ -233,12 +239,14 @@ function JobSummary({ jobId }) {
         <UnverifiedBadge count={summary.unverified_count} />
       </div>
       <p className="repo-summary-text">{summary.repo_summary || 'No repo-level summary is available for this run.'}</p>
-      {entityTypeEntries.length > 0 && (
+      {entityTypeEntries.length > 0 ? (
         <ul className="entity-counts">
           {entityTypeEntries.map(([entityType, count]) => (
             <li key={entityType}><strong>{count}</strong> {count === 1 ? entityType : (ENTITY_TYPE_PLURAL[entityType] || `${entityType}s`)}</li>
           ))}
         </ul>
+      ) : (
+        <p className="summary-loading">No entities were extracted from this repository.</p>
       )}
     </section>
   )
@@ -608,7 +616,8 @@ function ReingestAction({ project, onReingested }) {
       <StarfieldButton
         label="Re-ingest"
         type="submit"
-        disabled={submitting || (project.source_type === 'upload' && !file)}
+        disabled={project.source_type === 'upload' && !file}
+        loading={submitting}
         style={{ marginTop: 14 }}
       />
       {error && <p className="error">{error}</p>}
@@ -772,7 +781,7 @@ function JobStatusPage({ jobId, onBackToForm }) {
   return (
     <main className="page-shell">
       <section className="hero job-status" aria-label="Job status">
-        <p className="eyebrow">{job ? job.status.toUpperCase() : 'LOADING'}</p>
+        <p className="eyebrow">{job ? job.status.toUpperCase() : (error ? 'ERROR' : 'LOADING')}</p>
         <h1>Job <code>{jobId}</code></h1>
         {error && <p className="error">{error}</p>}
         {job && <DiffSummary job={job} />}
@@ -802,6 +811,7 @@ function App() {
   const [tab, setTab] = useState('url')
   const [showToken, setShowToken] = useState(false)
   const [error, setError] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
   const [archiveFile, setArchiveFile] = useState(null)
   const [activeJobId, setActiveJobId] = useState(
     () => new URLSearchParams(window.location.search).get('job'),
@@ -850,6 +860,7 @@ function App() {
     }
 
     setError(null)
+    setSubmitting(true)
     try {
       const response = tab === 'url'
         ? await apiFetch('/api/agent1/jobs', {
@@ -878,6 +889,8 @@ function App() {
       navigateToJobStatus(data.job_id)
     } catch (err) {
       setError(err.message)
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -913,13 +926,13 @@ function App() {
             <label htmlFor="repo-url">GitHub repository URL</label>
             <div className="input-row">
               <div className="url-input"><GithubIcon /><input id="repo-url" value={url} onChange={(e) => { setUrl(e.target.value); setError(null) }} placeholder="https://github.com/owner/repository" /></div>
-              <StarfieldButton label="Analyze" type="submit" className="analyze-button" style={{ minWidth: 150 }} />
+              <StarfieldButton label="Analyze" type="submit" loading={submitting} className="analyze-button" style={{ minWidth: 150 }} />
             </div>
             <button className="token-toggle" type="button" onClick={() => setShowToken(!showToken)}><span>{showToken ? '⌄' : '›'}</span> Private repository? Add a GitHub token</button>
             {showToken && <input className="token-input" aria-label="GitHub personal access token" placeholder="GitHub personal access token" type="password" value={token} onChange={(e) => setToken(e.target.value)} />}
           </> : <>
             <ArchiveDropZone file={archiveFile} onFileSelected={setArchiveFile} onRejected={setError} />
-            <StarfieldButton label="Analyze" type="submit" disabled={!archiveFile} className="archive-submit" />
+            <StarfieldButton label="Analyze" type="submit" disabled={!archiveFile} loading={submitting} className="archive-submit" />
           </>}
           {error && <p className="error">{error}</p>}
         </form>
