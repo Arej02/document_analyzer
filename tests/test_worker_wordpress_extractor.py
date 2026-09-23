@@ -70,6 +70,21 @@ def test_extract_closure_callback_produces_no_callback_entity_or_edge(tmp_path):
     assert hook.raw_facts["occurrences"][0]["callback"] is None
 
 
+def test_extract_hook_entity_carries_a_non_null_file_path(tmp_path):
+    """Regression test: hook_entity() used to pre-seed its dict with `"file_path": None`,
+    which made the later `hook.setdefault("file_path", file_path)` calls no-ops (setdefault
+    only fires when the key is absent, not when it's None) — every hook entity's file_path
+    stayed null forever, which extracted_entities.file_path's NOT NULL constraint rejects
+    at persist time (caught by tasks.md Phase 6's load test, not by any extractor-level
+    test until this one)."""
+    (tmp_path / "plugin.php").write_text("<?php\nadd_action('init', 'my_plugin_init');\n")
+
+    result = WordPressExtractor().extract(tmp_path)
+
+    [hook] = [e for e in result.entities if e.entity_type == "hook"]
+    assert hook.file_path == "plugin.php"
+
+
 def test_extract_hook_invocation_adds_occurrence_but_no_edge(tmp_path):
     (tmp_path / "plugin.php").write_text(
         "<?php\nfunction bootstrap() {\n    do_action('my_plugin_after_init');\n}\n"

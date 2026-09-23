@@ -83,9 +83,14 @@ class WordPressExtractor:
         edges: list[ExtractedEdge] = []
 
         def hook_entity(hook_name: str) -> dict[str, Any]:
+            # No "file_path" key here on purpose: it's set by the first occurrence's own
+            # hook.setdefault("file_path", file_path) call below. Pre-seeding it to None
+            # would make that setdefault a no-op (the key would already be "present",
+            # just with a None value), leaving every hook entity's file_path permanently
+            # null — which extracted_entities.file_path's NOT NULL constraint rejects.
             return hooks.setdefault(
                 hook_name,
-                {"local_id": f"hook:{hook_name}", "kinds": set(), "file_path": None, "occurrences": []},
+                {"local_id": f"hook:{hook_name}", "kinds": set(), "occurrences": []},
             )
 
         def callback_entity(file_path: str, callback_name: str) -> str:

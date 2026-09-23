@@ -74,5 +74,25 @@ def get_project(client: Client, org_id: str, project_id: str) -> dict | None:
         .order("created_at", desc=True)
         .execute()
     )
-    project["jobs"] = jobs.data
+    # Rebuilt explicitly rather than trusting `.select(_JOB_COLUMNS)` to have already
+    # projected the row — correct against a real Postgrest backend, but tests/fakes.py's
+    # FakeClient doesn't simulate column projection (same gap entities.py's _entity_stub
+    # hit and fixed); a job row also carries github_token_ref, which must never reach a
+    # response body regardless of what the client-side query claims to have selected.
+    project["jobs"] = [
+        {
+            "id": job["id"],
+            "status": job["status"],
+            "progress_stage": job.get("progress_stage"),
+            "error": job.get("error"),
+            "source_type": job["source_type"],
+            "source_ref": job["source_ref"],
+            "created_at": job.get("created_at"),
+            "updated_at": job.get("updated_at"),
+            "changed_file_count": job.get("changed_file_count"),
+            "unchanged_file_count": job.get("unchanged_file_count"),
+            "removed_file_count": job.get("removed_file_count"),
+        }
+        for job in jobs.data
+    ]
     return project

@@ -63,6 +63,7 @@ from document_analyzer.queue import delete_job_message, read_next_job
 from document_analyzer.supabase_client import get_service_role_client
 from document_analyzer.worker.boilerplate import filter_boilerplate, log_filtered_files
 from document_analyzer.worker.diff import diff_against_previous_job, persist_diff_counts
+from document_analyzer.worker.embedding_config_check import assert_embedding_config_in_sync
 from document_analyzer.worker.extract import ExtractedEntity, ExtractionResult
 from document_analyzer.worker.fetch import SourceFetchError, fetch_source
 from document_analyzer.worker.ground import GroundingCheckError
@@ -330,8 +331,14 @@ def process_job(job_id: str, org_id: str) -> None:
 
 
 def run_forever() -> None:
-    """Polls `agent1_ingestion_jobs` forever, one job at a time. Ctrl+C to stop."""
+    """Polls `agent1_ingestion_jobs` forever, one job at a time. Ctrl+C to stop.
+
+    Refuses to start at all if `embedding_config`'s active row has drifted from what
+    embed.py actually loads (embedding_config_check.py, tasks.md Phase 6) — better to
+    fail loudly here than silently embed a job's summaries under a pin nobody signed
+    off on."""
     logging.basicConfig(level=logging.INFO)
+    assert_embedding_config_in_sync(get_service_role_client())
     logger.info("worker started, polling %s every %ss when idle", "agent1_ingestion_jobs", POLL_INTERVAL_SECONDS)
 
     while True:

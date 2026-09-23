@@ -3,6 +3,7 @@ import pytest
 from document_analyzer.supabase_client import (
     get_request_scoped_client,
     get_service_role_client,
+    insert_many_scoped,
     insert_scoped,
 )
 
@@ -65,5 +66,27 @@ def test_insert_scoped_rejects_org_id_already_in_row():
 
     with pytest.raises(ValueError):
         insert_scoped(client, "ingestion_jobs", "org-123", {"org_id": "org-from-content"})
+
+    assert client.inserted == []
+
+
+def test_insert_many_scoped_stamps_org_id_on_every_row():
+    client = _FakeClient()
+
+    insert_many_scoped(client, "extracted_entities", "org-123", [{"name": "a"}, {"name": "b"}])
+
+    assert client.inserted == [
+        ("extracted_entities", [{"name": "a", "org_id": "org-123"}, {"name": "b", "org_id": "org-123"}])
+    ]
+
+
+def test_insert_many_scoped_rejects_org_id_already_in_any_row():
+    """Same guard as insert_scoped, checked across the whole batch — the defense-in-depth
+    that stops a future caller from ever letting untrusted content smuggle an org_id key
+    in at the top level (CLAUDE.md: "any bug here is a cross-tenant leak")."""
+    client = _FakeClient()
+
+    with pytest.raises(ValueError):
+        insert_many_scoped(client, "extracted_entities", "org-123", [{"name": "a"}, {"org_id": "org-from-content"}])
 
     assert client.inserted == []
