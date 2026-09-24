@@ -1,15 +1,7 @@
 import { useState } from 'react'
 import { supabase } from './supabaseClient'
-import StarfieldButton from './StarfieldButton'
+import PrimaryButton from './PrimaryButton'
 
-// Brand mark — kept as a local copy of main.jsx's <Mark /> rather than a shared
-// import so this file has no dependency on main.jsx (and vice versa).
-const Mark = () => (
-  <svg viewBox="0 0 30 30" aria-hidden="true">
-    <path d="M15 2.5 27.5 15 15 27.5 2.5 15 15 2.5Z" />
-    <path d="m15 10 5 5-5 5-5-5 5-5Z" />
-  </svg>
-)
 
 const MailIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -85,15 +77,13 @@ export function SignIn() {
     <main className="auth-page">
       <div className="auth-glow" aria-hidden="true" />
       <div className="auth-wrap">
-        <a className="auth-brand" href="#top" aria-label="galvanise home"><Mark /><span>galvanise</span></a>
-        <p className="auth-tagline">Understand. Modernize. Migrate.</p>
 
         <div className="auth-card">
           <h1 className="auth-heading">{mode === 'sign-in' ? 'Welcome back' : 'Create your account'}</h1>
           <p className="auth-subtext">
             {mode === 'sign-in'
-              ? 'Sign in to pick up where your repository analysis left off.'
-              : 'Set up access to start turning codebases into knowledge.'}
+              ? 'Sign in to continue'
+              : 'Sign up with email'}
           </p>
 
           <form onSubmit={submit} noValidate>
@@ -140,7 +130,7 @@ export function SignIn() {
             </div>
 
             <div className="auth-submit">
-              <StarfieldButton label="Continue" type="submit" loading={submitting} />
+              <PrimaryButton label="Continue" type="submit" loading={submitting} />
             </div>
           </form>
 

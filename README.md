@@ -1,4 +1,4 @@
-# Legacy Migration Agent — Agent 1 (Understand)
+# Galvanise
 
 Agentic system that migrates legacy codebases (starting with PHP / WordPress) to a
 modern stack (FastAPI). The full pipeline is three independent agents connected
