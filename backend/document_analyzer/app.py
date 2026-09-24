@@ -10,7 +10,7 @@ from .projects_router import router as projects_router
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Agent 1 — Understand")
+    app = FastAPI(title="Galvanise")
     app.include_router(jobs_router)
     app.include_router(projects_router)
     app.include_router(agent2_router)

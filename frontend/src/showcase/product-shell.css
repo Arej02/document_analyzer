@@ -1,0 +1,27 @@
+html { line-height: 1.5; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+/* Tailwind's border utilities expect a default solid style. Scope this reset. */
+.product-shell > header, .product-shell > header *, .showcase-controls * { border-style: solid; border-width: 0; }
+.product-shell > header.border-b { border-bottom-width: 1px; }
+.product-shell { position: relative; scroll-margin-top: 0; outline: none; }
+.product-shell > header { position: sticky; top: 0; background: var(--background); }
+.product-shell .page-shell { min-height: calc(100svh - 88px); }
+.product-shell .auth-page { min-height: calc(100svh - 88px); }
+.product-account { position: absolute; top: 108px; right: 48px; z-index: 2; }
+.product-account button { color: var(--muted-foreground); background: transparent; border: 0; font: inherit; font-size: 13px; }
+.product-account button:hover { color: var(--foreground); }
+.product-footer { display: flex; flex-direction: column; align-items: center; gap: 14px; max-width: none; margin: 0; padding: 48px 24px clamp(28px, 6vh, 64px); color: var(--muted-foreground); }
+.product-footer-brand { display: flex; align-items: center; justify-content: center; gap: 3px; color: var(--foreground); }
+.product-footer-brand .brand-wordmark { font-size: clamp(18px, 2.4vw, 32px); white-space: nowrap; }
+.product-copyright { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 13px; white-space: nowrap; }
+.product-contact { display: flex; align-items: center; gap: 8px; }
+.product-contact a { color: inherit; text-decoration: none; }
+.product-contact a:hover { color: var(--foreground); }
+.product-contact a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.showcase-controls button { padding: 0; background: transparent; border: 0; }
+.showcase-controls svg, .product-contact svg { display: block; }
+@media (max-width: 639px) { .product-account { right: 24px; } }
+.showcase-controls a { color: var(--muted-foreground); text-decoration: none; }
+.showcase-controls a:hover { color: var(--foreground); }
+
+.product-shell > header .logo-circle { box-shadow: inset 0 1px 0 #ffffff30, 0 8px 24px -16px #12172555; }
+.product-shell > header .logo-circle::after { opacity: 0.12; }
