@@ -1,7 +1,7 @@
 """Fake Supabase client for testing request-handler code without a live project.
 
-Mimics only the chainable surface our code actually calls: table().select().eq().order().limit().execute(),
-table().insert().execute(), table().update().eq().execute(), rpc().execute(), and storage.from_().upload()/.download().
+Mimics only the chainable surface our code actually calls: table().select().eq().in_().order().limit().range().execute(),
+table().insert().execute(), table().update().eq().in_().execute(), table().delete().eq().in_().execute(), rpc().execute(), and storage.from_().upload()/.download().
 """
 
 import itertools
@@ -20,12 +20,18 @@ class FakeQuery:
         self._table = table
         self._filters: dict = {}
         self._order: tuple | None = None
+        self._in: dict = {}
+        self._range: tuple | None = None
 
     def select(self, *_args, **_kwargs):
         return self
 
     def eq(self, key, value):
         self._filters[key] = value
+        return self
+
+    def in_(self, key, values):
+        self._in[key] = set(values)
         return self
 
     def order(self, column, desc=False):
@@ -35,11 +41,19 @@ class FakeQuery:
     def limit(self, _n):
         return self
 
+    def range(self, start, end):
+        self._range = (start, end)
+        return self
+
     def execute(self):
         rows = [r for r in self._table.rows if all(r.get(k) == v for k, v in self._filters.items())]
+        rows = [r for r in rows if all(r.get(k) in vs for k, vs in self._in.items())]
         if self._order:
             column, desc = self._order
             rows = sorted(rows, key=lambda r: r.get(column), reverse=desc)
+        if self._range:
+            start, end = self._range
+            rows = rows[start : end + 1]
         return FakeResult(rows)
 
 
@@ -66,22 +80,64 @@ class FakeUpdate:
         self._table = table
         self._values = values
         self._filters: dict = {}
+        self._in: dict = {}
 
     def eq(self, key, value):
         self._filters[key] = value
         return self
 
+    def in_(self, key, values):
+        self._in[key] = set(values)
+        return self
+
     def execute(self):
-        updated = [r for r in self._table.rows if all(r.get(k) == v for k, v in self._filters.items())]
+        updated = [
+            r
+            for r in self._table.rows
+            if all(r.get(k) == v for k, v in self._filters.items()) and all(r.get(k) in vs for k, vs in self._in.items())
+        ]
         for row in updated:
             row.update(self._values)
         return FakeResult(updated)
 
 
+class FakeDelete:
+    """Deletes matching rows, then follows `FakeClient.cascades` like `on delete cascade`."""
+
+    def __init__(self, table, client):
+        self._table = table
+        self._client = client
+        self._filters: dict = {}
+        self._in: dict = {}
+
+    def eq(self, key, value):
+        self._filters[key] = value
+        return self
+
+    def in_(self, key, values):
+        self._in[key] = set(values)
+        return self
+
+    def execute(self):
+        def matches(r):
+            return all(r.get(k) == v for k, v in self._filters.items()) and all(
+                r.get(k) in vs for k, vs in self._in.items()
+            )
+
+        deleted = [r for r in self._table.rows if matches(r)]
+        self._table.rows[:] = [r for r in self._table.rows if not matches(r)]
+        deleted_ids = {r.get("id") for r in deleted}
+        for child_table, fk_column in (self._client.cascades.get(self._table.name, []) if self._client else []):
+            if deleted_ids:
+                FakeDelete(self._client.table(child_table), self._client).in_(fk_column, deleted_ids).execute()
+        return FakeResult(deleted)
+
+
 class FakeTable:
-    def __init__(self, name):
+    def __init__(self, name, client=None):
         self.name = name
         self.rows: list = []
+        self._client = client
 
     def select(self, *_args, **_kwargs):
         return FakeQuery(self)
@@ -91,6 +147,9 @@ class FakeTable:
 
     def update(self, values):
         return FakeUpdate(self, values)
+
+    def delete(self):
+        return FakeDelete(self, self._client)
 
 
 class FakeStorageBucket:
@@ -102,6 +161,11 @@ class FakeStorageBucket:
         self.uploads.append((path, contents, opts))
         self._objects[path] = contents
         return {"path": path}
+
+    def remove(self, paths):
+        for path in paths:
+            self._objects.pop(path, None)
+        return [{"name": path} for path in paths]
 
     def download(self, path):
         if path not in self._objects:
@@ -130,9 +194,13 @@ class FakeClient:
         self.org_id = org_id
         self._tables: dict = {}
         self.storage = FakeStorage()
+        # parent table -> [(child table, fk column)], mirroring `on delete cascade` FKs.
+        self.cascades: dict = {}
 
     def table(self, name):
-        return self._tables.setdefault(name, FakeTable(name))
+        if name not in self._tables:
+            self._tables[name] = FakeTable(name, self)
+        return self._tables[name]
 
     def rpc(self, _name, *_args, **_kwargs):
         return FakeRpc(self.org_id)

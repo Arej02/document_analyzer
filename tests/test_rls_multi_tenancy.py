@@ -4,8 +4,10 @@ RLS is enforced by Postgres itself, not by anything this repo's unit tests can
 fake — every other test in this suite runs against `tests/fakes.py::FakeClient`,
 which has no concept of row security at all. This test is the one place that
 actually exercises `current_org_id()` and the `*_select_own_org` policies
-(supabase/migrations/20260918010000_rls_policies.sql and the two later
-migrations that added `filtered_files`/`secret_findings`) against a real
+(supabase/migrations/20260918010000_rls_policies.sql, the two later
+migrations that added `filtered_files`/`secret_findings`, and Agent 2's
+`20260923000000_agent2_planning_tables.sql`/`20260923010000_agent2_plan_tables.sql`
+— tasks_agent2.md Phase 0) against a real
 Supabase project, the same way earlier phases' "verified live" notes did by
 hand — just automated and self-cleaning instead of one-off.
 
@@ -47,6 +49,16 @@ _ORG_SCOPED_TABLES = [
     "summary_cache",
     "filtered_files",
     "secret_findings",
+    # Agent 2 (design_agent2.md §2).
+    "planning_jobs",
+    "clusters",
+    "cluster_members",
+    "cluster_reports",
+    "cluster_edges",
+    "migration_plans",
+    "migration_plan_items",
+    "phase_approvals",
+    "plan_overrides",
 ]
 
 
@@ -68,8 +80,9 @@ def _sign_in(url: str, anon_key: str, email: str, password: str) -> str:
     return response.session.access_token
 
 
-def _seed_org_a_chain(service_client, org_id: str) -> dict:
-    """Seeds one row per org-scoped table, chained by FK, all under org_id. Returns their ids/keys."""
+def _seed_org_a_chain(service_client, org_id: str, user_id: str) -> dict:
+    """Seeds one row per org-scoped table, chained by FK, all under org_id. Returns their ids/keys.
+    `user_id` is org A's own user, for the Agent 2 review tables' reviewer/creator columns."""
     project = insert_scoped(
         service_client, "projects", org_id, {"source_type": "upload", "source_ref": "rls-smoke-test"}
     ).data[0]
@@ -147,7 +160,10 @@ def _seed_org_a_chain(service_client, org_id: str) -> dict:
         {"job_id": job["id"], "entity_id": entity["id"], "field_path": "raw_facts.smoke", "reason": "smoke_test"},
     ).data[0]
 
+    agent2 = _seed_agent2_chain(service_client, org_id, user_id, project["id"], job["id"], entity["id"])
+
     return {
+        **agent2,
         "projects": project["id"],
         "ingestion_jobs": job["id"],
         "extracted_entities": entity["id"],
@@ -159,9 +175,109 @@ def _seed_org_a_chain(service_client, org_id: str) -> dict:
     }
 
 
+def _seed_agent2_chain(service_client, org_id: str, user_id: str, project_id: str, job_id: str, entity_id: str) -> dict:
+    """One row per Agent 2 table under org_id, FK-chained onto the Agent 1 rows above."""
+    planning_job = insert_scoped(
+        service_client,
+        "planning_jobs",
+        org_id,
+        {"project_id": project_id, "source_job_id": job_id, "status": "done", "params": {"seed": 42}},
+    ).data[0]
+    phase = insert_scoped(
+        service_client,
+        "clusters",
+        org_id,
+        {"planning_job_id": planning_job["id"], "level": "phase", "kind": "community", "size": 1},
+    ).data[0]
+    unit = insert_scoped(
+        service_client,
+        "clusters",
+        org_id,
+        {
+            "planning_job_id": planning_job["id"],
+            "level": "unit",
+            "parent_cluster_id": phase["id"],
+            "kind": "community",
+            "size": 1,
+        },
+    ).data[0]
+    member = insert_scoped(
+        service_client,
+        "cluster_members",
+        org_id,
+        {"cluster_id": unit["id"], "entity_id": entity_id, "canonical_entity_id": entity_id},
+    ).data[0]
+    report = insert_scoped(
+        service_client,
+        "cluster_reports",
+        org_id,
+        {"cluster_id": unit["id"], "summary_text": "smoke test cluster report", "risk_level": "low"},
+    ).data[0]
+    cluster_edge = insert_scoped(
+        service_client,
+        "cluster_edges",
+        org_id,
+        {
+            "planning_job_id": planning_job["id"],
+            "level": "phase",
+            "from_cluster_id": phase["id"],
+            "to_cluster_id": phase["id"],
+            "weight": 1.0,
+        },
+    ).data[0]
+    plan = insert_scoped(
+        service_client,
+        "migration_plans",
+        org_id,
+        {"project_id": project_id, "planning_job_id": planning_job["id"], "source_job_id": job_id, "version": 1},
+    ).data[0]
+    plan_item = insert_scoped(
+        service_client,
+        "migration_plan_items",
+        org_id,
+        {"plan_id": plan["id"], "cluster_id": unit["id"], "phase_cluster_id": phase["id"], "phase_order": 0, "unit_order": 0},
+    ).data[0]
+    approval = insert_scoped(
+        service_client,
+        "phase_approvals",
+        org_id,
+        {"plan_id": plan["id"], "phase_cluster_id": phase["id"], "status": "approved", "reviewer_id": user_id},
+    ).data[0]
+    override = insert_scoped(
+        service_client,
+        "plan_overrides",
+        org_id,
+        {"plan_id": plan["id"], "kind": "facade_ack", "payload": {"scc_id": 0}, "created_by": user_id},
+    ).data[0]
+
+    return {
+        "planning_jobs": planning_job["id"],
+        "clusters": unit["id"],
+        "cluster_members": member["cluster_id"],
+        "cluster_reports": report["cluster_id"],
+        "cluster_edges": cluster_edge["id"],
+        "migration_plans": plan["id"],
+        "migration_plan_items": plan_item["plan_id"],
+        "phase_approvals": approval["id"],
+        "plan_overrides": override["id"],
+    }
+
+
 def _delete_org(service_client, org_id: str) -> None:
-    # Children before parents, respecting the FKs in the create-tables migration.
+    # Children before parents, respecting the FKs in the create-tables migrations.
+    # The Agent 2 plan tables don't cascade (plans are immutable snapshots), so
+    # they go before clusters/planning_jobs; the cluster tables would cascade from
+    # planning_jobs but are listed explicitly anyway.
     for table in [
+        "plan_overrides",
+        "phase_approvals",
+        "migration_plan_items",
+        "migration_plans",
+        "cluster_edges",
+        "cluster_reports",
+        "cluster_members",
+        "clusters",
+        "planning_jobs",
         "secret_findings",
         "summary_cache",
         "knowledge_summaries",
@@ -186,7 +302,7 @@ def two_orgs():
     user_a_id, email_a, password_a = _create_org_user(service_client, org_a_id)
     user_b_id, email_b, password_b = _create_org_user(service_client, org_b_id)
 
-    seeded_ids = _seed_org_a_chain(service_client, org_a_id)
+    seeded_ids = _seed_org_a_chain(service_client, org_a_id, user_a_id)
     org_b_project_id = insert_scoped(
         service_client, "projects", org_b_id, {"source_type": "upload", "source_ref": "rls-smoke-test-org-b"}
     ).data[0]["id"]
@@ -214,7 +330,12 @@ def two_orgs():
         service_client.auth.admin.delete_user(user_b_id)
 
 
-_ROW_ID_COLUMN = {"summary_cache": "content_hash"}
+_ROW_ID_COLUMN = {
+    "summary_cache": "content_hash",
+    "cluster_members": "cluster_id",
+    "cluster_reports": "cluster_id",
+    "migration_plan_items": "plan_id",
+}
 
 
 @pytest.mark.parametrize("table", _ORG_SCOPED_TABLES)

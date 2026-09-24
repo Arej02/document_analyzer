@@ -82,3 +82,64 @@ async def test_delete_job_message_sends_msg_id(monkeypatch):
     sql, args = calls[0]
     assert "pgmq.delete" in sql
     assert args == (queue_module.QUEUE_NAME, 42)
+
+
+async def test_enqueue_planning_job_sends_to_agent2_queue(monkeypatch):
+    calls = []
+
+    async def fake_connect(dsn):
+        return _FakeConn(calls)
+
+    monkeypatch.setattr(queue_module.asyncpg, "connect", fake_connect)
+
+    await queue_module.enqueue_planning_job(planning_job_id="pj-1", org_id="org-1")
+
+    sql, args = calls[0]
+    assert "pgmq.send" in sql
+    assert args[0] == "agent2_planning_jobs"
+    assert args[0] != queue_module.QUEUE_NAME
+    assert '"planning_job_id": "pj-1"' in args[1]
+    assert '"org_id": "org-1"' in args[1]
+
+
+async def test_read_next_planning_job_returns_none_on_empty_queue(monkeypatch):
+    async def fake_connect(dsn):
+        return _FakeConn([], fetchrow_result=None)
+
+    monkeypatch.setattr(queue_module.asyncpg, "connect", fake_connect)
+
+    assert await queue_module.read_next_planning_job() is None
+
+
+async def test_read_next_planning_job_parses_the_message_payload(monkeypatch):
+    calls = []
+
+    async def fake_connect(dsn):
+        return _FakeConn(
+            calls, fetchrow_result={"msg_id": 7, "message": '{"planning_job_id": "pj-1", "org_id": "org-1"}'}
+        )
+
+    monkeypatch.setattr(queue_module.asyncpg, "connect", fake_connect)
+
+    result = await queue_module.read_next_planning_job(vt_seconds=60)
+
+    assert result == {"msg_id": 7, "planning_job_id": "pj-1", "org_id": "org-1"}
+    sql, args = calls[0]
+    assert "pgmq.read" in sql
+    assert args == (queue_module.PLANNING_QUEUE_NAME, 60)
+
+
+async def test_delete_planning_job_message_casts_msg_id_to_bigint(monkeypatch):
+    calls = []
+
+    async def fake_connect(dsn):
+        return _FakeConn(calls)
+
+    monkeypatch.setattr(queue_module.asyncpg, "connect", fake_connect)
+
+    await queue_module.delete_planning_job_message(7)
+
+    sql, args = calls[0]
+    assert "pgmq.delete" in sql
+    assert "$2::bigint" in sql
+    assert args == (queue_module.PLANNING_QUEUE_NAME, 7)

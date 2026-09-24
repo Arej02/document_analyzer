@@ -102,7 +102,28 @@ function do_thing() {
 
     [entity] = result.entities
     assert entity.raw_facts["params"] == []
+    assert entity.raw_facts["calls"] == ["wp_die"]
     assert result.edges == []
+
+
+def test_extract_records_method_calls_deduplicated_and_sorted(tmp_path):
+    (tmp_path / "app.php").write_text(
+        """<?php
+class Booking {
+    public function save() {
+        $this->validate();
+        Doctor::find(1);
+        $this->validate();
+        exec('ls');
+    }
+}
+"""
+    )
+
+    result = PhpExtractor().extract(tmp_path)
+
+    save = next(e for e in result.entities if e.name == "save")
+    assert save.raw_facts["calls"] == ["Doctor::find", "exec", "validate"]
 
 
 def test_extract_include_inside_function_becomes_edge_with_no_target(tmp_path):

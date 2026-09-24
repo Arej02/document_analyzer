@@ -118,6 +118,53 @@ def test_process_job_runs_full_pipeline_and_marks_done(monkeypatch):
     assert project_row["latest_job_id"] == "job-1"  # tasks.md Phase 5
 
 
+def test_process_job_skips_a_redelivered_job_that_already_finished(monkeypatch):
+    client = FakeClient(org_id="org-1")
+    monkeypatch.setattr(run_module, "get_service_role_client", lambda: client)
+    _seed_job(client, "job-1", "org-1")
+    client.table("ingestion_jobs").rows[-1]["status"] = "done"
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("a finished job must not be re-run")
+
+    monkeypatch.setattr(run_module, "fetch_source", fail_if_called)
+    monkeypatch.setattr(run_module, "_run_extractors", fail_if_called)
+
+    run_module.process_job("job-1", "org-1")
+
+    [job_row] = client.table("ingestion_jobs").rows
+    assert job_row["status"] == "done"
+    assert client.table("extracted_entities").rows == []
+
+
+def test_process_job_folds_modules_across_several_files_and_subsystems(monkeypatch):
+    client = FakeClient(org_id="org-1")
+    monkeypatch.setattr(run_module, "get_service_role_client", lambda: client)
+    _seed_job(client, "job-1", "org-1")
+
+    def fake_run_extractors(repo_path, client, job_id, org_id):
+        _seed_entities(
+            client,
+            job_id,
+            org_id,
+            [
+                {"name": "a", "file_path": "inc/a.php", "content_hash": "hash-a"},
+                {"name": "b", "file_path": "inc/b.php", "content_hash": "hash-b"},
+                {"name": "c", "file_path": "admin/c.php", "content_hash": "hash-c"},
+            ],
+        )
+
+    monkeypatch.setattr(run_module, "_run_extractors", fake_run_extractors)
+    _patch_grounded_pipeline(monkeypatch)
+
+    run_module.process_job("job-1", "org-1")
+
+    [job_row] = client.table("ingestion_jobs").rows
+    assert job_row["status"] == "done"
+    levels = sorted(row["level"] for row in client.table("knowledge_summaries").rows)
+    assert levels == ["entity"] * 3 + ["module"] * 3 + ["repo"] + ["subsystem"] * 2
+
+
 def test_process_job_with_zero_entities_still_completes(monkeypatch):
     client = FakeClient(org_id="org-1")
     monkeypatch.setattr(run_module, "get_service_role_client", lambda: client)

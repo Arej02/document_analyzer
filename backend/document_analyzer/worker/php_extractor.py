@@ -41,6 +41,12 @@ from document_analyzer.worker.extract import ExtractedEdge, ExtractedEntity, Ext
 _PHP_SCRIPT = Path(__file__).resolve().parents[2] / "php" / "extract.php"
 
 
+def _call_names(calls: list[str]) -> list[str]:
+    """Distinct call names, sorted: the order and repeat count of calls in a body carry
+    no meaning here, and a stable form keeps `content_hash` (persist.py) stable."""
+    return sorted(set(calls))
+
+
 class PhpExtractionError(Exception):
     """Raised when the PHP subprocess fails to run or returns unparseable output."""
 
@@ -83,7 +89,7 @@ class PhpExtractor:
                         entity_type="function",
                         name=fn["name"],
                         file_path=file_path,
-                        raw_facts={"params": fn["params"], "line": fn["line"]},
+                        raw_facts={"params": fn["params"], "line": fn["line"], "calls": _call_names(fn["calls"])},
                     )
                 )
                 function_by_name.setdefault(fn["name"], local_id)
@@ -120,6 +126,7 @@ class PhpExtractor:
                                 "visibility": method["visibility"],
                                 "static": method["static"],
                                 "line": method["line"],
+                                "calls": _call_names(method["calls"]),
                             },
                         )
                     )
