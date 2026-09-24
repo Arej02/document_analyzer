@@ -26,7 +26,7 @@ covers the concurrent entity-level fan-out — grounding's regenerate-on-failure
 retry (ground_retry.py) is itself an LLM generation call, so entity-level
 grounding is inherently part of *generating* a fully-formed entity summary,
 not a separable later phase; `grounding` covers the module -> subsystem -> repo
-fold, the smaller, sequential tail of the pipeline where a reviewer's
+fold (fanned out per level, levels in order), the tail of the pipeline where a reviewer's
 attention is on whether the rolled-up summaries actually hold up, not just
 raw generation.
 
@@ -103,6 +103,10 @@ POLL_INTERVAL_SECONDS = 5
 _PIPELINE_ERRORS = (SourceFetchError, PhpExtractionError, WordPressExtractionError, SummarizationError, GroundingCheckError)
 
 
+# Same guard as Agent 2's planner worker (agent2/worker/run.py).
+_TERMINAL_STATUSES = ("done", "failed")
+
+
 _thread_local = threading.local()
 
 
@@ -133,7 +137,7 @@ class _EntityOutcome:
 def _fetch_job_row(client, job_id: str, org_id: str) -> dict:
     result = (
         client.table("ingestion_jobs")
-        .select("id, project_id, source_type, source_ref, github_token_ref")
+        .select("id, project_id, source_type, source_ref, github_token_ref, status")
         .eq("id", job_id)
         .eq("org_id", org_id)
         .limit(1)
@@ -261,22 +265,35 @@ def _fold_children(client, job_id: str, org_id: str, name: str, level: str, chil
 
 
 def _fold_ancestors(client, job_id: str, org_id: str, entity_outcomes: list[_EntityOutcome], llm_client) -> None:
+    """Module folds are independent of each other (each sees only its own file's entity
+    summaries), as are subsystem folds, so each level fans out through the same bounded
+    pool as entity summarization; only the level-to-level dependency is sequential.
+    Folding one module at a time made this the slowest part of a job (~2+ LLM calls
+    per file, serially)."""
     by_module: dict[str, list[_EntityOutcome]] = {}
     for outcome in entity_outcomes:
         by_module.setdefault(outcome.file_path, []).append(outcome)
 
-    module_children_by_subsystem: dict[str, list[ChildSummary]] = {}
-    for file_path, entities in by_module.items():
-        module_child = _fold_module(client, job_id, org_id, file_path, entities, llm_client)
-        subsystem_name = subsystem_for_file(file_path)
-        module_children_by_subsystem.setdefault(subsystem_name, []).append(module_child)
-
-    subsystem_children: list[ChildSummary] = []
-    for subsystem_name, module_children in module_children_by_subsystem.items():
-        subsystem_child = _fold_children(
-            client, job_id, org_id, subsystem_name, "subsystem", "module", module_children, llm_client
+    with ThreadPoolExecutor(max_workers=SUMMARY_CONCURRENCY) as executor:
+        module_children = list(
+            executor.map(
+                lambda item: _fold_module(_client_for_thread(), job_id, org_id, item[0], item[1], llm_client),
+                by_module.items(),
+            )
         )
-        subsystem_children.append(subsystem_child)
+
+        module_children_by_subsystem: dict[str, list[ChildSummary]] = {}
+        for module_child in module_children:
+            module_children_by_subsystem.setdefault(subsystem_for_file(module_child.name), []).append(module_child)
+
+        subsystem_children = list(
+            executor.map(
+                lambda item: _fold_children(
+                    _client_for_thread(), job_id, org_id, item[0], "subsystem", "module", item[1], llm_client
+                ),
+                module_children_by_subsystem.items(),
+            )
+        )
 
     _fold_children(client, job_id, org_id, "repo", "repo", "subsystem", subsystem_children, llm_client)
 
@@ -292,6 +309,12 @@ def process_job(job_id: str, org_id: str) -> None:
 
     try:
         job_row = _fetch_job_row(client, job_id, org_id)
+        if job_row.get("status") in _TERMINAL_STATUSES:
+            # A redelivered message (the worker was stopped before deleting it) must not
+            # re-run a finished job: that re-extracts every entity a second time and holds
+            # up every job queued behind it.
+            logger.info("job %s already %s; skipping", job_id, job_row["status"])
+            return
         github_token_ref = job_row.get("github_token_ref")
         mark_job_running(client, job_id, org_id)
 

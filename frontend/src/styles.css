@@ -141,6 +141,82 @@ h1 em { display: inline-block; padding: 3px 0 10px; color: #b8ceff; font: italic
 .project-link { border: 0; padding: 0; background: transparent; color: inherit; font: inherit; text-align: left; }
 .project-link:hover { text-decoration: underline; color: #69efb4; }
 .project-status { color: #8ea3c9; font-weight: 700; text-transform: uppercase; font-size: 11px; }
+.plan-row-badges { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; }
+.plan-status { display: inline-block; padding: 4px 11px; border-radius: 20px; font: 700 11px/1 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .6px; white-space: nowrap; color: #8ea3c9; background: rgba(142,163,201,.14); }
+.plan-status-in_review { color: #8fc2ff; background: rgba(143,194,255,.14); }
+.plan-status-approved { color: #7fe6ae; background: rgba(99,238,175,.14); }
+.plan-status-rejected { color: #ff9c8a; background: rgba(255,92,77,.16); }
+.plan-status-stale { color: #6f7f9c; background: rgba(111,127,156,.12); }
+.plan-header-badges { align-items: center; margin-top: 14px; }
+.plan-flag { display: inline-block; padding: 3px 9px; border-radius: 20px; font: 700 10px/1.2 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .5px; white-space: nowrap; color: #8ea3c9; background: rgba(142,163,201,.12); }
+.plan-flag-warn { color: #ffcf7a; background: rgba(255,207,122,.14); }
+.plan-stale-banner { max-width: 720px; margin: 4px 0 0; padding: 12px 16px; border: 1px solid rgba(255,207,122,.35); border-radius: 10px; color: #ffcf7a; background: rgba(255,207,122,.08); font-size: 13px; line-height: 1.5; }
+.plan-phases { list-style: none; margin: 0; padding: 0; max-width: 980px; }
+.plan-phase { border-bottom: 1px solid rgba(255,255,255,.1); padding: 14px 0; }
+.plan-phase-header { display: flex; align-items: baseline; gap: 10px; width: 100%; border: 0; padding: 0; background: transparent; color: #f4f5f8; font: inherit; font-size: 16px; font-weight: 700; text-align: left; }
+.plan-phase-header:hover .plan-phase-title { text-decoration: underline; color: #69efb4; }
+.plan-phase-chevron { width: 12px; color: #8ea3c9; }
+.plan-phase-title { flex: 1; min-width: 0; word-break: break-word; }
+.plan-phase-count { color: #8ea3c9; font: 12px 'DM Mono', monospace; white-space: nowrap; }
+.plan-phase-body { padding: 10px 0 0 22px; }
+.plan-phase-summary { margin: 0 0 10px; color: #cdd8f2; font-size: 14px; line-height: 1.55; }
+.plan-approval { display: inline-flex; align-items: center; gap: 8px; }
+.plan-approval-note { color: #8ea3c9; font-size: 12px; font-style: italic; }
+.plan-units { list-style: none; margin: 6px 0 0; padding: 0; }
+.plan-unit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; width: 100%; border: 0; border-radius: 8px; padding: 9px 10px; background: transparent; color: #eef2fb; font: inherit; font-size: 13px; text-align: left; }
+.plan-unit:hover { background: rgba(255,255,255,.05); }
+.plan-unit-selected { background: rgba(105,239,180,.1); box-shadow: inset 2px 0 0 #69efb4; }
+.plan-unit-order { width: 22px; color: #8ea3c9; font: 12px 'DM Mono', monospace; }
+.plan-unit-label { flex: 1; min-width: 160px; word-break: break-word; }
+.plan-unit-label em { color: #8290ad; }
+.plan-facade-marker { margin-right: 6px; color: #ffcf7a; }
+.plan-unit-meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.plan-unit-size { color: #8ea3c9; font: 11px 'DM Mono', monospace; white-space: nowrap; }
+.plan-phases-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; max-width: 980px; margin-bottom: 16px; }
+.job-history .plan-phases-head h2 { margin: 0; }
+.plan-view-toggle { display: inline-flex; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; overflow: hidden; }
+.plan-view-toggle button { border: 0; padding: 6px 14px; background: transparent; color: #8ea3c9; font-size: 12px; font-weight: 700; }
+.plan-view-toggle button[aria-pressed="true"] { background: rgba(105,239,180,.14); color: #69efb4; }
+.plan-view-toggle button:not([aria-pressed="true"]):hover { color: #eef2fb; }
+.plan-graph { max-width: 980px; }
+.plan-graph-breadcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; color: #8ea3c9; font-size: 13px; }
+.plan-graph-breadcrumb [aria-current] { color: #eef2fb; font-weight: 700; }
+.plan-graph-cap-note { margin: 0 0 10px; color: #ffcf7a; font-size: 12px; }
+.plan-graph-canvas { width: 100%; height: 460px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; overflow: hidden; background: rgba(255,255,255,.02); }
+.plan-graph-canvas .react-flow__pane { cursor: default; }
+.plan-graph-canvas .react-flow__node { cursor: pointer; }
+.plan-graph-node { display: flex; align-items: center; gap: 10px; width: 200px; padding: 8px 12px; border: 1px solid; border-radius: 10px; font-size: 12px; font-weight: 700; }
+.plan-graph-node:hover { filter: brightness(1.25); }
+.plan-graph-node-selected { box-shadow: 0 0 0 2px #69efb4; }
+.plan-graph-node-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-graph-node-size { color: #8ea3c9; font: 11px 'DM Mono', monospace; }
+.plan-graph-legend { margin: 10px 0 0; color: #8ea3c9; font-size: 12px; line-height: 1.5; }
+.plan-graph-legend-facade { color: #ff5c4d; font-weight: 700; }
+.plan-graph-legend-merged { text-decoration: underline dashed; font-weight: 700; }
+.plan-layout-with-detail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 36px; align-items: start; }
+.plan-layout-with-detail .job-history { min-width: 0; }
+@media (max-width: 1100px) { .plan-layout-with-detail { grid-template-columns: minmax(0, 1fr); gap: 0; } }
+.plan-unit-detail { min-width: 0; margin: 40px 0; padding: 20px 22px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(255,255,255,.03); scroll-margin-top: 20px; }
+.plan-unit-detail h4 { margin: 22px 0 10px; color: #f4f5f8; font-size: 14px; font-weight: 700; }
+.plan-unit-detail-head { display: flex; justify-content: space-between; align-items: center; }
+.plan-unit-detail-head .eyebrow { margin: 0; }
+.plan-unit-close { display: inline-block; margin: 0; }
+.plan-unit-detail-title { display: flex; align-items: baseline; gap: 10px; margin: 8px 0 12px; color: #f4f5f8; font-size: 22px; letter-spacing: -.6px; word-break: break-word; }
+.plan-unit-detail-title em { color: #8290ad; }
+.plan-unit-detail-order { color: #8ea3c9; font: 14px 'DM Mono', monospace; }
+.plan-constituent-reports { list-style: none; margin: 0; padding: 0; }
+.plan-constituent-reports li { padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,.07); }
+.plan-constituent-reports .summary-badges { align-items: center; margin-bottom: 6px; color: #eef2fb; font-size: 13px; }
+.plan-table-scroll { overflow-x: auto; }
+.plan-member-unverified td { background: rgba(255,207,122,.07); }
+.plan-edge-facade td { background: rgba(255,207,122,.09); }
+.plan-contract-section { padding: 4px 0 8px; border-bottom: 1px solid rgba(255,255,255,.07); }
+.plan-contract-section h4 { margin: 10px 0 8px; color: #8ea3c9; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+.plan-contract-section ul { list-style: none; margin: 0; padding: 0; }
+.plan-contract-section li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 4px 0; color: #eef2fb; font-size: 13px; }
+.plan-contract-section code { color: #b8ceff; font: 12px 'DM Mono', monospace; word-break: break-all; }
+.plan-contract-excerpt { flex-basis: 100%; color: #8ea3c9; font-size: 12px; line-height: 1.5; }
+.plan-contract-unverified { margin: 0; color: #ffcf7a; font-size: 13px; }
 .back-link { margin: 0 0 18px; }
 .project-detail-title { font-size: clamp(30px, 3.6vw, 44px); letter-spacing: -1.4px; max-width: 900px; word-break: break-word; }
 .project-detail-status { margin: 10px 0 24px; }
@@ -154,3 +230,57 @@ h1 em { display: inline-block; padding: 3px 0 10px; color: #b8ceff; font: italic
 .job-history h2 { margin: 0 0 16px; color: #f4f5f8; font-size: 20px; font-weight: 700; letter-spacing: -.6px; }
 footer { margin-top: 76px; color: #8290ad; font-size: 12px; display: flex; align-items: center; gap: 7px; } footer i { width: 5px; height: 5px; }
 @media (max-width: 720px) { .page-shell { padding: 23px 23px 20px; }.status { font-size: 11px; }.brand { font-size: 22px; }.hero { padding-top: 120px; } h1 { letter-spacing: -3.7px; } h1 em { letter-spacing: -3.7px; }.intro { font-size: 16px; margin-bottom: 38px; }.desktop-break { display: none; }.analyzer { padding: 18px; border-radius: 16px; }.input-row { flex-direction: column; }.url-input, .analyze-button { flex: none; width: 100%; height: 40px; }.analyze-button { min-width: 0; } footer { margin-top: 48px; } }
+.plan-graph-node .react-flow__handle { opacity: 0; pointer-events: none; }
+.plan-submit-action { margin-top: 22px; }
+.plan-phase-approval { display: grid; gap: 8px; max-width: 520px; margin: 4px 0 12px; padding: 12px 14px; border: 1px solid rgba(143,194,255,.22); border-radius: 10px; background: rgba(143,194,255,.05); }
+.plan-phase-note-label { color: #8ea3c9; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; }
+.plan-phase-note { width: 100%; box-sizing: border-box; resize: vertical; min-height: 44px; padding: 8px 10px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; background: rgba(0,0,0,.2); color: #eef2fb; font-family: inherit; font-size: 13px; line-height: 1.45; }
+.plan-phase-note:focus { outline: 2px solid rgba(105,239,180,.5); outline-offset: 1px; }
+.plan-phase-approval-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.plan-phase-decide { border: 1px solid rgba(255,255,255,.16); border-radius: 8px; padding: 6px 16px; background: transparent; color: #eef2fb; font-size: 12px; font-weight: 700; }
+.plan-phase-decide:disabled { opacity: .5; cursor: not-allowed; }
+.plan-phase-decide-approved:not(:disabled):hover, .plan-phase-decide-approved[aria-pressed="true"] { border-color: rgba(99,238,175,.5); background: rgba(99,238,175,.14); color: #7fe6ae; }
+.plan-phase-decide-rejected:not(:disabled):hover, .plan-phase-decide-rejected[aria-pressed="true"] { border-color: rgba(255,92,77,.5); background: rgba(255,92,77,.16); color: #ff9c8a; }
+.plan-phase-decide:focus-visible { outline: 2px solid #69efb4; outline-offset: 2px; }
+.plan-facade-notice { max-width: 720px; margin: 12px 0 0; padding: 12px 16px; border: 1px solid rgba(255,207,122,.35); border-radius: 10px; color: #ffcf7a; background: rgba(255,207,122,.08); font-size: 13px; line-height: 1.5; }
+.plan-facade-notice p { margin: 0; }
+.plan-facade-units { display: flex; flex-wrap: wrap; gap: 6px 18px; list-style: none; margin: 8px 0 0; padding: 0; }
+.plan-facade-units li { display: inline-flex; align-items: baseline; gap: 8px; }
+.plan-facade-units .project-link { color: #eef2fb; font-weight: 700; }
+.plan-facade-hint { margin-top: 6px !important; color: #cdb582; }
+.plan-approved-state { max-width: 720px; margin: 12px 0 0; padding: 12px 16px; border: 1px solid rgba(99,238,175,.35); border-radius: 10px; color: #cdeedd; background: rgba(99,238,175,.08); font-size: 13px; line-height: 1.5; }
+.plan-approved-state strong { color: #7fe6ae; }
+.plan-approved-state code { color: #b8ceff; font: 12px 'DM Mono', monospace; }
+
+.plan-unit-row { display: flex; align-items: center; gap: 8px; }
+.plan-unit-row > .plan-unit { flex: 1; min-width: 0; }
+.plan-unit-select { flex: none; width: 16px; height: 16px; accent-color: #69efb4; }
+.plan-unit-move { display: inline-flex; flex: none; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; overflow: hidden; }
+.plan-unit-move button { border: 0; padding: 4px 9px; background: transparent; color: #cdd8f2; font-size: 13px; }
+.plan-unit-move button + button { border-left: 1px solid rgba(255,255,255,.16); }
+.plan-unit-move button:not(:disabled):hover { background: rgba(255,255,255,.08); color: #69efb4; }
+.plan-unit-move button:disabled { opacity: .35; cursor: not-allowed; }
+.plan-unit-move button:focus-visible, .plan-unit-select:focus-visible { outline: 2px solid #69efb4; outline-offset: 2px; }
+.plan-merge-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 0 4px; }
+.plan-merge-hint { color: #8ea3c9; font-size: 12px; }
+.plan-facade-cycles { display: grid; gap: 10px; list-style: none; margin: 10px 0 0; padding: 0; }
+.plan-facade-cycle { display: grid; gap: 6px; padding-top: 10px; border-top: 1px solid rgba(255,207,122,.2); }
+.plan-facade-cycle-level { color: #cdb582; font: 700 10px/1 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .5px; }
+.plan-facade-cycle .plan-facade-units { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px; margin: 0; color: #eef2fb; }
+.plan-facade-arrow { color: #ffcf7a; }
+.plan-facade-ack { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 8px; align-items: center; max-width: 560px; }
+.plan-facade-ack .plan-phase-note-label, .plan-facade-ack .error { grid-column: 1 / -1; }
+.plan-facade-ack .plan-phase-note { min-height: 0; }
+.plan-version-note { margin: 6px 0 0; color: #8ea3c9; font-size: 13px; }
+.plan-version-note .project-link { color: #b8ceff; }
+
+.delete-action { border-top: 0; padding-top: 0; }
+.delete-action h2 { color: #ffb3a6; }
+.delete-confirm-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.danger-button, .secondary-button { min-height: 38px; padding: 0 18px; border-radius: 100px; font: 700 13px 'DM Sans', Arial, sans-serif; cursor: pointer; transition: background .15s ease, border-color .15s ease; }
+.danger-button { border: 1px solid rgba(255,156,138,.45); color: #ffd9d2; background: rgba(255,120,100,.12); }
+.danger-button:hover:not(:disabled) { background: rgba(255,120,100,.24); border-color: rgba(255,156,138,.8); }
+.secondary-button { border: 1px solid rgba(255,255,255,.18); color: #cdd8f2; background: transparent; }
+.secondary-button:hover:not(:disabled) { border-color: rgba(255,255,255,.4); }
+.danger-button:disabled, .secondary-button:disabled { opacity: .55; cursor: default; }
+.danger-button:focus-visible, .secondary-button:focus-visible { outline: 2px solid #ffb3a6; outline-offset: 2px; }

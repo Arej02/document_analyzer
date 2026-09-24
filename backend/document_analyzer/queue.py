@@ -61,3 +61,54 @@ async def delete_job_message(msg_id: int) -> None:
         await conn.fetchval("select pgmq.delete($1, $2::bigint)", QUEUE_NAME, msg_id)
     finally:
         await conn.close()
+
+
+# Agent 2 (Plan) — design_agent2.md §1. Its own queue, never shared with Agent 1's
+# (CLAUDE.md); FastAPI's POST /api/agent2/projects/{id}/plans enqueues, the
+# planner worker (agent2/worker/run.py) reads and deletes.
+PLANNING_QUEUE_NAME = "agent2_planning_jobs"
+
+# Same semantics as DEFAULT_VISIBILITY_TIMEOUT_SECONDS above, but must cover one
+# planning job's graph -> cluster -> report -> order pipeline (design_agent2.md §12).
+DEFAULT_PLANNING_VISIBILITY_TIMEOUT_SECONDS = int(os.environ.get("AGENT2_QUEUE_VISIBILITY_TIMEOUT_SECONDS", 1800))
+
+
+async def enqueue_planning_job(planning_job_id: str, org_id: str) -> None:
+    dsn = os.environ["SUPABASE_DB_URL"]
+    payload = json.dumps({"planning_job_id": planning_job_id, "org_id": org_id})
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.fetchval("select pgmq.send($1, $2::jsonb)", PLANNING_QUEUE_NAME, payload)
+    finally:
+        await conn.close()
+
+
+async def read_next_planning_job(vt_seconds: int | None = None) -> dict | None:
+    """Agent 2 counterpart of `read_next_job`. Returns
+    `{"msg_id", "planning_job_id", "org_id"}`, or None if the queue is empty."""
+    dsn = os.environ["SUPABASE_DB_URL"]
+    vt = vt_seconds if vt_seconds is not None else DEFAULT_PLANNING_VISIBILITY_TIMEOUT_SECONDS
+    conn = await asyncpg.connect(dsn)
+    try:
+        row = await conn.fetchrow("select msg_id, message from pgmq.read($1, $2, 1)", PLANNING_QUEUE_NAME, vt)
+        if row is None:
+            return None
+        message = json.loads(row["message"])
+        return {
+            "msg_id": row["msg_id"],
+            "planning_job_id": message["planning_job_id"],
+            "org_id": message["org_id"],
+        }
+    finally:
+        await conn.close()
+
+
+async def delete_planning_job_message(msg_id: int) -> None:
+    """Agent 2 counterpart of `delete_job_message`."""
+    dsn = os.environ["SUPABASE_DB_URL"]
+    conn = await asyncpg.connect(dsn)
+    try:
+        # Same explicit $2::bigint cast as delete_job_message (design.md §3 bug #2).
+        await conn.fetchval("select pgmq.delete($1, $2::bigint)", PLANNING_QUEUE_NAME, msg_id)
+    finally:
+        await conn.close()

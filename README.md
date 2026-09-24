@@ -62,7 +62,7 @@ API contract, and [`docs/tasks.md`](docs/tasks.md) for what's built vs. outstand
 
 ## Running it
 
-Run these in two separate terminals from the repo root.
+Run these in separate terminals from the repo root.
 
 **Backend** (FastAPI, on `http://localhost:8000`):
 
@@ -82,6 +82,16 @@ This is a separate long-lived process from the FastAPI app — nothing in Agent 
 runs the pipeline synchronously from a request (see `CLAUDE.md` "Async by
 default"). It polls the queue every 5 seconds when idle and processes one job
 at a time; Ctrl+C to stop.
+
+**Planner** (polls `agent2_planning_jobs` and builds migration plans):
+
+```
+uv run document-analyzer-planner
+```
+
+Agent 2's own worker, separate from the ingestion worker above. Without it,
+"Generate plan" requests stay `queued` forever. Same polling behaviour:
+every 5 seconds when idle, one job at a time.
 
 **Frontend** (Vite dev server, on `http://localhost:5173`):
 
