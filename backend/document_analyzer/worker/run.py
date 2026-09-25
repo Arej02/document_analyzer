@@ -70,6 +70,7 @@ from document_analyzer.worker.ground import GroundingCheckError
 from document_analyzer.worker.ground_retry import GroundingRetryResult, check_grounding_with_retry
 from document_analyzer.worker.grounding_status import persist_grounding_status
 from document_analyzer.worker.job_completion import mark_job_done_if_ready
+from document_analyzer.worker.laravel_extractor import LaravelExtractor
 from document_analyzer.worker.persist import persist_extraction_result
 from document_analyzer.worker.persist_summary import persist_summary
 from document_analyzer.worker.php_extractor import PhpExtractionError, PhpExtractor
@@ -149,7 +150,7 @@ def _fetch_job_row(client, job_id: str, org_id: str) -> dict:
 
 
 def _run_extractors(repo_path: Path, client, job_id: str, org_id: str) -> None:
-    for extractor in (PhpExtractor(), WordPressExtractor()):
+    for extractor in (PhpExtractor(), WordPressExtractor(), LaravelExtractor()):
         if extractor.detect(repo_path):
             result: ExtractionResult = extractor.extract(repo_path)
             persist_extraction_result(client, job_id, org_id, result)

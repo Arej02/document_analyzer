@@ -35,6 +35,7 @@ No step in this pipeline executes ingested code. Structural extraction (AST-extr
 - **Frontend**: authenticates via Supabase Auth (email/OAuth, whatever providers are enabled on the Supabase project). The Supabase client SDK holds the session and attaches the Supabase-issued JWT (`access_token`) to every request to the FastAPI backend as a `Bearer` header.
 - **Backend**: FastAPI validates the incoming JWT against Supabase's signing key (JWKS, or the project JWT secret depending on Supabase Auth config) on every request — this is a dependency, not per-route boilerplate. `org_id` is never accepted as a request parameter (see §4); it's resolved server-side from the validated token.
 - **`org_id` resolution (decided): lookup table, not a custom JWT claim.** A custom claim would need a Supabase Auth Hook configured by hand in the dashboard — an out-of-band manual step outside migrations. Instead, `org_members` (`user_id` PK → `org_id`, one org per user for MVP) maps `auth.uid()` to `org_id`. RLS policies resolve it via a `current_org_id()` SQL function (`security definer`, reads `org_members` for `auth.uid()`) so every policy expression stays a one-liner. Revisit if multi-org-per-user is ever needed.
+- **No self-serve signup → org assignment.** Signing up via Supabase Auth only creates an `auth.users` row; it does not grant access to any org. `org_members` rows are provisioned out-of-band via the service-role-only `add_org_member_by_email` / `list_org_members` RPCs (`supabase/migrations/20260925000000_add_org_member_admin_helpers.sql`), wrapped by `uv run document-analyzer-add-org-member <email> <org_id>`. This is an ops step, not an API endpoint — revisit with a real invite flow if org sizes grow beyond a few manually-added collaborators.
 - The async worker's service-role connection (bypasses RLS, described below) is a separate credential from this request-scoped, JWT-validated client — never conflate the two paths.
 
 ## 2. Data model (Supabase Postgres)
@@ -88,7 +89,7 @@ RLS is enforced on every table below via the authenticated session for reads. Wr
 | `job_id` | uuid, FK | |
 | `from_entity_id` | uuid, FK → `extracted_entities` | |
 | `to_entity_id` | uuid, FK → `extracted_entities`, nullable | nullable for edges to external/global targets |
-| `edge_type` | enum(`calls`, `hook_binding`, `global`, `include`) | |
+| `edge_type` | enum(`calls`, `hook_binding`, `global`, `include`, `route_binding`) | `route_binding` added `supabase/migrations/20260924000000_route_binding_edge_type.sql` — a Laravel route binds to its controller method the same way a WordPress hook binds to a callback, just discovered later (§5) |
 
 ### `filtered_files`
 | column | type | notes |
@@ -365,6 +366,13 @@ class Extractor(Protocol):
 ```
 
 Two implementations at launch: `PhpExtractor` (wraps `nikic/php-parser` subprocess) and `WordPressExtractor` (hooks/CPTs/meta). New language support = new class implementing this protocol, nothing else in the pipeline changes.
+
+**`LaravelExtractor` (added 2026-09-24 — tasks.md Phase 2):** a live planning run against a Laravel repo came back with an almost entirely disconnected dependency graph even though the repo has real structure. Two compounding causes, both in the *fact-extraction* layer (not Agent 2 — `design_agent2.md` §3 consumes whatever `entity_edges` rows exist):
+
+1. A route doesn't *call* its controller method in source text — the framework's router invokes it by convention at request time, the same shape of problem `WordPressExtractor` already solves for hooks. `LaravelExtractor` (`backend/document_analyzer/worker/laravel_extractor.py`) reads `routes/web.php`/`routes/api.php` (regex/text-based, not a PHP AST subprocess — route registrations are declarative one-liners), resolves a controller reference to its file via `composer.json`'s `autoload.psr-4` map, and emits one `route` entity (the `entity_type` already existed in the enum, unused until now) plus a `route_binding` edge from the controller method to it — same callback-binds-to-hook direction as `hook_binding`, and picked up for free everywhere that already treats `hook_binding` as a generic "framework invokes this" edge (`design_agent2.md` §3.1's `GRAPH_EDGE_TYPES`) once it's in that tuple. `test_contract.py`'s `hooks_bound` was split into `hooks_bound`/`routes_bound` by the target's actual `entity_type` so a route's name doesn't get mislabeled as a hook (`design_agent2.md` §10).
+2. `PhpExtractor._resolve_edges` only resolves a qualified call (`Class::method`) when that exact method is *defined in the repo* — an Eloquent static like `Appointment::paginate` lives on Laravel's vendor base class, so it never resolved to anything, not even to the already-locally-defined `Appointment` class entity. This was the bigger of the two causes in practice: it now falls back to a class-level `calls` edge when exactly one locally-defined class matches the name (ambiguous names resolve to nothing, same conservative rule `method_by_name` already applies). Multiple controllers sharing the same model is real, common structure a framework-heavy app has that plain call-graph parsing would otherwise miss entirely.
+
+Verified against a live Laravel repo (`hospital_test`, `tasks.md` §15's own dry-run subject): resolved call edges went from 9 to 110 (mostly cause 2), unit-level dependency edges in Agent 2's own graph/cluster/dependency pipeline went from 0 to 27 and phase-level from 0 to 10 (both causes together, run in-memory against the real repo before touching anything live). Neither change is exact — a class-name collision across files, or a route registered through `Route::controller(...)->group(...)`/`Route::match([...], ...)`/a route group's `prefix`, resolves to nothing rather than guessing — but "some real structure" beats "an empty graph" for what was previously a total blind spot.
 
 ## 6. Frontend integration points
 

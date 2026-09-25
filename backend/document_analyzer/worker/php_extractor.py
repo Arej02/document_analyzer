@@ -23,6 +23,18 @@ Scoping notes (deliberately conservative, not a placeholder):
   outside the repo (a WordPress/PHP builtin, a Composer dependency) is kept
   in the calling entity's `raw_facts["calls"]` but does not become an edge,
   since `entity_edges` has no field to name an unresolved target.
+- A qualified call (`Class::method`) that doesn't match a locally-defined
+  method (e.g. an inherited Eloquent static like `Appointment::paginate` —
+  `paginate` lives on Laravel's vendor base class, not on `Appointment`
+  itself) falls back to a `calls` edge at the *class* level, if exactly one
+  locally-defined class named `Class` exists. Two different controllers that
+  both touch the same model previously shared no edge at all (the specific
+  method call site is the same "doesn't exist locally" case as any other
+  unresolved call); this at least records "depends on this model", the one
+  piece of real structure a framework-heavy app actually has that plain
+  call-graph parsing would otherwise miss entirely. Ambiguous by name (two
+  same-named classes in different files) resolves to nothing, same
+  conservative rule `method_by_name` already applies to a bare method call.
 - `include`/`require` edges are only emitted for an include statement inside
   a function/method body, anchored to that function/method as `from_entity`.
   A top-level (file-scope) include has no entity to anchor to — `raw_facts`
@@ -75,6 +87,7 @@ class PhpExtractor:
         function_by_name: dict[str, str] = {}
         method_by_qualified_name: dict[str, str] = {}
         method_by_name: dict[str, list[str]] = {}
+        class_by_name: dict[str, list[str]] = {}
 
         for file_result in files:
             if file_result.get("error"):
@@ -111,6 +124,7 @@ class PhpExtractor:
                         },
                     )
                 )
+                class_by_name.setdefault(cls["name"], []).append(class_local_id)
 
                 for method in cls.get("methods", []):
                     method_local_id = f"method:{file_path}:{cls['name']}:{method['name']}:{method['line']}"
@@ -138,7 +152,7 @@ class PhpExtractor:
                     )
 
         edges = self._resolve_edges(
-            pending_call_sites, function_by_name, method_by_qualified_name, method_by_name
+            pending_call_sites, function_by_name, method_by_qualified_name, method_by_name, class_by_name
         )
 
         return ExtractionResult(entities=entities, edges=edges)
@@ -167,6 +181,7 @@ class PhpExtractor:
         function_by_name: dict[str, str],
         method_by_qualified_name: dict[str, str],
         method_by_name: dict[str, list[str]],
+        class_by_name: dict[str, list[str]],
     ) -> list[ExtractedEdge]:
         edges: list[ExtractedEdge] = []
 
@@ -175,6 +190,14 @@ class PhpExtractor:
                 target = None
                 if "::" in call:
                     target = method_by_qualified_name.get(call)
+                    if target is None:
+                        # An inherited/vendor method on a locally-defined class (e.g. an
+                        # Eloquent static like `Appointment::paginate`) — fall back to a
+                        # class-level edge rather than no edge at all.
+                        class_name, _, _method_name = call.partition("::")
+                        candidates = class_by_name.get(class_name, [])
+                        if len(candidates) == 1:
+                            target = candidates[0]
                 else:
                     target = function_by_name.get(call)
                     if target is None:
