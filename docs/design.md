@@ -67,6 +67,7 @@ RLS is enforced on every table below via the authenticated session for reads. Wr
 | `changed_file_count` | int, nullable | written by `worker/diff.py` once extraction is persisted; null until then. FR6's file diff against the project's previous `done` job — see §3 |
 | `unchanged_file_count` | int, nullable | same as above; a file whose entities' `content_hash` all matched the previous job |
 | `removed_file_count` | int, nullable | same as above; a file the previous job had entities for that this job has none for |
+| `source_snapshot_path` | text, nullable | storage path of this job's boilerplate-stripped source tarball (`agent1-snapshots/{org_id}/{job_id}/source.tar.gz`), read by Agent 3 (`design_agent3.md` §13). Column added 2026-09-25 (`20260925130000_agent1_source_snapshot_path.sql`) so Agent 3's `409` "no snapshot" gate has something to read; it stays null until the snapshot upload task in `tasks.md` ("Agent 3 prerequisites") is built |
 
 ### `extracted_entities`
 | column | type | notes |

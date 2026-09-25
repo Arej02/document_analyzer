@@ -1608,6 +1608,65 @@ function SubmitPlanAction({ planId, onSubmitted }) {
   )
 }
 
+// tasks_agent3.md Phase 1 "Generate code" — POST /api/agent3/plans/{plan_id}/executions
+// (design_agent3.md §9). Only an approved, non-stale plan can start code generation; for
+// any other plan the button stays disabled and the hint says why. The backend re-checks
+// every gate (including the source snapshot and an already-running job), and its 409
+// is shown verbatim.
+function generateCodeBlocker(plan) {
+  if (plan.is_stale || plan.status === 'stale') {
+    return 'This plan is stale: it was built on an older ingestion run. Generate a new plan from the project page.'
+  }
+  if (plan.status === 'rejected') return 'This plan was rejected. Generate a new plan, or open another version.'
+  if (plan.status === 'draft') return 'Approve every phase first: submit this draft for review, then approve each phase.'
+  if (plan.status === 'in_review') return 'Approve every phase first. Code can only be generated from an approved plan.'
+  return null
+}
+
+function GenerateCodeAction({ plan, onExecutionCreated }) {
+  const [error, setError] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+  const apiFetch = useApiFetch()
+  const blocker = generateCodeBlocker(plan)
+
+  const generate = async (event) => {
+    event.preventDefault()
+    if (blocker) return
+    setError(null)
+    setSubmitting(true)
+    try {
+      const response = await apiFetch(`/api/agent3/plans/${plan.id}/executions`, { method: 'POST' })
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(formatJobErrorMessage(response.status, body))
+      }
+      const data = await response.json()
+      onExecutionCreated(data.execution_job_id)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <form className="reingest-action plan-submit-action" onSubmit={generate} aria-label="Generate code from this plan">
+      <h2>Code generation</h2>
+      <p className="reingest-hint">
+        {blocker || 'Generates FastAPI code for every unit in plan order, and tests each unit in an isolated sandbox.'}
+      </p>
+      <PrimaryButton
+        label="Generate code"
+        type="submit"
+        disabled={Boolean(blocker)}
+        loading={submitting}
+        style={{ marginTop: 14 }}
+      />
+      {error && <p className="error" role="alert">{error}</p>}
+    </form>
+  )
+}
+
 // tasks_agent2.md Phase 5 "Approval" — POST /api/agent2/plans/{plan_id}/phases/
 // {phase_cluster_id}/approval (design_agent2.md §11). PlanPage only renders this while the
 // plan is `in_review`. A repeat decision replaces the earlier one, so the controls stay up
@@ -1810,6 +1869,7 @@ function useCreateOverride(planId, onCreated) {
 // so an `approved` plan shows only its "Approved by … at …" state.
 function PlanPage({
   planId, selectedUnitId, phaseId, onSelectUnit, onCloseUnit, onSelectPhase, onBackToProject, onBackToForm, onOpenPlan,
+  onExecutionCreated,
 }) {
   const [plan, setPlan] = useState(null)
   const [error, setError] = useState(null)
@@ -1971,6 +2031,7 @@ function PlanPage({
               />
             )}
             {plan.status === 'draft' && <SubmitPlanAction planId={planId} onSubmitted={refreshPlan} />}
+            <GenerateCodeAction plan={plan} onExecutionCreated={onExecutionCreated} />
           </>
         )}
       </section>
@@ -2088,8 +2149,27 @@ function PlanPage({
   )
 }
 
+// tasks_agent3.md Phase 1: where "Generate code" lands (`?execution=`). A placeholder until
+// the "Execution status" task adds GET /api/agent3/executions/{id} and polls it.
+function ExecutionStatusPage({ executionJobId, onBackToForm }) {
+  return (
+    <main className="page-shell">
+      <section className="hero project-detail" aria-label="Code generation">
+        <button type="button" className="token-toggle back-link" onClick={onBackToForm}>
+          <span>‹</span> Back to repositories
+        </button>
+        <p className="eyebrow">CODE GENERATION</p>
+        <h1 className="project-detail-title">Queued</h1>
+        <p className="reingest-hint">
+          Execution <code>{executionJobId}</code> is queued. Live progress for this page is coming next.
+        </p>
+      </section>
+    </main>
+  )
+}
+
 // Query params that select a page (no router — see tasks_agent2.md conventions).
-const PAGE_PARAMS = ['job', 'project', 'planning_job', 'plan']
+const PAGE_PARAMS = ['job', 'project', 'planning_job', 'plan', 'execution']
 // Params that refine the ?plan= page; every other navigation clears them.
 const PLAN_SUB_PARAMS = ['unit', 'phase_id']
 
@@ -2136,6 +2216,7 @@ function App() {
   const navigateToProject = (projectId) => navigateToPage('project', projectId)
   const navigateToPlanningJob = (planningJobId) => navigateToPage('planning_job', planningJobId)
   const navigateToPlan = (planId) => navigateToPage('plan', planId)
+  const navigateToExecution = (executionJobId) => navigateToPage('execution', executionJobId)
   const backToForm = () => navigateToPage(null)
 
   const submit = async (event) => {
@@ -2210,8 +2291,13 @@ function App() {
         onBackToProject={navigateToProject}
         onBackToForm={backToForm}
         onOpenPlan={navigateToPlan}
+        onExecutionCreated={navigateToExecution}
       />
     )
+  }
+
+  if (page?.param === 'execution') {
+    return <ExecutionStatusPage executionJobId={page.id} onBackToForm={backToForm} />
   }
 
   if (page?.param === 'project') {
