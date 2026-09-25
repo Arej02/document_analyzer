@@ -12,7 +12,7 @@ from pathlib import Path
 
 from document_analyzer.worker import persist_summary as persist_summary_module
 from document_analyzer.worker import run as run_module
-from document_analyzer.worker.fetch import SourceFetchError
+from document_analyzer.worker.fetch import FetchResult, SourceFetchError
 from document_analyzer.worker.ground import GroundingResult
 from document_analyzer.worker.ground_retry import GroundingRetryResult
 from document_analyzer.worker.summarize import EntitySummary
@@ -78,8 +78,13 @@ def _patch_grounded_pipeline(monkeypatch):
     monkeypatch.setattr(run_module, "summarize_repo", lambda children, client=None: RepoSummary("repo summary", "low", []))
     monkeypatch.setattr(run_module, "get_azure_openai_client", lambda: object())
     monkeypatch.setattr(persist_summary_module, "embed_text", _fake_embed)
-    monkeypatch.setattr(run_module, "fetch_source", lambda client, job, dest_dir: Path(dest_dir) / "repo")
+    monkeypatch.setattr(
+        run_module, "fetch_source", lambda client, job, dest_dir: FetchResult(Path(dest_dir) / "repo", None)
+    )
     monkeypatch.setattr(run_module, "_strip_boilerplate", lambda repo_path, client, job_id, org_id: None)
+    monkeypatch.setattr(
+        run_module, "archive_source_snapshot", lambda client, job_id, org_id, repo_path: "org-1/job-1/source.tar.gz"
+    )
 
 
 def test_process_job_runs_full_pipeline_and_marks_done(monkeypatch):

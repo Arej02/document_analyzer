@@ -163,3 +163,29 @@ def test_delete_removes_uploaded_archives(api, fake_client):
     assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
 
     assert set(bucket._objects) == {"org-123/job-2/keep.zip"}
+
+
+def test_delete_removes_source_snapshots(api, fake_client):
+    """Agent 3 prerequisite (design_agent3.md §13) — a job's source_snapshot_path
+    tarball (worker/snapshot.py) is deleted alongside its other Agent 1 rows,
+    for both github- and upload-sourced projects (unlike agent1-uploads archives,
+    a snapshot exists regardless of source_type)."""
+    bucket = fake_client.storage.from_("agent1-snapshots")
+    bucket.upload("org-123/job-1/source.tar.gz", b"tar")
+    bucket.upload("org-123/job-2/source.tar.gz", b"tar")
+    project, job, _ = _seed_project(fake_client)
+    for row in _rows(fake_client, "ingestion_jobs"):
+        if row["id"] == job["id"]:
+            row["source_snapshot_path"] = "org-123/job-1/source.tar.gz"
+
+    assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
+
+    assert set(bucket._objects) == {"org-123/job-2/source.tar.gz"}
+
+
+def test_delete_tolerates_a_job_with_no_source_snapshot_path(api, fake_client):
+    """A job predating this column (or one still mid-pipeline) has no snapshot to
+    remove — deletion must not fail just because there's nothing to clean up."""
+    project, _, _ = _seed_project(fake_client)
+
+    assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204

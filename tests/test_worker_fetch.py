@@ -34,9 +34,20 @@ def test_fetch_upload_extracts_zip(tmp_path):
         "org-1/job-1/repo.zip", _zip_bytes({"main.php": b"<?php echo 1;"}), None
     )
 
-    repo_path = fetch_source(client, {"source_type": "upload", "source_ref": "org-1/job-1/repo.zip"}, tmp_path)
+    result = fetch_source(client, {"source_type": "upload", "source_ref": "org-1/job-1/repo.zip"}, tmp_path)
 
-    assert (repo_path / "main.php").read_bytes() == b"<?php echo 1;"
+    assert (result.repo_path / "main.php").read_bytes() == b"<?php echo 1;"
+
+
+def test_fetch_upload_source_commit_sha_is_none(tmp_path):
+    client = FakeClient()
+    client.storage.from_("agent1-uploads").upload(
+        "org-1/job-1/repo.zip", _zip_bytes({"main.php": b"<?php echo 1;"}), None
+    )
+
+    result = fetch_source(client, {"source_type": "upload", "source_ref": "org-1/job-1/repo.zip"}, tmp_path)
+
+    assert result.source_commit_sha is None
 
 
 def test_fetch_upload_extracts_tar_gz(tmp_path):
@@ -45,11 +56,11 @@ def test_fetch_upload_extracts_tar_gz(tmp_path):
         "org-1/job-1/repo.tar.gz", _tar_bytes({"main.php": b"<?php echo 1;"}), None
     )
 
-    repo_path = fetch_source(
+    result = fetch_source(
         client, {"source_type": "upload", "source_ref": "org-1/job-1/repo.tar.gz"}, tmp_path
     )
 
-    assert (repo_path / "main.php").read_bytes() == b"<?php echo 1;"
+    assert (result.repo_path / "main.php").read_bytes() == b"<?php echo 1;"
 
 
 def test_fetch_upload_rejects_zip_slip(tmp_path):
@@ -87,32 +98,60 @@ def test_fetch_upload_missing_object_raises(tmp_path):
         fetch_source(client, {"source_type": "upload", "source_ref": "org-1/job-1/missing.zip"}, tmp_path)
 
 
-def test_fetch_github_public_repo_clones(tmp_path, monkeypatch):
+def _fake_run_with_clone_and_rev_parse(tmp_path, commit_sha="abc123def456"):
+    """A fake `subprocess.run` handling both the clone and the `git rev-parse HEAD`
+    that now follows it — keyed off `cmd` since both go through the same monkeypatch."""
     calls = []
 
-    def fake_run(cmd, capture_output, text):
+    def fake_run(cmd, capture_output, text, cwd=None):
         calls.append(cmd)
+        if cmd[:2] == ["git", "rev-parse"]:
+            return type("Result", (), {"returncode": 0, "stderr": "", "stdout": commit_sha + "\n"})()
+        (tmp_path / "repo").mkdir()
+        return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+    return calls, fake_run
+
+
+def test_fetch_github_public_repo_clones(tmp_path, monkeypatch):
+    calls, fake_run = _fake_run_with_clone_and_rev_parse(tmp_path)
+    monkeypatch.setattr(fetch_module.subprocess, "run", fake_run)
+
+    result = fetch_source(
+        None, {"source_type": "github", "source_ref": "https://github.com/org/repo"}, tmp_path
+    )
+
+    assert result.repo_path == tmp_path / "repo"
+    assert calls[0] == ["git", "clone", "--depth", "1", "https://github.com/org/repo", str(tmp_path / "repo")]
+
+
+def test_fetch_github_records_cloned_commit_sha(tmp_path, monkeypatch):
+    calls, fake_run = _fake_run_with_clone_and_rev_parse(tmp_path, commit_sha="deadbeef")
+    monkeypatch.setattr(fetch_module.subprocess, "run", fake_run)
+
+    result = fetch_source(
+        None, {"source_type": "github", "source_ref": "https://github.com/org/repo"}, tmp_path
+    )
+
+    assert result.source_commit_sha == "deadbeef"
+    assert calls[1] == ["git", "rev-parse", "HEAD"]
+
+
+def test_fetch_github_rev_parse_failure_raises(tmp_path, monkeypatch):
+    def fake_run(cmd, capture_output, text, cwd=None):
+        if cmd[:2] == ["git", "rev-parse"]:
+            return type("Result", (), {"returncode": 128, "stderr": "fatal: not a git repository", "stdout": ""})()
         (tmp_path / "repo").mkdir()
         return type("Result", (), {"returncode": 0, "stderr": ""})()
 
     monkeypatch.setattr(fetch_module.subprocess, "run", fake_run)
 
-    repo_path = fetch_source(
-        None, {"source_type": "github", "source_ref": "https://github.com/org/repo"}, tmp_path
-    )
-
-    assert repo_path == tmp_path / "repo"
-    assert calls[0] == ["git", "clone", "--depth", "1", "https://github.com/org/repo", str(tmp_path / "repo")]
+    with pytest.raises(SourceFetchError, match="could not resolve cloned commit"):
+        fetch_source(None, {"source_type": "github", "source_ref": "https://github.com/org/repo"}, tmp_path)
 
 
 def test_fetch_github_private_repo_uses_header_not_url(tmp_path, monkeypatch):
-    calls = []
-
-    def fake_run(cmd, capture_output, text):
-        calls.append(cmd)
-        (tmp_path / "repo").mkdir()
-        return type("Result", (), {"returncode": 0, "stderr": ""})()
-
+    calls, fake_run = _fake_run_with_clone_and_rev_parse(tmp_path)
     monkeypatch.setattr(fetch_module.subprocess, "run", fake_run)
 
     fetch_source(
@@ -128,7 +167,7 @@ def test_fetch_github_private_repo_uses_header_not_url(tmp_path, monkeypatch):
 
 
 def test_fetch_github_clone_failure_redacts_token(tmp_path, monkeypatch):
-    def fake_run(cmd, capture_output, text):
+    def fake_run(cmd, capture_output, text, cwd=None):
         return type("Result", (), {"returncode": 128, "stderr": "fatal: auth failed for token sekret"})()
 
     monkeypatch.setattr(fetch_module.subprocess, "run", fake_run)
@@ -206,9 +245,9 @@ def test_fetch_upload_within_limit_still_succeeds(tmp_path, monkeypatch):
         "org-1/job-1/ok.zip", _zip_bytes({"main.php": b"<?php"}), None
     )
 
-    repo_path = fetch_source(client, {"source_type": "upload", "source_ref": "org-1/job-1/ok.zip"}, tmp_path)
+    result = fetch_source(client, {"source_type": "upload", "source_ref": "org-1/job-1/ok.zip"}, tmp_path)
 
-    assert (repo_path / "main.php").exists()
+    assert (result.repo_path / "main.php").exists()
 
 
 def test_fetch_github_rejects_repo_with_too_many_files(tmp_path, monkeypatch):

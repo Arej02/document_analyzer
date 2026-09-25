@@ -778,7 +778,8 @@ function DeleteProjectAction({ project, onDeleted }) {
         <>
           <p className="reingest-hint">
             This permanently deletes all {project.jobs.length} run{project.jobs.length === 1 ? '' : 's'} of{' '}
-            <code>{project.source_ref}</code>, their summaries, and every migration plan built from them. It can't be undone.
+            <code>{project.source_ref}</code>, their summaries, source snapshots, and every migration plan built
+            from them. It can't be undone.
           </p>
           <div className="delete-confirm-row">
             <button type="button" className="danger-button" onClick={remove} disabled={deleting}>

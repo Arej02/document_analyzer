@@ -31,6 +31,7 @@ def test_extract_hook_registration_creates_hook_and_callback_entities_with_edge(
         "kind": "action",
         "file": "plugin.php",
         "line": 2,
+        "end_line": 2,
         "callback": "my_plugin_init",
         "priority": 20,
         "accepted_args": 1,
@@ -85,6 +86,19 @@ def test_extract_hook_entity_carries_a_non_null_file_path(tmp_path):
     assert hook.file_path == "plugin.php"
 
 
+def test_extract_records_end_line_distinct_from_line_for_multi_line_call(tmp_path):
+    (tmp_path / "plugin.php").write_text(
+        "<?php\nadd_action(\n    'init',\n    'my_plugin_init'\n);\n"
+    )
+
+    result = WordPressExtractor().extract(tmp_path)
+
+    [hook] = [e for e in result.entities if e.entity_type == "hook"]
+    [occurrence] = hook.raw_facts["occurrences"]
+    assert occurrence["line"] == 2
+    assert occurrence["end_line"] == 5
+
+
 def test_extract_hook_invocation_adds_occurrence_but_no_edge(tmp_path):
     (tmp_path / "plugin.php").write_text(
         "<?php\nfunction bootstrap() {\n    do_action('my_plugin_after_init');\n}\n"
@@ -95,7 +109,7 @@ def test_extract_hook_invocation_adds_occurrence_but_no_edge(tmp_path):
     [hook] = [e for e in result.entities if e.entity_type == "hook"]
     assert hook.name == "my_plugin_after_init"
     assert hook.raw_facts["occurrences"] == [
-        {"role": "invoke", "kind": "action", "file": "plugin.php", "line": 3}
+        {"role": "invoke", "kind": "action", "file": "plugin.php", "line": 3, "end_line": 3}
     ]
     assert result.edges == []
 
