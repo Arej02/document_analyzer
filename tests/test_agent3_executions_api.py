@@ -269,3 +269,182 @@ def test_org_id_in_body_or_query_is_ignored(client, fake_client, enqueued):
     assert fake_client.table("execution_jobs").rows[0]["org_id"] == ORG
     assert all(u["org_id"] == ORG for u in fake_client.table("unit_executions").rows)
     assert enqueued[0]["org_id"] == ORG
+
+
+# --- GET /api/agent3/executions/{execution_job_id} ---------------------------
+
+
+def _seed_execution(fake_client, *, org_id=ORG, status="queued", unit_statuses=(), **fields):
+    job = insert_scoped(
+        fake_client,
+        "execution_jobs",
+        org_id,
+        {"project_id": "project-1", "plan_id": "plan-1", "source_job_id": "job-1", "status": status, "params": {}, **fields},
+    ).data[0]
+    for n, (unit_status, flags) in enumerate(unit_statuses):
+        insert_scoped(
+            fake_client,
+            "unit_executions",
+            org_id,
+            {"execution_job_id": job["id"], "cluster_id": f"unit-{n}", "status": unit_status, "flags": list(flags)},
+        )
+    return job
+
+
+def test_get_execution_missing_auth_returns_401():
+    assert TestClient(create_app()).get("/api/agent3/executions/any").status_code == 401
+
+
+def test_get_execution_queued(client, fake_client):
+    job = _seed_execution(fake_client, unit_statuses=[("pending", ()), ("pending", ())])
+
+    response = client.get(f"/api/agent3/executions/{job['id']}")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "execution_job_id": job["id"],
+        "plan_id": "plan-1",
+        "project_id": "project-1",
+        "status": "queued",
+        "progress_stage": None,
+        "error": None,
+        "counts": {"total": 2, "done": 0, "passed": 0, "failed_verification": 0, "error": 0, "built_on_failed_dependency": 0},
+        "final_test_summary": None,
+        "has_output": False,
+    }
+
+
+def test_get_execution_running_counts_units_live(client, fake_client):
+    job = _seed_execution(
+        fake_client,
+        status="running",
+        progress_stage="units",
+        unit_statuses=[
+            ("passed", ()),
+            ("failed_verification", ()),
+            ("error", ("stubbed",)),
+            ("running", ("built_on_failed_dependency",)),
+            ("pending", ()),
+        ],
+    )
+
+    body = client.get(f"/api/agent3/executions/{job['id']}").json()
+
+    assert body["status"] == "running" and body["progress_stage"] == "units"
+    assert body["counts"] == {
+        "total": 5, "done": 3, "passed": 1, "failed_verification": 1, "error": 1, "built_on_failed_dependency": 1,
+    }
+
+
+def test_get_execution_failed_reports_error(client, fake_client):
+    job = _seed_execution(fake_client, status="failed", progress_stage="prepare", error="docker daemon is not reachable")
+
+    body = client.get(f"/api/agent3/executions/{job['id']}").json()
+
+    assert (body["status"], body["progress_stage"], body["error"]) == ("failed", "prepare", "docker daemon is not reachable")
+
+
+def test_get_execution_done_reports_output_and_final_summary(client, fake_client):
+    summary = {"passed": 10, "failed": 1, "errors": 0, "duration_s": 12.5}
+    job = _seed_execution(
+        fake_client, status="done", output_zip_path="org-123/x/project.zip", final_test_summary=summary,
+        unit_statuses=[("passed", ()), ("passed", ())],
+    )
+
+    body = client.get(f"/api/agent3/executions/{job['id']}").json()
+
+    assert body["status"] == "done" and body["has_output"] is True
+    assert body["final_test_summary"] == summary
+    assert "output_zip_path" not in body
+    assert body["counts"]["done"] == 2 and body["counts"]["passed"] == 2
+
+
+def test_get_execution_never_passes_row_through(client, fake_client):
+    job = _seed_execution(fake_client, status="running", params={"runner_image": "img"})
+
+    body = client.get(f"/api/agent3/executions/{job['id']}").json()
+
+    assert "params" not in body and "org_id" not in body and "source_job_id" not in body
+
+
+def test_get_execution_404_for_missing(client):
+    assert client.get("/api/agent3/executions/nope").status_code == 404
+
+
+def test_get_execution_404_for_other_org(client, fake_client):
+    job = _seed_execution(fake_client, org_id="org-other")
+
+    assert client.get(f"/api/agent3/executions/{job['id']}").status_code == 404
+
+
+def test_get_execution_counts_ignore_other_jobs_and_orgs(client, fake_client):
+    job = _seed_execution(fake_client, unit_statuses=[("passed", ())])
+    _seed_execution(fake_client, unit_statuses=[("passed", ()), ("error", ())])
+    insert_scoped(fake_client, "unit_executions", "org-other", {"execution_job_id": job["id"], "status": "passed", "flags": []})
+
+    body = client.get(f"/api/agent3/executions/{job['id']}").json()
+
+    assert body["counts"]["total"] == 1 and body["counts"]["passed"] == 1
+
+
+# --- GET /api/agent3/plans/{plan_id}/executions ------------------------------
+
+
+def test_list_executions_missing_auth_returns_401():
+    assert TestClient(create_app()).get("/api/agent3/plans/any/executions").status_code == 401
+
+
+def test_list_executions_newest_first_with_counts(client, fake_client):
+    plan = _seed_plan(fake_client)
+    older = _seed_execution(fake_client, plan_id=plan["id"], status="done", unit_statuses=[("passed", ()), ("error", ())])
+    newer = _seed_execution(fake_client, plan_id=plan["id"], status="running", progress_stage="units",
+                            unit_statuses=[("passed", ()), ("pending", ()), ("pending", ())])
+
+    response = client.get(f"/api/agent3/plans/{plan['id']}/executions")
+
+    assert response.status_code == 200
+    runs = response.json()["executions"]
+    assert [r["id"] for r in runs] == [newer["id"], older["id"]]
+    assert runs[0] == {
+        "id": newer["id"],
+        "status": "running",
+        "progress_stage": "units",
+        "counts": {"total": 3, "done": 1, "passed": 1, "failed_verification": 0, "error": 0, "built_on_failed_dependency": 0},
+        "created_at": newer["created_at"],
+    }
+    assert runs[1]["counts"]["done"] == 2 and runs[1]["counts"]["error"] == 1
+
+
+def test_list_executions_empty(client, fake_client):
+    plan = _seed_plan(fake_client)
+
+    assert client.get(f"/api/agent3/plans/{plan['id']}/executions").json() == {"executions": []}
+
+
+def test_list_executions_only_this_plans_runs(client, fake_client):
+    plan = _seed_plan(fake_client)
+    other_plan = _seed_plan(fake_client)
+    mine = _seed_execution(fake_client, plan_id=plan["id"])
+    _seed_execution(fake_client, plan_id=other_plan["id"])
+
+    runs = client.get(f"/api/agent3/plans/{plan['id']}/executions").json()["executions"]
+
+    assert [r["id"] for r in runs] == [mine["id"]]
+
+
+def test_list_executions_404_for_missing_plan(client):
+    assert client.get("/api/agent3/plans/nope/executions").status_code == 404
+
+
+def test_list_executions_404_for_other_org_plan(client, fake_client):
+    plan = _seed_plan(fake_client, org_id="org-other")
+    _seed_execution(fake_client, org_id="org-other", plan_id=plan["id"])
+
+    assert client.get(f"/api/agent3/plans/{plan['id']}/executions").status_code == 404
+
+
+def test_list_executions_hides_other_orgs_runs_on_the_same_plan_id(client, fake_client):
+    plan = _seed_plan(fake_client)
+    _seed_execution(fake_client, org_id="org-other", plan_id=plan["id"])
+
+    assert client.get(f"/api/agent3/plans/{plan['id']}/executions").json() == {"executions": []}

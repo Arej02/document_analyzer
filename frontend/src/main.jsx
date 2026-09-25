@@ -141,6 +141,16 @@ const JOB_STAGES = [
   { key: 'done', label: 'Done' },
 ]
 
+// Agent 3's execution stages (design_agent3.md §2 execution_stage enum), with the same
+// synthetic final 'done' step as JOB_STAGES above.
+const EXECUTION_STAGES = [
+  { key: 'prepare', label: 'Prepare' },
+  { key: 'units', label: 'Units' },
+  { key: 'assemble', label: 'Assemble' },
+  { key: 'final_test', label: 'Final test' },
+  { key: 'done', label: 'Done' },
+]
+
 // Agent 2's planning stages (design_agent2.md §2 planning_stage enum), with the same
 // synthetic final 'done' step as JOB_STAGES above.
 const PLANNING_STAGES = [
@@ -1672,6 +1682,62 @@ function GenerateCodeAction({ plan, onExecutionCreated }) {
   )
 }
 
+// tasks_agent3.md Phase 1 "Execution list" — GET /api/agent3/plans/{plan_id}/executions
+// (design_agent3.md §9): every code generation run of this plan, newest first, each
+// linking to its status page. `counts` is live, so a running job shows its progress.
+function ExecutionRunsList({ planId, onOpenExecution }) {
+  const [runs, setRuns] = useState(null)
+  const [error, setError] = useState(null)
+  const apiFetch = useApiFetch()
+
+  useEffect(() => {
+    let cancelled = false
+    setRuns(null)
+    setError(null)
+    apiFetch(`/api/agent3/plans/${planId}/executions`)
+      .then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(formatJobErrorMessage(response.status, body))
+        }
+        return response.json()
+      })
+      .then((data) => { if (!cancelled) setRuns(data.executions) })
+      .catch((err) => { if (!cancelled) setError(err.message) })
+    return () => { cancelled = true }
+  }, [planId])
+
+  return (
+    <section className="job-history" aria-label="Code generation runs">
+      <h2>Code generation runs</h2>
+      {error && <p className="error">{error}</p>}
+      {!error && !runs && <p className="summary-loading">Loading code generation runs…</p>}
+      {runs && runs.length === 0 && <p className="summary-loading">No code generation runs yet.</p>}
+      {runs && runs.length > 0 && (
+        <ul className="projects-list">
+          {runs.map((run) => (
+            <li key={run.id}>
+              <button type="button" className="project-link" onClick={() => onOpenExecution(run.id)}>
+                {new Date(run.created_at).toLocaleString()}
+                <span className="run-diff-hint">
+                  {' · '}{run.counts.done} of {run.counts.total} {run.counts.total === 1 ? 'unit' : 'units'} done
+                  {run.counts.done > 0 && ` (${run.counts.passed} passed)`}
+                </span>
+              </button>
+              <span className="plan-row-badges">
+                {run.status === 'running' && run.progress_stage && (
+                  <span className="run-diff-hint">{run.progress_stage.replace('_', ' ')}</span>
+                )}
+                <span className="project-status">{run.status}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 // tasks_agent2.md Phase 5 "Approval" — POST /api/agent2/plans/{plan_id}/phases/
 // {phase_cluster_id}/approval (design_agent2.md §11). PlanPage only renders this while the
 // plan is `in_review`. A repeat decision replaces the earlier one, so the controls stay up
@@ -1874,7 +1940,7 @@ function useCreateOverride(planId, onCreated) {
 // so an `approved` plan shows only its "Approved by … at …" state.
 function PlanPage({
   planId, selectedUnitId, phaseId, onSelectUnit, onCloseUnit, onSelectPhase, onBackToProject, onBackToForm, onOpenPlan,
-  onExecutionCreated,
+  onExecutionCreated, onOpenExecution,
 }) {
   const [plan, setPlan] = useState(null)
   const [error, setError] = useState(null)
@@ -2040,6 +2106,10 @@ function PlanPage({
           </>
         )}
       </section>
+      {plan && (plan.status === 'approved' || plan.is_stale) && (
+        // An approved plan that later went stale keeps its earlier runs (design_agent3.md §13).
+        <ExecutionRunsList planId={planId} onOpenExecution={onOpenExecution} />
+      )}
       {plan && (
         <div className={selectedUnitId ? 'plan-layout plan-layout-with-detail' : 'plan-layout'}>
           <section className="job-history" aria-label="Phases">
@@ -2154,20 +2224,109 @@ function PlanPage({
   )
 }
 
-// tasks_agent3.md Phase 1: where "Generate code" lands (`?execution=`). A placeholder until
-// the "Execution status" task adds GET /api/agent3/executions/{id} and polls it.
-function ExecutionStatusPage({ executionJobId, onBackToForm }) {
+// tasks_agent3.md Phase 1 "Execution status" — GET /api/agent3/executions/{id}
+// (design_agent3.md §9), polled until the job is done or failed. `counts` is computed
+// live from the job's unit rows, so "units done" moves while stage `units` runs.
+// `done` means every unit reached a verdict, not that every unit passed (specs FR1).
+function ExecutionStatusPage({ executionJobId, onBackToPlan, onBackToForm }) {
+  const [job, setJob] = useState(null)
+  const [error, setError] = useState(null)
+  const apiFetch = useApiFetch()
+
+  useEffect(() => {
+    let cancelled = false
+    let timeoutId
+
+    const poll = async () => {
+      try {
+        const response = await apiFetch(`/api/agent3/executions/${executionJobId}`)
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(formatJobErrorMessage(response.status, body))
+        }
+        const data = await response.json()
+        if (cancelled) return
+        setJob(data)
+        if (data.status === 'queued' || data.status === 'running') {
+          timeoutId = setTimeout(poll, JOB_POLL_INTERVAL_MS)
+        }
+      } catch (err) {
+        if (!cancelled) setError(err.message)
+      }
+    }
+
+    setJob(null)
+    setError(null)
+    poll()
+    return () => { cancelled = true; clearTimeout(timeoutId) }
+  }, [executionJobId])
+
+  const counts = job?.counts
+  const failed = job?.status === 'failed'
+  const done = job?.status === 'done'
+
   return (
     <main className="page-shell">
-      <section className="hero project-detail" aria-label="Code generation">
-        <button type="button" className="token-toggle back-link" onClick={onBackToForm}>
-          <span>‹</span> Back to repositories
+      <section className="hero job-status" aria-label="Code generation status">
+        <button
+          type="button"
+          className="token-toggle back-link"
+          onClick={() => (job ? onBackToPlan(job.plan_id) : onBackToForm())}
+        >
+          <span>‹</span> {job ? 'Back to plan' : 'Back to repositories'}
         </button>
-        <p className="eyebrow">CODE GENERATION</p>
-        <h1 className="project-detail-title">Queued</h1>
-        <p className="reingest-hint">
-          Execution <code>{executionJobId}</code> is queued. Live progress for this page is coming next.
-        </p>
+        <p className="eyebrow">{job ? `CODE GENERATION · ${job.status.toUpperCase()}` : (error ? 'ERROR' : 'LOADING')}</p>
+        <h1>Execution <code>{executionJobId}</code></h1>
+        {error && <p className="error">{error}</p>}
+        {!error && !job && <p className="summary-loading">Loading code generation…</p>}
+        {job && (
+          <>
+            <ProgressStages
+              stages={EXECUTION_STAGES}
+              status={job.status}
+              progressStage={job.progress_stage}
+              label="Code generation progress"
+            />
+            {counts && counts.total > 0 && (
+              <>
+                <p className="execution-progress" role="status" aria-live="polite">
+                  <strong>{counts.done}</strong> of <strong>{counts.total}</strong>{' '}
+                  {counts.total === 1 ? 'unit' : 'units'} done
+                </p>
+                <div className="summary-badges" aria-label="Unit verdicts so far">
+                  <span className="plan-flag">{counts.passed} passed</span>
+                  <span className={`plan-flag${counts.failed_verification > 0 ? ' plan-flag-warn' : ''}`}>
+                    {counts.failed_verification} failed verification
+                  </span>
+                  <span className={`plan-flag${counts.error > 0 ? ' plan-flag-warn' : ''}`}>{counts.error} error</span>
+                  {counts.built_on_failed_dependency > 0 && (
+                    <span className="plan-flag plan-flag-warn">
+                      {counts.built_on_failed_dependency} built on a failed dependency
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+            {counts && counts.total === 0 && <p className="summary-loading">This execution has no units.</p>}
+          </>
+        )}
+        {failed && (
+          <p className="error job-failed-message">
+            Code generation failed: {job.error || 'an unknown error occurred.'}
+          </p>
+        )}
+        {done && (
+          <p className="reingest-hint">
+            Every unit has a verdict.{' '}
+            {job.final_test_summary
+              ? `Final test run: ${job.final_test_summary.passed} passed, ${job.final_test_summary.failed} failed.`
+              : 'No final test run was recorded.'}
+          </p>
+        )}
+        {(failed || done) && (
+          <PrimaryButton label="Back to plan" type="button" onClick={() => onBackToPlan(job.plan_id)} style={{ marginTop: 8 }} />
+        )}
+        {error && <PrimaryButton label="Back" type="button" onClick={onBackToForm} style={{ marginTop: 8 }} />}
       </section>
     </main>
   )
@@ -2297,12 +2456,13 @@ function App() {
         onBackToForm={backToForm}
         onOpenPlan={navigateToPlan}
         onExecutionCreated={navigateToExecution}
+        onOpenExecution={navigateToExecution}
       />
     )
   }
 
   if (page?.param === 'execution') {
-    return <ExecutionStatusPage executionJobId={page.id} onBackToForm={backToForm} />
+    return <ExecutionStatusPage executionJobId={page.id} onBackToPlan={navigateToPlan} onBackToForm={backToForm} />
   }
 
   if (page?.param === 'project') {

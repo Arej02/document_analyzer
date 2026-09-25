@@ -99,15 +99,41 @@ The same as `tasks_agent2.md`:
       - approved with no snapshot, and approved with a job already running, each show the backend's `409` verbatim;
       - approved lands on `?execution=<id>` with the job, 3 unit rows and one enqueue recorded.
 
-- [ ] `GET /api/agent3/executions/{execution_job_id}` (§9). Tests: each status, `404`, `401`.
+- [x] `GET /api/agent3/executions/{execution_job_id}` (§9). Tests: each status, `404`, `401`.
+  - *Done 2026-09-25:*
+    - `agent3/router.py::get_execution_status`, with the response rebuilt field by field.
+    - `counts` = `{total, done, passed, failed_verification, error, built_on_failed_dependency}`, computed live from the job's `unit_executions` on every poll (design §9 updated). `execution_jobs.counts` is only written at the end, so it can't drive the progress count.
+    - `has_output` instead of exposing `output_zip_path`.
+    - 9 tests: queued, running with a mixed unit breakdown, failed, done, no pass-through, `404` missing and other-org, counts scoped to this job and org, `401`.
 
 ### Frontend sync — Execution status
-- [ ] `ExecutionStatusPage` (`?execution=`): polls until terminal. `ProgressStages` with `prepare → units → assemble → final_test → done`, a count of units done out of the total from `counts`, `error` on failure, and a "View results" button on `done`.
+- [x] `ExecutionStatusPage` (`?execution=`): polls until terminal. `ProgressStages` with `prepare → units → assemble → final_test → done`, a count of units done out of the total from `counts`, `error` on failure, and a "View results" button on `done`.
+  - *Done 2026-09-25:*
+    - Replaces the placeholder. It polls every 3 s until `done`/`failed` (`EXECUTION_STAGES` in the `ProgressStages` stepper) and shows "N of M units done" with passed / failed verification / error / built-on-failed-dependency badges.
+    - On failure it shows the error. On `done` it shows the final test line. "Back to plan" appears in the header and on terminal states.
+    - Checked in a browser against the real router over a seeded `FakeClient`:
+      - queued;
+      - failed (with the Prepare step marked failed, and polling stopped);
+      - done;
+      - running, stepped forward live with a dev endpoint from 2 of 5 units through Assemble to Done without a reload;
+      - "Back to plan" navigation.
+    - **Deferred:** the "View results" button on `done` goes in with `ExecutionResultsPage` (Phase 5 "Results" task), because the page it opens doesn't exist yet.
 
-- [ ] `GET /api/agent3/plans/{plan_id}/executions` (§9). Tests: ordering, other-org `404`.
+- [x] `GET /api/agent3/plans/{plan_id}/executions` (§9). Tests: ordering, other-org `404`.
+  - *Done 2026-09-25:*
+    - `agent3/router.py::list_executions`, newest first. `404` for a missing or other-org plan.
+    - `counts` has the same live shape as the status endpoint. It's read for all the plan's jobs in one batched `in_` query (`_counts_by_job`, now shared with `GET /executions/{id}`). Design §9 updated.
+    - 7 tests: ordering with counts, empty, only this plan's runs, `404` missing and other-org, another org's runs on the same plan id hidden, `401`.
 
 ### Frontend sync — Execution list
-- [ ] A "Code generation runs" list on the approved `PlanPage` (status, counts, date), linking to each execution. Include an empty state.
+- [x] A "Code generation runs" list on the approved `PlanPage` (status, counts, date), linking to each execution. Include an empty state.
+  - *Done 2026-09-25:*
+    - `ExecutionRunsList` below the plan header. Each run shows its date, "N of M units done (K passed)", the current stage while running, and its status. Each row opens that run's status page.
+    - Shown for approved plans, and for stale ones, because an approved plan that went stale keeps its earlier runs. There's an empty state.
+    - Checked in a browser over the seeded fake:
+      - an approved plan with no runs shows the empty state, and a draft plan shows no list;
+      - a stale plan lists its failed run, and a done run shows "3 of 3 units done (2 passed)" and opens its status page;
+      - the full loop: Generate code → status page (queued) → Back to plan → the new queued run is listed.
 
 ## Phase 2 — Unit context & generation (worker only)
 
@@ -132,7 +158,7 @@ The same as `tasks_agent2.md`:
 - [ ] `GET /api/agent3/executions/{id}/units` (§9): verdicts grouped by phase, with merged-item labels following Agent 2's stand-in rules. Tests.
 
 ### Frontend sync — Results
-- [ ] `ExecutionResultsPage`: phases, then units with verdict pills (`passed` / `failed_verification` / `error`), flag badges, attempts and contract vs behaviour counts. Include empty and error states.
+- [ ] `ExecutionResultsPage`: phases, then units with verdict pills (`passed` / `failed_verification` / `error`), flag badges, attempts and contract vs behaviour counts. Include empty and error states. Also add the "View results" button to `ExecutionStatusPage` on `done`, deferred from Phase 1.
 
 - [ ] `GET /api/agent3/executions/{id}/units/{cluster_id}` (§9): legacy slices from the snapshot, plus the last attempt's files, tests and log from storage. `404` for a unit not in this job. Tests.
 

@@ -4,6 +4,8 @@ POST /api/agent3/plans/{plan_id}/executions creates an execution_jobs row
 (status=queued) plus one pending unit_executions row per plan item, and
 enqueues it on agent3_execution_jobs. Nothing here runs the pipeline inline —
 see CLAUDE.md "Async by default".
+GET /api/agent3/executions/{execution_job_id} is the matching status poll, and
+GET /api/agent3/plans/{plan_id}/executions lists a plan's runs, newest first.
 
 Plan, project and source-job lookups go through the caller's RLS-scoped client,
 same as Agents 1 and 2. The execution_jobs / unit_executions inserts go through
@@ -37,8 +39,13 @@ _UNIQUE_VIOLATION = "23505"
 
 # PostgREST caps a response at 1000 rows; plan item reads page past it.
 _PAGE_SIZE = 1000
+# Ids per `in_` filter, so the request URL stays well under common limits.
+_IN_CHUNK = 200
 
 _ACTIVE_JOB_DETAIL = "code generation is already queued or running for this plan"
+
+# Unit statuses that are a final verdict (specs FR7).
+_TERMINAL_UNIT_STATUSES = ("passed", "failed_verification", "error")
 
 
 def execution_params_from_env() -> dict:
@@ -207,3 +214,104 @@ def _has_active_execution(client, org_id: str, plan_id: str) -> bool:
         .execute()
     ).data
     return bool(rows)
+
+
+@router.get("/executions/{execution_job_id}")
+async def get_execution(execution_job_id: str, auth: Annotated[AuthContext, Depends(get_auth_context)]):
+    job = get_execution_status(auth.client, auth.org_id, execution_job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="execution not found")
+    return job
+
+
+def get_execution_status(client, org_id: str, execution_job_id: str) -> dict | None:
+    """One execution job's poll-able status, or None if missing / not this org's.
+    `counts` is computed from the job's unit rows on every call (design_agent3.md §9),
+    so it moves while stage `units` runs."""
+    result = (
+        client.table("execution_jobs")
+        .select("id, plan_id, project_id, status, progress_stage, error, final_test_summary, output_zip_path")
+        .eq("org_id", org_id)
+        .eq("id", execution_job_id)
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        return None
+    row = result.data[0]
+
+    # Rebuilt field by field, never passed through (same rule as Agents 1 and 2).
+    return {
+        "execution_job_id": row["id"],
+        "plan_id": row["plan_id"],
+        "project_id": row["project_id"],
+        "status": row["status"],
+        "progress_stage": row.get("progress_stage"),
+        "error": row.get("error"),
+        "counts": _counts_by_job(client, org_id, [execution_job_id])[execution_job_id],
+        "final_test_summary": row.get("final_test_summary"),
+        "has_output": bool(row.get("output_zip_path")),
+    }
+
+
+def _empty_counts() -> dict:
+    return {"total": 0, "done": 0, "passed": 0, "failed_verification": 0, "error": 0, "built_on_failed_dependency": 0}
+
+
+def _counts_by_job(client, org_id: str, execution_job_ids: list[str]) -> dict[str, dict]:
+    """Live unit counts per execution job (design_agent3.md §9), read in batches rather
+    than one query per job."""
+    counts = {job_id: _empty_counts() for job_id in execution_job_ids}
+    for i in range(0, len(execution_job_ids), _IN_CHUNK):
+        chunk = execution_job_ids[i : i + _IN_CHUNK]
+        start = 0
+        while True:
+            page = (
+                client.table("unit_executions")
+                .select("id, execution_job_id, status, flags")
+                .eq("org_id", org_id)
+                .in_("execution_job_id", chunk)
+                .order("id")
+                .range(start, start + _PAGE_SIZE - 1)
+                .execute()
+            ).data
+            for unit in page:
+                job_counts = counts[unit["execution_job_id"]]
+                job_counts["total"] += 1
+                if unit["status"] in _TERMINAL_UNIT_STATUSES:
+                    job_counts["done"] += 1
+                    job_counts[unit["status"]] += 1
+                if "built_on_failed_dependency" in (unit.get("flags") or []):
+                    job_counts["built_on_failed_dependency"] += 1
+            if len(page) < _PAGE_SIZE:
+                break
+            start += _PAGE_SIZE
+    return counts
+
+
+@router.get("/plans/{plan_id}/executions")
+async def list_executions(plan_id: str, auth: Annotated[AuthContext, Depends(get_auth_context)]):
+    if _get_plan(auth.client, auth.org_id, plan_id) is None:
+        raise HTTPException(status_code=404, detail="plan not found")
+
+    rows = (
+        auth.client.table("execution_jobs")
+        .select("id, status, progress_stage, created_at")
+        .eq("org_id", auth.org_id)
+        .eq("plan_id", plan_id)
+        .order("created_at", desc=True)
+        .execute()
+    ).data
+    counts = _counts_by_job(auth.client, auth.org_id, [row["id"] for row in rows])
+    return {
+        "executions": [
+            {
+                "id": row["id"],
+                "status": row["status"],
+                "progress_stage": row.get("progress_stage"),
+                "counts": counts[row["id"]],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+    }
