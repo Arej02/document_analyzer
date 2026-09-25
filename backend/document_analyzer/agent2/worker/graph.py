@@ -23,7 +23,11 @@ from supabase import Client
 
 # Edge types that become graph edges (§3.1). `include` (always a null
 # target) and `global` are ignored here; their facts stay in `raw_facts`.
-GRAPH_EDGE_TYPES = ("calls", "hook_binding")
+# `route_binding` (LaravelExtractor) is a route -> controller-method binding —
+# structurally identical to `hook_binding` (framework invokes this by
+# convention, not by a call in source text), so it's counted into the same
+# `EdgeCounts.hook_bindings` bucket below rather than getting a third counter.
+GRAPH_EDGE_TYPES = ("calls", "hook_binding", "route_binding")
 
 # §3.4: a hub must also have at least this many distinct neighbours, so the
 # top percentile of a small or sparse repo isn't pulled into the foundation.
@@ -263,7 +267,7 @@ def build_graph(
         "nodes": len(nodes),
         "canonicalized": len(entities) - len(nodes),
         "call_rows": sum(c.calls for c in directed.values()),
-        "hook_binding_rows": sum(c.hook_bindings for c in directed.values()),
+        "hook_binding_rows": sum(c.hook_bindings for c in directed.values()),  # includes route_binding rows too
         "directed_edges": len(directed),
         "weighted_edges": len(weights),
         "containment_edges": len(kept_containment),

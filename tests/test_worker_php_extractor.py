@@ -89,6 +89,79 @@ function helper($x) {
     ]
 
 
+def test_extract_falls_back_to_class_level_edge_for_inherited_static_call(tmp_path):
+    (tmp_path / "controller.php").write_text(
+        """<?php
+class AppointmentController {
+    public function store() {
+        return Appointment::create([]);
+    }
+}
+"""
+    )
+    (tmp_path / "model.php").write_text(
+        """<?php
+class Appointment extends Model {
+}
+"""
+    )
+
+    result = PhpExtractor().extract(tmp_path)
+
+    store = next(e for e in result.entities if e.name == "store")
+    appointment_class = next(e for e in result.entities if e.entity_type == "class" and e.name == "Appointment")
+
+    assert result.edges == [
+        ExtractedEdge(from_local_id=store.local_id, edge_type="calls", to_local_id=appointment_class.local_id)
+    ]
+
+
+def test_extract_class_level_fallback_skipped_when_class_name_is_ambiguous(tmp_path):
+    (tmp_path / "controller.php").write_text(
+        """<?php
+class Controller1 {
+    public function store() {
+        return Appointment::create([]);
+    }
+}
+"""
+    )
+    (tmp_path / "model_a.php").write_text("<?php\nclass Appointment extends Model {}\n")
+    (tmp_path / "model_b.php").write_text("<?php\nclass Appointment extends OtherModel {}\n")
+
+    result = PhpExtractor().extract(tmp_path)
+
+    assert result.edges == []
+
+
+def test_extract_class_level_fallback_does_not_shadow_exact_method_match(tmp_path):
+    (tmp_path / "controller.php").write_text(
+        """<?php
+class AppointmentController {
+    public function store() {
+        return Appointment::customMethod();
+    }
+}
+"""
+    )
+    (tmp_path / "model.php").write_text(
+        """<?php
+class Appointment {
+    public function customMethod() {}
+}
+"""
+    )
+
+    result = PhpExtractor().extract(tmp_path)
+
+    store = next(e for e in result.entities if e.name == "store")
+    custom_method = next(e for e in result.entities if e.name == "customMethod")
+
+    assert result.edges == [
+        ExtractedEdge(from_local_id=store.local_id, edge_type="calls", to_local_id=custom_method.local_id)
+    ]
+
+
 def test_extract_skips_unresolved_call_but_keeps_it_in_raw_facts(tmp_path):
     (tmp_path / "app.php").write_text(
         """<?php
