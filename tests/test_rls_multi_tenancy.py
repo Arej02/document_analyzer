@@ -20,6 +20,7 @@ itself otherwise, same as this repo has no local Supabase stack to run against.
 
 import os
 import uuid
+import warnings
 
 import pytest
 from dotenv import load_dotenv
@@ -70,14 +71,17 @@ _ORG_SCOPED_TABLES = [
 ]
 
 
-def _create_org_user(service_client, org_id: str) -> tuple[str, str, str]:
-    """Creates a disposable auth user + org_members row, returns (user_id, email, password)."""
+def _create_org_user(service_client, org_id: str, created_user_ids: list[str]) -> tuple[str, str, str]:
+    """Creates a disposable auth user + org_members row, returns (user_id, email, password).
+    The user id goes into `created_user_ids` as soon as the user exists, so the
+    fixture's cleanup removes it even if the org_members insert (or anything later) fails."""
     email = f"rls-smoke-{uuid.uuid4().hex}@example.com"
     password = f"Sm0ke-{uuid.uuid4().hex}"
     created = service_client.auth.admin.create_user(
         {"email": email, "password": password, "email_confirm": True}
     )
     user_id = created.user.id
+    created_user_ids.append(user_id)
     service_client.table("org_members").insert({"user_id": user_id, "org_id": org_id}).execute()
     return user_id, email, password
 
@@ -304,12 +308,16 @@ def _seed_agent3_chain(
     return {"execution_jobs": execution_job["id"], "unit_executions": unit_execution["id"]}
 
 
-def _delete_org(service_client, org_id: str) -> None:
+def _delete_org(service_client, org_id: str) -> list[str]:
+    """Deletes every row seeded under `org_id`. Best-effort: each table is tried even if
+    an earlier delete failed (a half-seeded org must still be cleaned up), and the
+    failures are returned rather than raised."""
     # Children before parents, respecting the FKs in the create-tables migrations.
     # Agent 3's rows reference the plan and clusters, so they go first.
     # The Agent 2 plan tables don't cascade (plans are immutable snapshots), so
     # they go before clusters/planning_jobs; the cluster tables would cascade from
     # planning_jobs but are listed explicitly anyway.
+    failures: list[str] = []
     for table in [
         "unit_executions",
         "execution_jobs",
@@ -332,53 +340,73 @@ def _delete_org(service_client, org_id: str) -> None:
         "projects",
         "org_members",
     ]:
-        service_client.table(table).delete().eq("org_id", org_id).execute()
+        try:
+            service_client.table(table).delete().eq("org_id", org_id).execute()
+        except Exception as exc:  # noqa: BLE001 — keep cleaning the remaining tables
+            failures.append(f"{table}: {exc}")
+    return failures
 
 
 @pytest.fixture(scope="module")
 def two_orgs():
+    """Two throwaway orgs with one user each, org A's rows seeded. Everything is created
+    inside the `try`, and each thing is recorded as soon as it exists, so a failure at
+    any point of the setup still cleans up what was made. It runs against a live,
+    shared project, so leftovers would pile up there otherwise."""
     service_client = get_service_role_client()
     url = os.environ["SUPABASE_URL"]
     anon_key = os.environ["SUPABASE_ANON_KEY"]
 
     org_a_id = str(uuid.uuid4())
     org_b_id = str(uuid.uuid4())
-    user_a_id, email_a, password_a = _create_org_user(service_client, org_a_id)
-    user_b_id, email_b, password_b = _create_org_user(service_client, org_b_id)
-
-    seeded_ids = _seed_org_a_chain(service_client, org_a_id, user_a_id)
-    org_b_project_id = insert_scoped(
-        service_client, "projects", org_b_id, {"source_type": "upload", "source_ref": "rls-smoke-test-org-b"}
-    ).data[0]["id"]
-    # One agent3-output object under org A's folder, written the way the executor writes (service role).
-    agent3_object_path = f"{org_a_id}/{seeded_ids['execution_jobs']}/units/smoke/attempt_1/log.txt"
-    service_client.storage.from_(AGENT3_BUCKET).upload(agent3_object_path, AGENT3_OBJECT_BODY, {"content-type": "text/plain"})
-
-    token_a = _sign_in(url, anon_key, email_a, password_a)
-    token_b = _sign_in(url, anon_key, email_b, password_b)
-    client_a = get_request_scoped_client(token_a)
-    client_b = get_request_scoped_client(token_b)
+    created_user_ids: list[str] = []
+    object_paths = [f"{org_a_id}/forged.txt", f"{org_b_id}/forged.txt"]
 
     try:
+        user_a_id, email_a, password_a = _create_org_user(service_client, org_a_id, created_user_ids)
+        user_b_id, email_b, password_b = _create_org_user(service_client, org_b_id, created_user_ids)
+
+        seeded_ids = _seed_org_a_chain(service_client, org_a_id, user_a_id)
+        org_b_project_id = insert_scoped(
+            service_client, "projects", org_b_id, {"source_type": "upload", "source_ref": "rls-smoke-test-org-b"}
+        ).data[0]["id"]
+        # One agent3-output object under org A's folder, written the way the executor writes (service role).
+        agent3_object_path = f"{org_a_id}/{seeded_ids['execution_jobs']}/units/smoke/attempt_1/log.txt"
+        object_paths.append(agent3_object_path)
+        service_client.storage.from_(AGENT3_BUCKET).upload(
+            agent3_object_path, AGENT3_OBJECT_BODY, {"content-type": "text/plain"}
+        )
+
+        token_a = _sign_in(url, anon_key, email_a, password_a)
+        token_b = _sign_in(url, anon_key, email_b, password_b)
+
         yield {
             "org_a_id": org_a_id,
             "org_b_id": org_b_id,
             "user_a_id": user_a_id,
             "user_b_id": user_b_id,
-            "client_a": client_a,
-            "client_b": client_b,
+            "client_a": get_request_scoped_client(token_a),
+            "client_b": get_request_scoped_client(token_b),
             "seeded_ids": seeded_ids,
             "org_b_project_id": org_b_project_id,
             "agent3_object_path": agent3_object_path,
         }
     finally:
-        service_client.storage.from_(AGENT3_BUCKET).remove(
-            [agent3_object_path, f"{org_a_id}/forged.txt", f"{org_b_id}/forged.txt"]
-        )
-        _delete_org(service_client, org_a_id)
-        _delete_org(service_client, org_b_id)
-        service_client.auth.admin.delete_user(user_a_id)
-        service_client.auth.admin.delete_user(user_b_id)
+        failures: list[str] = []
+        try:
+            service_client.storage.from_(AGENT3_BUCKET).remove(object_paths)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"storage: {exc}")
+        failures += _delete_org(service_client, org_a_id)
+        failures += _delete_org(service_client, org_b_id)
+        for user_id in created_user_ids:
+            try:
+                service_client.auth.admin.delete_user(user_id)
+            except Exception as exc:  # noqa: BLE001
+                failures.append(f"auth user {user_id}: {exc}")
+        if failures:
+            # A warning, not a raise: raising here would hide the setup error that got us here.
+            warnings.warn("RLS smoke cleanup left data behind: " + "; ".join(failures), stacklevel=1)
 
 
 _ROW_ID_COLUMN = {

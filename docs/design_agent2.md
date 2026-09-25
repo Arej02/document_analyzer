@@ -46,6 +46,7 @@ Rules shared by every table below:
 - RLS enabled, with a `select` policy `org_id = current_org_id()` (reusing Agent 1's `current_org_id()`, `design.md` §1a). Writes are service-role only, except the three review tables marked *user-writable*, which also get `insert` policies `org_id = current_org_id()`.
 - The worker writes on the service-role connection with `insert_scoped`/`insert_many_scoped` (`supabase_client.py`), stamping `org_id` from the **planning job row**. Every update filters on both `id` and `org_id`.
 - One migration file per table group, under `supabase/migrations/2026MMDD..._agent2_*.sql`.
+- User columns (`migration_plans.approved_by`, `phase_approvals.reviewer_id`, `plan_overrides.created_by`) reference `auth.users(id)`, because the API writes `auth.uid()` into them. On the shared project they had drifted to an out-of-band `app_private.accounts` table, which broke every approval, review and override (23503). `20260925140000_plan_user_fks_back_to_auth_users.sql` restores them, alongside the `org_members` fix in `20260925010000`.
 
 ### `planning_jobs`
 | column | type | notes |

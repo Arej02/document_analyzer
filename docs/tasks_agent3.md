@@ -21,6 +21,12 @@ The same as `tasks_agent2.md`:
 
 ## Phase 0 — Foundations
 
+> **Live project (2026-09-25).** The "applied live" notes below were first checked on a personal Supabase project. The team then moved to one shared project, and everything was re-applied and re-checked there:
+> - It had been missing `20260923030000` (Agent 2) plus the four Agent 3 / Agent 1 migrations below (renamed `20260925100000`–`130000` so they sort after `main`'s `20260925000000`–`020000`). All were applied in the SQL Editor.
+> - It also had three Agent 2 user FKs drifted to an out-of-band `app_private.accounts`, fixed by `20260925140000_plan_user_fks_back_to_auth_users.sql` (`design_agent2.md` §2).
+> - Re-checked there: every Agent 3 table/column, index, policy and queue; a queue round trip; the bucket check (9/9); and `tests/test_rls_multi_tenancy.py` 46/46.
+> - That test's fixture now cleans up after a failed setup too. Earlier failed runs had left throwaway `rls-smoke-*` users and rows, and the ones from this session were deleted.
+
 - [x] **Blocking:** runner image `backend/agent3_runner/Dockerfile` (`design_agent3.md` §7), plus `sandbox.py::run_pytest(workspace, params)` returning parsed JUnit results. Add `tests/test_agent3_sandbox.py` with the four §7 smoke tests: no network, killed on memory/pids, killed on timeout, read-only root. Also add a positive control (a passing test reports passed). Record the Docker Desktop vs gVisor findings in `design_agent3.md` §7. No endpoint, so no frontend pair.
   - *Done 2026-09-25:* image `galvanise-agent3-runner:0.1`. 21 unit tests plus 8 live smoke tests pass on Docker Desktop 29.6.1 (also checked: non-root uid, no host env, DNS blocked). The gVisor test is skipped because Docker Desktop has no `runsc`, so it still needs a run on the Linux production host. Output capping and untrusted-XML handling are in §7, along with the known limitation that verdicts are advisory.
 - [x] Migration `<ts>_agent3_execution_tables.sql`: `execution_jobs` (including the partial unique index `execution_jobs_one_active_per_plan`) and `unit_executions` (§2). RLS enabled with `select` policies on `org_id = current_org_id()`. No insert or update policies. Apply to the live project and verify. No endpoint, so no frontend pair.
