@@ -79,6 +79,7 @@ function describeFunction(Stmt\Function_ $fn): array
     return [
         'name' => $fn->name->toString(),
         'line' => $fn->getStartLine(),
+        'end_line' => $fn->getEndLine(),
         'params' => paramNames($fn->params),
         'calls' => $calls,
         'includes' => $includes,
@@ -91,6 +92,7 @@ function describeMethod(Stmt\ClassMethod $method): array
     return [
         'name' => $method->name->toString(),
         'line' => $method->getStartLine(),
+        'end_line' => $method->getEndLine(),
         'params' => paramNames($method->params),
         'visibility' => $method->isPublic() ? 'public' : ($method->isProtected() ? 'protected' : 'private'),
         'static' => $method->isStatic(),
@@ -118,6 +120,7 @@ function describeClassLike(Stmt\ClassLike $class): array
     return [
         'name' => $class->name?->toString() ?? '(anonymous)',
         'line' => $class->getStartLine(),
+        'end_line' => $class->getEndLine(),
         'extends' => $extends,
         'implements' => $implements,
         'methods' => $methods,

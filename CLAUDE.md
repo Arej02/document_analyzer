@@ -1,9 +1,10 @@
-# CLAUDE.md — Legacy Migration Agent (Agent 1: Understand, Agent 2: Plan)
+# CLAUDE.md — Legacy Migration Agent (Agent 1: Understand, Agent 2: Plan, Agent 3: Execute)
 
 This file orients Claude / Claude Code whenever it works in this repo. Read it first. Then, for the agent you're working on:
 
 - **Agent 1:** `docs/specs.md`, `docs/design.md`, `docs/tasks.md`
 - **Agent 2:** `docs/specs_agent2.md`, `docs/design_agent2.md`, `docs/tasks_agent2.md`
+- **Agent 3:** `docs/specs_agent3.md`, `docs/design_agent3.md`, `docs/tasks_agent3.md`
 
 `docs/skills.md` covers the tech stack for both.
 
@@ -13,7 +14,7 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 
 1. **Agent 1 (Understand)**: codebase → queryable knowledge base. *Built (v0); remaining work is in `docs/tasks.md`.*
 2. **Agent 2 (Plan)**: knowledge base → reviewable, ordered migration plan (Leiden-clustered migration units and phases, cycle handling, per-phase human approval, per-unit test contracts). *Current scope. Specified, not yet built.*
-3. **Agent 3 (Execute)**: approved plan → generated code + test verdicts. *Out of scope until Agent 2 is stable.*
+3. **Agent 3 (Execute)**: approved plan → generated code + test verdicts. *Specified (2026-09-25), not yet built. Blocked first on the Agent 1 source-snapshot tasks in `docs/tasks.md`.*
 
 ## Repo layout
 
@@ -27,10 +28,14 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 │   ├── tasks.md             # Agent 1 phased tasks (backend paired with frontend)
 │   ├── specs_agent2.md      # Agent 2 spec
 │   ├── design_agent2.md     # Agent 2 architecture, data model, algorithms, API
-│   └── tasks_agent2.md      # Agent 2 phased tasks (backend paired with frontend)
+│   ├── tasks_agent2.md      # Agent 2 phased tasks (backend paired with frontend)
+│   ├── specs_agent3.md      # Agent 3 spec
+│   ├── design_agent3.md     # Agent 3 architecture, data model, sandbox, target architecture, API
+│   └── tasks_agent3.md      # Agent 3 phased tasks (backend paired with frontend)
 ├── backend/document_analyzer/          # Python / FastAPI
 │   ├── (Agent 1 API modules), worker/  # Agent 1 worker: `uv run document-analyzer-worker`
-│   └── agent2/                         # Agent 2 API router + worker: `uv run document-analyzer-planner`
+│   ├── agent2/                         # Agent 2 API router + worker: `uv run document-analyzer-planner`
+│   └── agent3/                         # Agent 3 API router + worker: `uv run document-analyzer-executor` (planned)
 ├── supabase/migrations/     # every table/queue/RLS change goes here
 └── frontend/                # existing React app
 ```
@@ -40,11 +45,11 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 - **No direct agent-to-agent calls.** Agents communicate only through Supabase tables. Agent 1 never enqueues work for Agent 2, and Agent 2 is triggered by the user (`POST /api/agent2/projects/{id}/plans`). Importing a *pure* helper function (no DB access, no pipeline state, e.g. `risk_rollup`, `check_grounding_with_retry`, `embed_text`) is allowed and isn't an agent call. If a helper needs agent-specific changes, move it into `document_analyzer/shared/` rather than forking it.
 - **Each agent has its own queue and worker.** `agent1_ingestion_jobs` / `agent2_planning_jobs` are never shared.
 - **Agent 2 is read-only on Agent 1 tables.** Gaps in Agent 1 data are worked around in Agent 2 and fixed in Agent 1's own tasks (`design_agent2.md` §13).
-- **Only approved plans flow downstream.** Agent 3 (when built) reads only `migration_plans.status = approved`.
+- **Only approved plans flow downstream.** Agent 3 reads only `migration_plans.status = approved` (and not stale). Agent 3 is read-only on Agent 1 and Agent 2 tables (`design_agent3.md` §13).
 - **Plans are immutable snapshots.** A plan is pinned to one Agent 1 `job_id`. Reviewer edits create a new plan version, and re-ingestion marks older plans `stale`. Nothing is mutated in place.
 - **Clustering is deterministic.** Leiden is seeded, and the seed and all params are persisted on the planning job.
 - **Async by default.** Ingestion and planning run for minutes to hours. Nothing long-running is called synchronously from a FastAPI request. Everything goes through the job queues (`design.md` §3, `design_agent2.md` §1).
-- **Untrusted input, no code execution.** Ingested repos are arbitrary user-submitted code. Neither Agent 1 nor Agent 2 executes any of it (static parsing only; there's no sandbox in MVP scope). Agent 2's test contracts are derived from facts. Generating and running tests (and any sandbox that needs) is Agent 3's decision, and must be network-isolated and resource-limited if it ever exists.
+- **Untrusted input, no code execution.** Ingested repos are arbitrary user-submitted code. Neither Agent 1 nor Agent 2 executes any of it (static parsing only; there's no sandbox in MVP scope). Agent 2's test contracts are derived from facts. Agent 3 runs only the Python it generated, never the legacy code, and only inside its sandbox (`design_agent3.md` §7): no network, read-only root, no capabilities, resource limits, a timeout, and gVisor in production. The worker never imports generated code in-process.
 - **Multi-tenancy from day one.** Every Supabase table is scoped by `org_id` with RLS. Don't add a table without RLS policies. Worker writes use the service-role connection, stamp `org_id` from the job row (never from repo content), and filter updates by both `id` and `org_id`.
 - **Embedding model is pinned**, not hardcoded. See `design.md` §2 Embeddings. Agent 2's cluster report embeddings use the same pin. A change is an explicit migration, never a silent update.
 - **Grounding failures never block.** A bad summary or cluster report gets flagged `unverified`, and the rest of the job keeps processing.
@@ -60,6 +65,6 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 
 ## Working conventions
 
-- Every new backend endpoint must have a matching frontend task in that agent's tasks file (`docs/tasks.md` or `docs/tasks_agent2.md`). Check there before considering a backend feature "done."
+- Every new backend endpoint must have a matching frontend task in that agent's tasks file (`docs/tasks.md`, `docs/tasks_agent2.md` or `docs/tasks_agent3.md`). Check there before considering a backend feature "done."
 - Keep the tasks-file checkboxes up to date as you complete work. They're the single source of truth for what's left.
-- Don't invent new tables or endpoints without first updating the relevant design doc (`docs/design.md` or `docs/design_agent2.md`). Design changes should be visible in the docs, not just in code.
+- Don't invent new tables or endpoints without first updating the relevant design doc (`docs/design.md`, `docs/design_agent2.md` or `docs/design_agent3.md`). Design changes should be visible in the docs, not just in code.

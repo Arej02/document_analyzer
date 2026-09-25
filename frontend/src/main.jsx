@@ -5,14 +5,13 @@ import '@xyflow/react/dist/style.css'
 import './styles.css'
 import { AuthProvider, useAuth, useApiFetch } from './AuthProvider'
 import { SignIn } from './SignIn'
-import StarfieldButton from './StarfieldButton'
+import PrimaryButton from './PrimaryButton'
+import { ProductShell } from './showcase/ProductShell'
+import './showcase/utilities.css'
+import './showcase/product-shell.css'
+import { ThemeProvider, ThemeToggle } from './theme/ThemeProvider'
+import { createBrowserThemeAdapter, createThemeStore } from './theme/themeStore.js'
 
-const Mark = () => (
-  <svg className="brand-mark" viewBox="0 0 30 30" aria-hidden="true">
-    <path d="M15 2.5 27.5 15 15 27.5 2.5 15 15 2.5Z" />
-    <path d="m15 10 5 5-5 5-5-5 5-5Z" />
-  </svg>
-)
 
 const ARCHIVE_EXTENSIONS = ['.zip', '.tar', '.tar.gz', '.tgz']
 const isArchiveFilename = (name) => ARCHIVE_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext))
@@ -365,11 +364,11 @@ function EntityBrowser({ jobId }) {
 // EntityBrowser's job once the run finishes; this is a "something's happening"
 // visual, not a code structure dump.
 const RISK_NODE_STYLE = {
-  low: { border: '#63eeaf', background: 'rgba(99,238,175,.14)', color: '#7fe6ae' },
-  medium: { border: '#ffcf7a', background: 'rgba(255,207,122,.14)', color: '#ffcf7a' },
-  high: { border: '#ff5c4d', background: 'rgba(255,92,77,.16)', color: '#ff9c8a' },
+  low: { border: 'var(--ring)', background: 'rgba(160,161,207,.14)', color: 'var(--emphasis)' },
+  medium: { border: 'var(--warning)', background: 'rgba(255,207,122,.14)', color: 'var(--warning)' },
+  high: { border: '#ff5c4d', background: 'rgba(255,92,77,.16)', color: 'var(--danger)' },
 }
-const DEFAULT_RISK_NODE_STYLE = { border: 'rgba(255,255,255,.22)', background: 'rgba(255,255,255,.05)', color: '#cdd8f2' }
+const DEFAULT_RISK_NODE_STYLE = { border: 'rgba(var(--neutral-rgb),.22)', background: 'rgba(var(--neutral-rgb),.05)', color: 'var(--emphasis)' }
 
 const ENTITY_TYPE_TAG = {
   function: 'fn', class: 'cls', route: 'rt', schema: 'sch', hook: 'hook', dependency: 'dep',
@@ -468,7 +467,7 @@ function buildEntityTree(entities) {
         source: moduleId,
         target: entity.id,
         type: 'smoothstep',
-        style: { stroke: 'rgba(255,255,255,.18)' },
+        style: { stroke: 'rgba(var(--neutral-rgb),.18)' },
       })
     })
 
@@ -541,7 +540,7 @@ function LiveEntityTree({ jobId }) {
         elementsSelectable={false}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={16} color="rgba(255,255,255,.06)" />
+        <Background gap={16} color="rgba(var(--neutral-rgb),.06)" />
       </ReactFlow>
     </div>
   )
@@ -623,7 +622,7 @@ function ReingestAction({ project, onReingested }) {
           <ArchiveDropZone file={file} onFileSelected={setFile} onRejected={setError} />
         </>
       )}
-      <StarfieldButton
+      <PrimaryButton
         label="Re-ingest"
         type="submit"
         disabled={project.source_type === 'upload' && !file}
@@ -675,7 +674,7 @@ function GeneratePlanAction({ project, onPlanningJobCreated }) {
           ? 'Builds an ordered migration plan from the latest ingestion run.'
           : 'Finish an ingestion run first — a plan needs a completed run to build from.'}
       </p>
-      <StarfieldButton
+      <PrimaryButton
         label="Generate plan"
         type="submit"
         disabled={!ready}
@@ -779,7 +778,8 @@ function DeleteProjectAction({ project, onDeleted }) {
         <>
           <p className="reingest-hint">
             This permanently deletes all {project.jobs.length} run{project.jobs.length === 1 ? '' : 's'} of{' '}
-            <code>{project.source_ref}</code>, their summaries, and every migration plan built from them. It can't be undone.
+            <code>{project.source_ref}</code>, their summaries, source snapshots, and every migration plan built
+            from them. It can't be undone.
           </p>
           <div className="delete-confirm-row">
             <button type="button" className="danger-button" onClick={remove} disabled={deleting}>
@@ -825,6 +825,7 @@ function ProjectDetailPage({ projectId, onSelectJob, onSelectPlanningJob, onSele
 
   return (
     <main className="page-shell">
+
       <section className="hero project-detail" aria-label="Project detail">
         <button type="button" className="token-toggle back-link" onClick={onBackToList}>
           <span>‹</span> Back to repositories
@@ -959,6 +960,7 @@ function JobStatusPage({ jobId, onBackToForm }) {
 
   return (
     <main className="page-shell">
+
       <section className="hero job-status" aria-label="Job status">
         <p className="eyebrow">{job ? job.status.toUpperCase() : (error ? 'ERROR' : 'LOADING')}</p>
         <h1>Job <code>{jobId}</code></h1>
@@ -972,7 +974,7 @@ function JobStatusPage({ jobId, onBackToForm }) {
           </p>
         )}
         {done && <JobSummary jobId={jobId} />}
-        <StarfieldButton
+        <PrimaryButton
           label={failed ? 'Retry' : 'Analyze'}
           type="button"
           onClick={onBackToForm}
@@ -1025,6 +1027,7 @@ function PlanningJobStatusPage({ planningJobId, onBackToProject, onViewPlan, onB
 
   return (
     <main className="page-shell">
+
       <section className="hero job-status" aria-label="Planning job status">
         <p className="eyebrow">{job ? job.status.toUpperCase() : (error ? 'ERROR' : 'LOADING')}</p>
         <h1>Planning job <code>{planningJobId}</code></h1>
@@ -1041,7 +1044,7 @@ function PlanningJobStatusPage({ planningJobId, onBackToProject, onViewPlan, onB
         {failed && (
           <>
             <p className="error job-failed-message">Planning failed: {job.error || 'an unknown error occurred.'}</p>
-            <StarfieldButton
+            <PrimaryButton
               label="Try again"
               type="button"
               onClick={() => onBackToProject(job.project_id)}
@@ -1050,12 +1053,12 @@ function PlanningJobStatusPage({ planningJobId, onBackToProject, onViewPlan, onB
           </>
         )}
         {done && (job.plan_id ? (
-          <StarfieldButton label="View plan" type="button" onClick={() => onViewPlan(job.plan_id)} style={{ marginTop: 8 }} />
+          <PrimaryButton label="View plan" type="button" onClick={() => onViewPlan(job.plan_id)} style={{ marginTop: 8 }} />
         ) : (
           <p className="error">The planning job finished, but no plan was recorded for it.</p>
         ))}
         {error && (
-          <StarfieldButton label="Back" type="button" onClick={onBackToForm} style={{ marginTop: 8 }} />
+          <PrimaryButton label="Back" type="button" onClick={onBackToForm} style={{ marginTop: 8 }} />
         )}
       </section>
     </main>
@@ -1397,7 +1400,7 @@ const PLAN_GRAPH_NODE_CAP = LIVE_TREE_NODE_CAP
 const PLAN_GRAPH_COLUMN_WIDTH = 250
 const PLAN_GRAPH_ROW_HEIGHT = 64
 const PLAN_GRAPH_FACADE_COLOR = '#ff5c4d'
-const PLAN_GRAPH_EDGE_COLOR = 'rgba(205,216,242,.45)'
+const PLAN_GRAPH_EDGE_COLOR = 'var(--graph-edge)'
 
 function PlanGraphNode({ data }) {
   const style = RISK_NODE_STYLE[data.riskLevel] || DEFAULT_RISK_NODE_STYLE
@@ -1558,7 +1561,7 @@ function PlanGraph({ planId, phases, phaseId, selectedUnitId, onSelectPhase, onS
               elementsSelectable={false}
               proOptions={{ hideAttribution: true }}
             >
-              <Background gap={16} color="rgba(255,255,255,.06)" />
+              <Background gap={16} color="rgba(var(--neutral-rgb),.06)" />
             </ReactFlow>
           </div>
           <p className="plan-graph-legend">
@@ -1605,7 +1608,7 @@ function SubmitPlanAction({ planId, onSubmitted }) {
       <p className="reingest-hint">
         This plan is a draft. Submitting it opens each phase for approval; overrides still make a new version.
       </p>
-      <StarfieldButton label="Submit for review" type="submit" loading={submitting} style={{ marginTop: 14 }} />
+      <PrimaryButton label="Submit for review" type="submit" loading={submitting} style={{ marginTop: 14 }} />
       {error && <p className="error">{error}</p>}
     </form>
   )
@@ -1912,6 +1915,7 @@ function PlanPage({
 
   return (
     <main className="page-shell">
+
       <section className="hero project-detail" aria-label="Migration plan">
         <button
           type="button"
@@ -2113,7 +2117,6 @@ function App() {
       : { param, id: params.get(param) }
   })
   const apiFetch = useApiFetch()
-  const { signOut } = useAuth()
 
   const navigateToPage = (param, id) => {
     const url = new URL(window.location.href)
@@ -2231,11 +2234,7 @@ function App() {
 
   return (
     <main className="page-shell">
-      <header className="site-header">
-        <a className="brand" href="#top" aria-label="galvanise home"><Mark /><span>galvanise</span></a>
-        <p className="status"><i /> AI repository intelligence</p>
-        <button type="button" className="token-toggle" onClick={signOut}>Sign out</button>
-      </header>
+
 
       <section className="hero" id="top">
         <p className="eyebrow">CODEBASE UNDERSTANDING, ON DEMAND</p>
@@ -2251,13 +2250,13 @@ function App() {
             <label htmlFor="repo-url">GitHub repository URL</label>
             <div className="input-row">
               <div className="url-input"><GithubIcon /><input id="repo-url" value={url} onChange={(e) => { setUrl(e.target.value); setError(null) }} placeholder="https://github.com/owner/repository" /></div>
-              <StarfieldButton label="Analyze" type="submit" loading={submitting} className="analyze-button" style={{ minWidth: 150 }} />
+              <PrimaryButton label="Analyze" type="submit" loading={submitting} className="analyze-button" style={{ minWidth: 150 }} />
             </div>
             <button className="token-toggle" type="button" onClick={() => setShowToken(!showToken)}><span>{showToken ? '⌄' : '›'}</span> Private repository? Add a GitHub token</button>
             {showToken && <input className="token-input" aria-label="GitHub personal access token" placeholder="GitHub personal access token" type="password" value={token} onChange={(e) => setToken(e.target.value)} />}
           </> : <>
             <ArchiveDropZone file={archiveFile} onFileSelected={setArchiveFile} onRejected={setError} />
-            <StarfieldButton label="Analyze" type="submit" disabled={!archiveFile} loading={submitting} className="archive-submit" />
+            <PrimaryButton label="Analyze" type="submit" disabled={!archiveFile} loading={submitting} className="archive-submit" />
           </>}
           {error && <p className="error">{error}</p>}
         </form>
@@ -2267,7 +2266,7 @@ function App() {
         <ProjectsList onSelectProject={navigateToProject} />
       </section>
 
-      <footer><i /> Built for the parts of a codebase that aren’t obvious at first glance.</footer>
+
     </main>
   )
 }
@@ -2279,6 +2278,7 @@ function App() {
 function SupabaseSetupNeeded() {
   return (
     <main className="page-shell">
+
       <section className="hero" id="top">
         <p className="eyebrow">SETUP NEEDED</p>
         <h1>Supabase isn't configured</h1>
@@ -2299,8 +2299,13 @@ function Root() {
   return <App />
 }
 
+const themeStore = createThemeStore(createBrowserThemeAdapter(window))
+
 createRoot(document.getElementById('root')).render(
-  <AuthProvider>
-    <Root />
-  </AuthProvider>,
+  <ThemeProvider store={themeStore}>
+    <AuthProvider>
+      <ThemeToggle />
+      <ProductShell><Root /></ProductShell>
+    </AuthProvider>
+  </ThemeProvider>,
 )

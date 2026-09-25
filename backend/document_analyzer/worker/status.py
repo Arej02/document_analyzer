@@ -11,6 +11,13 @@ out as security-critical for every worker write.
 other two status writes — advancing `progress_stage` within a running job, and
 the terminal failure transition (the mirror image of job_completion.py's
 `mark_job_done_if_ready` on the success path).
+
+`persist_source_commit_sha`/`persist_source_snapshot_path` are Agent 3
+prerequisites (design_agent3.md §13): the commit `worker/fetch.py` actually
+cloned, and the object path of the post-boilerplate-strip source tarball
+`worker/snapshot.py` archives, so Agent 3 can get at the exact source it's
+translating. Both are null for archive uploads (no commit) / a job that
+predates these columns.
 """
 
 from supabase import Client
@@ -46,6 +53,28 @@ def mark_job_failed(client: Client, job_id: str, org_id: str, error: str) -> Non
     (
         client.table("ingestion_jobs")
         .update({"status": "failed", "error": error})
+        .eq("id", job_id)
+        .eq("org_id", org_id)
+        .execute()
+    )
+
+
+def persist_source_commit_sha(client: Client, job_id: str, org_id: str, source_commit_sha: str | None) -> None:
+    """Records the commit `worker/fetch.py` cloned (None for archive uploads)."""
+    (
+        client.table("ingestion_jobs")
+        .update({"source_commit_sha": source_commit_sha})
+        .eq("id", job_id)
+        .eq("org_id", org_id)
+        .execute()
+    )
+
+
+def persist_source_snapshot_path(client: Client, job_id: str, org_id: str, source_snapshot_path: str) -> None:
+    """Records the `agent1-snapshots` object path `worker/snapshot.py` uploaded to."""
+    (
+        client.table("ingestion_jobs")
+        .update({"source_snapshot_path": source_snapshot_path})
         .eq("id", job_id)
         .eq("org_id", org_id)
         .execute()

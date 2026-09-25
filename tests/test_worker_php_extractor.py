@@ -30,6 +30,17 @@ def test_extract_finds_top_level_function(tmp_path):
     assert result.edges == []
 
 
+def test_extract_records_end_line_for_multi_line_function(tmp_path):
+    (tmp_path / "helpers.php").write_text(
+        "<?php\nfunction add($a, $b) {\n    return $a + $b;\n}\n"
+    )
+
+    [entity] = PhpExtractor().extract(tmp_path).entities
+
+    assert entity.raw_facts["line"] == 2
+    assert entity.raw_facts["end_line"] == 4
+
+
 def test_extract_finds_class_and_methods(tmp_path):
     (tmp_path / "widget.php").write_text(
         """<?php
@@ -64,6 +75,13 @@ class Widget extends BaseWidget implements Renderable {
     helper = next(m for m in method_entities if m.name == "helper")
     assert helper.raw_facts["visibility"] == "private"
     assert helper.raw_facts["static"] is True
+
+    assert widget.raw_facts["line"] == 2
+    assert widget.raw_facts["end_line"] == 10
+    assert render.raw_facts["line"] == 3
+    assert render.raw_facts["end_line"] == 5
+    assert helper.raw_facts["line"] == 7
+    assert helper.raw_facts["end_line"] == 9
 
 
 def test_extract_resolves_call_edge_between_two_functions(tmp_path):
