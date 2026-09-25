@@ -127,6 +127,16 @@ This closed out every listed Phase 4 backend task — but running an actual inge
 - [x] `DELETE /api/agent1/projects/{project_id}` (2026-09-24, design.md §4): deletes the project, every run and its Agent 1 rows, the `summary_cache` rows pointing at its summaries, every Agent 2 planning job/cluster/plan/approval/override for it, and its uploaded archives. `409` while any ingestion or planning job for it is queued/running, `404` for a missing or other-org project. `projects.py::delete_project`, tests in `tests/test_projects_delete.py`.
   - [x] Frontend sync: "Delete repository" section at the bottom of `ProjectDetailPage` (`DeleteProjectAction`), with an inline two-step confirm that names what will be deleted, the backend's 409 shown verbatim, and a return to the repository list on success.
 
+## Agent 3 prerequisites (added 2026-09-25, `design_agent3.md` §13)
+
+Agent 3 has to translate legacy source code, and Agent 1 currently throws the source away after parsing. Update `design.md` first (new columns, bucket and `raw_facts` field), then build these.
+
+- [ ] Record the cloned commit: new `ingestion_jobs.source_commit_sha` column (migration). `fetch.py` runs `git rev-parse HEAD` after the `--depth 1` clone. It stays null for archive uploads. Tests in `tests/test_worker_fetch.py`. No endpoint change beyond exposing it read-only if a view needs it, so no frontend pair.
+- [ ] Archive a source snapshot: after `_strip_boilerplate` in `worker/run.py`, upload a tarball of the kept files to a new private bucket `agent1-snapshots` at `{org_id}/{job_id}/source.tar.gz` (org-scoped select policy, service-role writes). Record it in a new `ingestion_jobs.source_snapshot_path` column. Respect `resource_bounds.py` limits. Tests with `FakeClient`. No endpoint, so no frontend pair.
+- [ ] Add `end_line` to entity `raw_facts`: `backend/php/extract.php` (`getEndLine()` for functions, methods and classes) and `backend/php/wp_extract.php` where a node exists. This changes every `content_hash` once, so the next re-ingestion misses `summary_cache` (same effect as the 2026-09-24 `calls` change). Tests in `tests/test_worker_php_extractor.py` / `tests/test_worker_wordpress_extractor.py`. No endpoint, so no frontend pair.
+- [ ] Project delete covers the new data: `projects.py::delete_project` also removes `agent1-snapshots` objects, plus (once Agent 3 exists) `execution_jobs` / `unit_executions` rows and `agent3-output` objects, and returns `409` while an execution job is active. Tests in `tests/test_projects_delete.py`.
+  - [ ] Frontend sync: `DeleteProjectAction`'s confirm text mentions source snapshots and generated code.
+
 ---
 
 ## Cross-cutting: keeping backend and frontend in sync going forward
