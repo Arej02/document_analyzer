@@ -1303,7 +1303,7 @@ function PlanUnitDetail({ planId, clusterId, unitLabel, onClose }) {
                   {labelOf(dep.to_unit_id)}
                   <span className="plan-unit-size">
                     {dep.call_count} {dep.call_count === 1 ? 'call' : 'calls'}
-                    {dep.hook_binding_count > 0 && `, ${dep.hook_binding_count} hook ${dep.hook_binding_count === 1 ? 'binding' : 'bindings'}`}
+                    {dep.hook_binding_count > 0 && `, ${dep.hook_binding_count} hook/route ${dep.hook_binding_count === 1 ? 'binding' : 'bindings'}`}
                   </span>
                 </li>
               )}
@@ -1316,6 +1316,11 @@ function PlanUnitDetail({ planId, clusterId, unitLabel, onClose }) {
             <PlanContractSection
               title="Hooks bound"
               items={contract.hooks_bound || []}
+              render={(name) => <li key={name}><code>{name}</code></li>}
+            />
+            <PlanContractSection
+              title="Routes bound"
+              items={contract.routes_bound || []}
               render={(name) => <li key={name}><code>{name}</code></li>}
             />
             <PlanContractSection

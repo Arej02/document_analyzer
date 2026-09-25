@@ -2,7 +2,8 @@
 "Implement `Extractor` protocol (design.md §5)".
 
 This is the shared contract every language/framework extractor implements
-(`PhpExtractor`, `WordPressExtractor`, and any future addition) plus the
+(`PhpExtractor`, `WordPressExtractor`, `LaravelExtractor`, and any future
+addition) plus the
 plain-data shape `extract()` hands back. Pure parsing only — no LLM calls,
 no Supabase writes; persisting an `ExtractionResult` into
 `extracted_entities`/`entity_edges` (design.md §2) is the next, separate task.
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
 EntityType = Literal["function", "class", "route", "schema", "hook", "dependency"]
-EdgeType = Literal["calls", "hook_binding", "global", "include"]
+EdgeType = Literal["calls", "hook_binding", "global", "include", "route_binding"]
 
 
 @dataclass(frozen=True)

@@ -144,7 +144,7 @@ PK `(plan_id, cluster_id)`. Override-merged units appear as a synthetic row (`cl
 ### 3.1 Load (one planning job, one `source_job_id`, all queries filtered by `org_id`)
 - Nodes: `extracted_entities where job_id = source_job_id`.
 - Entity summaries: `knowledge_summaries where job_id = source_job_id and level = 'entity'` → `summary_text`, `risk_level`, `embedding`, `grounding_status` keyed by `entity_id`.
-- Edges: `entity_edges where job_id = source_job_id and edge_type in ('calls','hook_binding') and to_entity_id is not null`, grouped by `(from_entity_id, to_entity_id, edge_type)` → `count`. Agent 1's PHP extractor emits one `calls` row per call site (`worker/php_extractor.py::_resolve_edges`), so `count` is the static call frequency.
+- Edges: `entity_edges where job_id = source_job_id and edge_type in ('calls','hook_binding','route_binding') and to_entity_id is not null`, grouped by `(from_entity_id, to_entity_id, edge_type)` → `count`. Agent 1's PHP extractor emits one `calls` row per call site (`worker/php_extractor.py::_resolve_edges`), so `count` is the static call frequency. `route_binding` (`worker/laravel_extractor.py`, added 2026-09-24, `design.md` §5) counts into the same `EdgeCounts.hook_bindings` bucket as `hook_binding` — a route binds to its controller method the same way a callback binds to a hook, so it's structurally identical for every stage below.
 - Ignored as edges: `include` (target always null), `global`, and null-target rows. Their facts remain available to test contracts through `raw_facts`.
 
 ### 3.2 Canonicalize duplicates
@@ -269,7 +269,7 @@ The `migration_plan_items.test_contract` jsonb is built from Agent 1 facts and n
 ```json
 {
   "public_interface": [
-    { "entity_id": "uuid", "name": "calc_total", "kind": "function|method|hook",
+    { "entity_id": "uuid", "name": "calc_total", "kind": "function|method|hook|route",
       "class": "Cart | null", "params": [...], "file_path": "..." }
   ],
   "incoming_call_sites": [
@@ -278,22 +278,23 @@ The `migration_plan_items.test_contract` jsonb is built from Agent 1 facts and n
   "outgoing_dependencies": [ { "to_unit_id": "uuid", "call_count": 5, "hook_binding_count": 0 } ],
   "external_calls": [ "wp_remote_get", "update_post_meta" ],
   "hooks_bound": [ "init", "save_post" ],
+  "routes_bound": [ "GET /appointments" ],
   "side_effect_signals": [ { "entity_id": "uuid", "risk_level": "medium", "summary_excerpt": "..." } ],
   "unverified_member_ids": [ "uuid" ],
   "merged_cluster_ids": []
 }
 ```
-- `public_interface` is the members with at least one incoming edge from another unit, or a hook binding, with `params` taken from `raw_facts`.
+- `public_interface` is the members with at least one incoming edge from another unit, or a hook/route binding, with `params` taken from `raw_facts`.
 - `external_calls` come from `raw_facts.calls` entries that didn't resolve to an edge.
 - `unverified_member_ids` tells Agent 3 which members' summaries it shouldn't trust.
 
 **Implementation notes** (`agent2/worker/test_contract.py`, pinned down while building it):
 - **Inputs.** The contract is built over part 1's post-merge units (§7), so a `merged_scc` unit gets one contract and "another unit" means another post-merge unit. Entity ids are canonical (§3.2), and a node's summary is its representative's or else any duplicate's. Summaries are read from `knowledge_summaries` (entity level, `org_id`-scoped). The module never writes: `ordering.py` stores the contracts on the plan items.
-- **`public_interface`.** Members that are the target of an edge from another unit, plus members at either end of a `hook_binding` edge: a bound callback (WordPress invokes it) or a bound hook (other code fires it). `kind` is `hook` for hook entities, `method` for a function with `raw_facts.class`, and otherwise the `entity_type`.
-- **`incoming_call_sites`.** Only `calls` edges, one entry per (caller, callee) pair. Hook bindings from another unit show up in that unit's `outgoing_dependencies` instead.
-- **`outgoing_dependencies`.** Gains `hook_binding_count` next to `call_count`, so a dependency that exists only through hook bindings doesn't look like `call_count: 0` with no explanation.
+- **`public_interface`.** Members that are the target of an edge from another unit, plus members at either end of a `hook_binding`/`route_binding` edge: a bound callback (WordPress invokes it), a bound hook (other code fires it), or a bound route (the framework's router invokes it). `kind` is `hook` for hook entities, `method` for a function with `raw_facts.class`, `route` for route entities (falls out of `_kind`'s `entity_type` fallback, no special case needed), and otherwise the `entity_type`.
+- **`incoming_call_sites`.** Only `calls` edges, one entry per (caller, callee) pair. Hook/route bindings from another unit show up in that unit's `outgoing_dependencies` instead.
+- **`outgoing_dependencies`.** Gains `hook_binding_count` next to `call_count` (counting both `hook_binding` and `route_binding` rows — §3.1 puts them in the same bucket), so a dependency that exists only through a binding doesn't look like `call_count: 0` with no explanation.
 - **`external_calls`.** Reuses `report.py::external_call_names`, the same list the unit report sees (§6.1).
-- **`hooks_bound`.** The names of hooks this unit's members bind to (the member is the `from` end). A hook entity that is only bound to doesn't count.
+- **`hooks_bound`/`routes_bound`.** The names of hooks/routes this unit's members bind to (the member is the `from` end), split by the target's `entity_type` (`hook` vs `route`) since `graph.directed` conflates both into one `hook_bindings` counter. A hook or route entity that is only bound to (never binds itself) doesn't count.
 - **`side_effect_signals`.** Members whose entity summary is `medium` or `high` risk. `summary_excerpt` is the first 200 characters (`SUMMARY_EXCERPT_CHARS`).
 - **`unverified_member_ids`.** Members whose summary is `unverified`. A member with no summary isn't listed, because there's nothing for Agent 3 to distrust.
 - **Other.** `merged_cluster_ids` is always `[]` from the worker, since only override merges (§9.2) fill it. Every list is sorted, so the same facts give the same contract.

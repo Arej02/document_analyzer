@@ -62,14 +62,19 @@ def build_test_contract(
 
     incoming: list[dict] = []
     outgoing: dict[str, dict] = {}
-    hook_bound: set[str] = set()  # members at either end of a hook_binding edge
+    # Members at either end of a "binding" edge (hook_binding or route_binding —
+    # graph.py counts both into EdgeCounts.hook_bindings, since a route binds to
+    # its controller method the same way a callback binds to a hook).
+    hook_bound: set[str] = set()
     hooks: set[str] = set()
+    routes: set[str] = set()
     cross_unit_targets: set[str] = set()
     for (a, b), counts in sorted(graph.directed.items()):
         if counts.hook_bindings and (a in members or b in members):
             hook_bound.update(n for n in (a, b) if n in members)
             if a in members:
-                hooks.add(graph.nodes[b]["name"])
+                target_type = graph.nodes[b]["entity_type"]
+                (routes if target_type == "route" else hooks).add(graph.nodes[b]["name"])
         if b in members and a not in members:
             cross_unit_targets.add(b)
             if counts.calls:
@@ -119,6 +124,7 @@ def build_test_contract(
         "outgoing_dependencies": [outgoing[k] for k in sorted(outgoing)],
         "external_calls": external_call_names(graph, sorted(members)),
         "hooks_bound": sorted(hooks),
+        "routes_bound": sorted(routes),
         "side_effect_signals": side_effect_signals,
         "unverified_member_ids": unverified,
         # Filled only by override merges (§9.2); the worker never sets it.
