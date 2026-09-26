@@ -212,6 +212,23 @@ function UnverifiedBadge({ count }) {
   )
 }
 
+// Validation-metrics work: grounding_confidence grades a summary/report beyond the
+// binary grounding_status (worker/grounding_status.py::confidence_for) — null before a
+// summary/report exists, same as grounding_status itself.
+function ConfidenceBadge({ confidence }) {
+  if (!confidence) return null
+  return <span className={`confidence confidence-${confidence}`}>{confidence} confidence</span>
+}
+
+function GroundingIssuesList({ issues }) {
+  if (!issues || issues.length === 0) return null
+  return (
+    <ul className="grounding-issues">
+      {issues.map((issue, index) => <li key={index}>{issue}</li>)}
+    </ul>
+  )
+}
+
 // Results view for a finished job — GET /api/agent1/jobs/{job_id}/summary (design.md
 // §4), only valid once status === 'done' (JobStatusPage only renders this then). The
 // paginated entity browser is EntityBrowser, below; its per-entity grounding-status
@@ -329,7 +346,7 @@ function EntityBrowser({ jobId }) {
         <>
           <table className="entity-table">
             <thead>
-              <tr><th>Type</th><th>Name</th><th>File</th><th>Risk</th><th>Grounding</th></tr>
+              <tr><th>Type</th><th>Name</th><th>File</th><th>Risk</th><th>Grounding</th><th>Confidence</th></tr>
             </thead>
             <tbody>
               {page.entities.map((entity) => (
@@ -339,6 +356,7 @@ function EntityBrowser({ jobId }) {
                   <td className="entity-file-path">{entity.file_path}</td>
                   <td>{entity.risk_level ? <span className={`risk-level risk-level-${entity.risk_level}`}>{entity.risk_level}</span> : '—'}</td>
                   <td>{entity.grounding_status === 'unverified' ? <span className="unverified-badge unverified-badge-warn">unverified</span> : (entity.grounding_status || '—')}</td>
+                  <td>{entity.grounding_confidence ? <ConfidenceBadge confidence={entity.grounding_confidence} /> : '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -910,6 +928,30 @@ function DiffSummary({ job }) {
   )
 }
 
+// Extraction-quality validation metric (design.md §2 ingestion_jobs.extraction_stats,
+// worker/run.py::_run_extractors) — per-extractor entities/edges produced and files that
+// failed to parse. Null until the extraction stage has run for this job.
+function ExtractionStats({ job }) {
+  if (!job.extraction_stats) return null
+  const entries = Object.entries(job.extraction_stats)
+  if (entries.length === 0) return null
+  return (
+    <div className="extraction-stats">
+      <strong>Extraction</strong>
+      <ul className="extraction-stats-list">
+        {entries.map(([extractor, stats]) => (
+          <li key={extractor}>
+            {extractor}: {stats.entities} {stats.entities === 1 ? 'entity' : 'entities'}, {stats.edges} {stats.edges === 1 ? 'edge' : 'edges'}
+            {stats.files_errored > 0 && (
+              <span className="extraction-stats-errored"> · {stats.files_errored} {stats.files_errored === 1 ? 'file' : 'files'} failed to parse</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 // Landing spot after a successful submit — job_id lives in a `?job=` query param
 // (no router in this app yet) so it survives a refresh/share. Polls
 // GET /api/agent1/jobs/{job_id} until the job leaves a terminal state's need
@@ -966,6 +1008,7 @@ function JobStatusPage({ jobId, onBackToForm }) {
         <h1>Job <code>{jobId}</code></h1>
         {error && <p className="error">{error}</p>}
         {job && <DiffSummary job={job} />}
+        {job && <ExtractionStats job={job} />}
         {job && <ProgressStages stages={JOB_STAGES} status={job.status} progressStage={job.progress_stage} label="Ingestion progress" />}
         {job && (job.status === 'queued' || job.status === 'running') && <LiveEntityTree jobId={jobId} />}
         {failed && (
@@ -1108,6 +1151,7 @@ function PlanUnitRow({ unit, selected, onSelect, edit }) {
           {unit.grounding_status === 'unverified' && (
             <span className="unverified-badge unverified-badge-warn">unverified</span>
           )}
+          <ConfidenceBadge confidence={unit.grounding_confidence} />
         </span>
       </button>
       {edit && (
@@ -1214,6 +1258,7 @@ function PlanUnitDetail({ planId, clusterId, unitLabel, onClose }) {
           </h3>
           <div className="summary-badges">
             {unit.risk_level && <span className={`risk-level risk-level-${unit.risk_level}`}>{unit.risk_level} risk</span>}
+            <ConfidenceBadge confidence={unit.grounding_confidence} />
             {unit.flags.map((flag) => (
               <span key={flag} className={`plan-flag${flag === 'needs_facade' ? ' plan-flag-warn' : ''}`}>
                 {flag.replace('_', ' ')}
@@ -1225,10 +1270,12 @@ function PlanUnitDetail({ planId, clusterId, unitLabel, onClose }) {
           <h4>Report</h4>
           {unit.report ? (
             <>
-              {unit.report.grounding_status === 'unverified' && (
-                <div className="summary-badges"><UnverifiedBadge count={1} /></div>
-              )}
+              <div className="summary-badges">
+                {unit.report.grounding_status === 'unverified' && <UnverifiedBadge count={1} />}
+                <ConfidenceBadge confidence={unit.report.grounding_confidence} />
+              </div>
               <p className="plan-phase-summary">{unit.report.summary_text || 'The report has no summary text.'}</p>
+              <GroundingIssuesList issues={unit.report.grounding_issues} />
             </>
           ) : unit.constituent_reports.length > 0 ? (
             <>
@@ -1242,8 +1289,10 @@ function PlanUnitDetail({ planId, clusterId, unitLabel, onClose }) {
                       <strong>{report.label || unitLabel(report.cluster_id)}</strong>
                       {report.risk_level && <span className={`risk-level risk-level-${report.risk_level}`}>{report.risk_level}</span>}
                       {report.grounding_status === 'unverified' && <span className="unverified-badge unverified-badge-warn">unverified</span>}
+                      <ConfidenceBadge confidence={report.grounding_confidence} />
                     </div>
                     <p className="plan-phase-summary">{report.summary_text || 'No report is available for this unit.'}</p>
+                    <GroundingIssuesList issues={report.grounding_issues} />
                   </li>
                 ))}
               </ul>
@@ -1950,6 +1999,20 @@ function PlanPage({
               <span className={`plan-flag${plan.open_facade_flags > 0 ? ' plan-flag-warn' : ''}`}>
                 {plan.open_facade_flags} open facade {plan.open_facade_flags === 1 ? 'flag' : 'flags'}
               </span>
+              {/* Clustering-quality metrics (design_agent2.md §2/§13) — null for a plan
+                  whose planning job predates these fields. single_unit_phases > 1 is the
+                  forward-looking detector for the 46-single-unit-phase degeneracy §13
+                  documents, which used to only be caught by a manual dry-run inspection. */}
+              {plan.modularity != null && (
+                <span className="plan-flag" title="Leiden modularity of the final unit-level clustering">
+                  modularity {plan.modularity.toFixed(2)}
+                </span>
+              )}
+              {plan.phase_size_stats && plan.phase_size_stats.single_unit_phases > 1 && (
+                <span className="plan-flag plan-flag-warn" title="Phases with only one unit each often mean the phase graph was too sparse to cluster meaningfully">
+                  {plan.phase_size_stats.single_unit_phases} single-unit phases
+                </span>
+              )}
             </div>
             {plan.is_stale && (
               <p className="plan-stale-banner" role="status">
@@ -2034,6 +2097,7 @@ function PlanPage({
                             <span className={`risk-level risk-level-${phase.risk_level}`}>{phase.risk_level} risk</span>
                           )}
                           {phase.grounding_status === 'unverified' && <UnverifiedBadge count={1} />}
+                          <ConfidenceBadge confidence={phase.grounding_confidence} />
                           <PlanApprovalState approval={phase.approval} />
                         </div>
                         <p className="plan-phase-summary">{phase.summary_text || 'No report is available for this phase.'}</p>
