@@ -43,7 +43,7 @@ API contract, and [`docs/tasks.md`](docs/tasks.md) for what's built vs. outstand
    | `SUPABASE_ANON_KEY` | Project Settings → API |
    | `SUPABASE_SERVICE_ROLE_KEY` | Project Settings → API (keep secret — worker-only, bypasses RLS) |
    | `SUPABASE_JWT_SECRET` | Project Settings → API → JWT Settings |
-   | `SUPABASE_DB_URL` | Project Settings → Database (direct connection string — used for pgmq/Vault calls that aren't exposed over PostgREST) |
+   | `SUPABASE_DB_URL` | **Connect** (dashboard top bar) → **Session pooler** connection string — used for pgmq/Vault calls that aren't exposed over PostgREST. Use the pooler, not the direct `db.<ref>.supabase.co` string: the direct host is IPv6-only and doesn't resolve on IPv4-only networks. |
 
 2. **Apply database migrations** — run everything in `supabase/migrations/` against your project, in order (via the [Supabase CLI](https://supabase.com/docs/guides/cli): `supabase link` then `supabase db push`, or paste each file into the SQL Editor in order). This creates the tables, RLS policies, the `agent1_ingestion_jobs` pgmq queue, the `agent1-uploads` storage bucket, and enables Vault.
 
@@ -58,6 +58,12 @@ API contract, and [`docs/tasks.md`](docs/tasks.md) for what's built vs. outstand
    ```
    cd frontend
    npm install
+   ```
+
+5. **Build the Agent 3 runner image** (needs Docker running; the executor runs generated tests in it, `docs/design_agent3.md` §7):
+
+   ```
+   docker build -t galvanise-agent3-runner:0.1 backend/agent3_runner
    ```
 
 ## Running it
@@ -92,6 +98,19 @@ uv run document-analyzer-planner
 Agent 2's own worker, separate from the ingestion worker above. Without it,
 "Generate plan" requests stay `queued` forever. Same polling behaviour:
 every 5 seconds when idle, one job at a time.
+
+**Executor** (polls `agent3_execution_jobs` and generates code from approved plans):
+
+```
+uv run document-analyzer-executor
+```
+
+Agent 3's own worker. It refuses to start unless Docker is running and the
+runner image is built (Setup step 5), because it runs generated tests in that
+sandbox. Without gVisor (`AGENT3_SANDBOX_RUNTIME=runsc`) it logs a warning and
+carries on; set `AGENT3_REQUIRE_GVISOR=true` in production to make that fatal.
+Its stages are still stubs (`docs/tasks_agent3.md` Phases 2–4), so any job it
+picks up ends `failed` with "not implemented yet". Same polling behaviour.
 
 **Frontend** (Vite dev server, on `http://localhost:5173`):
 

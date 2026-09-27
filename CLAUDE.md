@@ -6,7 +6,7 @@ This file orients Claude / Claude Code whenever it works in this repo. Read it f
 - **Agent 2:** `docs/specs_agent2.md`, `docs/design_agent2.md`, `docs/tasks_agent2.md`
 - **Agent 3:** `docs/specs_agent3.md`, `docs/design_agent3.md`, `docs/tasks_agent3.md`
 
-`docs/skills.md` covers the tech stack for both.
+`docs/skills.md` covers the tech stack for all three.
 
 ## What this project is
 
@@ -22,7 +22,7 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 /
 ├── CLAUDE.md                # this file
 ├── docs/
-│   ├── skills.md            # tech stack / tooling inventory (Agents 1 + 2)
+│   ├── skills.md            # tech stack / tooling inventory (Agents 1, 2 + 3)
 │   ├── specs.md             # Agent 1 functional + technical spec
 │   ├── design.md            # Agent 1 architecture, data model, API
 │   ├── tasks.md             # Agent 1 phased tasks (backend paired with frontend)
@@ -61,6 +61,7 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 - Storage: Supabase Postgres (+ pgvector), Supabase Auth, Vault
 - LLM: Azure OpenAI (summaries, cluster reports); embeddings: local pinned `all-MiniLM-L6-v2`
 - Agent 2 graph work: `python-igraph` + `leidenalg` (clustering), `networkx` (SCC / topological sort)
+- Agent 3 sandbox: Docker CLI (`agent3/worker/sandbox.py`), gVisor `runsc` in production, runner image `galvanise-agent3-runner` (`backend/agent3_runner/`)
 - Frontend: React (existing, in `frontend/`), React Flow for Agent 2's plan graph
 
 ## Working conventions

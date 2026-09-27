@@ -32,6 +32,9 @@ from pydantic import BaseModel
 from ..auth import AuthContext, get_auth_context
 from ..queue import enqueue_planning_job
 from ..supabase_client import get_service_role_client, insert_many_scoped, insert_scoped
+from ..shared.plan_staleness import STALEABLE_STATUSES as _STALEABLE_STATUSES
+from ..shared.plan_staleness import is_stale as _is_stale
+from ..shared.plan_staleness import mark_stale_plans
 from ..worker.risk_rollup import rollup_risk
 from .overrides import (
     OverrideError,
@@ -47,8 +50,6 @@ router = APIRouter(prefix="/api/agent2", tags=["agent2"])
 
 _ACTIVE_STATUSES = ("queued", "running")
 
-# Plan statuses the §9.1 stale check may move to `stale` (everything but `rejected`).
-_STALEABLE_STATUSES = ("draft", "in_review", "approved")
 
 # PostgREST caps a response at 1000 rows; plan reads page past it.
 _PAGE_SIZE = 1000
@@ -172,35 +173,6 @@ async def list_plans(project_id: str, auth: Annotated[AuthContext, Depends(get_a
             for row in rows
         ]
     }
-
-
-def _is_stale(source_job_id: str, latest_job_id: str | None) -> bool:
-    return latest_job_id is not None and source_job_id != latest_job_id
-
-
-def mark_stale_plans(service_client, org_id: str, project_id: str, latest_job_id: str | None) -> None:
-    """design_agent2.md §9.1 stale check: every plan of this project pinned to a
-    source job other than `latest_job_id` moves to `stale`, from any state except
-    `rejected`. There's no cross-agent trigger, so this runs on every plan read and
-    write. Service-role because migration_plans has no authenticated update policy.
-    """
-    rows = (
-        service_client.table("migration_plans")
-        .select("id, status, source_job_id")
-        .eq("org_id", org_id)
-        .eq("project_id", project_id)
-        .in_("status", _STALEABLE_STATUSES)
-        .execute()
-    ).data
-    stale_ids = [row["id"] for row in rows if _is_stale(row["source_job_id"], latest_job_id)]
-    if stale_ids:
-        (
-            service_client.table("migration_plans")
-            .update({"status": "stale"})
-            .eq("org_id", org_id)
-            .in_("id", stale_ids)
-            .execute()
-        )
 
 
 @router.get("/plans/{plan_id}")

@@ -10,6 +10,11 @@ from .worker.snapshot import SNAPSHOT_BUCKET
 
 logger = logging.getLogger(__name__)
 
+# Agent 3's private output bucket (design_agent3.md §2), objects under
+# `{org_id}/{execution_job_id}/...`. Named here rather than imported so Agent 1
+# doesn't import from Agent 3.
+AGENT3_OUTPUT_BUCKET = "agent3-output"
+
 _PROJECT_COLUMNS = "id, org_id, source_type, source_ref, latest_job_id, created_at, updated_at"
 _JOB_COLUMNS = (
     "id, status, progress_stage, error, source_type, source_ref, created_at, updated_at, "
@@ -112,7 +117,7 @@ _ACTIVE_STATUSES = ("queued", "running")
 
 
 class ProjectBusyError(Exception):
-    """The project still has an ingestion or planning job in flight."""
+    """The project still has an ingestion, planning or execution job in flight."""
 
 
 def _chunks(ids: list[str]):
@@ -152,12 +157,9 @@ def delete_project(client: Client, org_id: str, project_id: str) -> None:
     FKs don't cascade, and every step is a filtered delete, so a partial failure can be
     retried. Raises ProjectBusyError while a job for the project is queued/running.
 
-    Agent 3 prerequisite (design_agent3.md §13, tasks.md "Agent 3 prerequisites"):
-    also removes each job's `agent1-snapshots` source tarball. The rest of that
-    task — `execution_jobs`/`unit_executions` rows, `agent3-output` objects, and
-    refusing while an execution job is active — is deliberately not here yet:
-    Agent 3 isn't built (no such tables/bucket exist to query), so there's
-    nothing to delete or check. Revisit once Agent 3 lands."""
+    Agent 3 (design_agent3.md §13): also removes each job's `agent1-snapshots`
+    source tarball, every execution job of the project with its unit rows, and
+    their `agent3-output` objects, and refuses while an execution job is active."""
     jobs = (
         client.table("ingestion_jobs")
         .select("id, status, source_type, source_ref, source_snapshot_path")
@@ -174,8 +176,24 @@ def delete_project(client: Client, org_id: str, project_id: str) -> None:
         .execute()
         .data
     )
-    if any(row["status"] in _ACTIVE_STATUSES for row in jobs + planning_jobs):
-        raise ProjectBusyError("an ingestion or planning job for this project is still queued or running")
+    execution_jobs = (
+        client.table("execution_jobs")
+        .select("id, status")
+        .eq("org_id", org_id)
+        .eq("project_id", project_id)
+        .execute()
+        .data
+    )
+    if any(row["status"] in _ACTIVE_STATUSES for row in jobs + planning_jobs + execution_jobs):
+        raise ProjectBusyError(
+            "an ingestion, planning or code generation job for this project is still queued or running"
+        )
+
+    # Agent 3 first: unit_executions reference the plan's clusters and execution_jobs
+    # reference its plans, and neither cascades from Agent 2's rows.
+    execution_job_ids = [row["id"] for row in execution_jobs]
+    _delete_in(client, "unit_executions", org_id, "execution_job_id", execution_job_ids)
+    client.table("execution_jobs").delete().eq("org_id", org_id).eq("project_id", project_id).execute()
 
     # Agent 2: plan rows first (no cascade from plans), then planning jobs, whose FKs
     # cascade to clusters, cluster_members, cluster_reports and cluster_edges.
@@ -211,3 +229,32 @@ def delete_project(client: Client, org_id: str, project_id: str) -> None:
             client.storage.from_(SNAPSHOT_BUCKET).remove(snapshot_paths)
         except Exception:  # noqa: BLE001 — the rows are gone; an orphaned snapshot isn't worth failing over
             logger.warning("project %s deleted but its source snapshots could not be removed", project_id, exc_info=True)
+
+    if execution_job_ids:
+        try:
+            bucket = client.storage.from_(AGENT3_OUTPUT_BUCKET)
+            output_paths = [
+                path for job_id in execution_job_ids for path in _list_objects(bucket, f"{org_id}/{job_id}")
+            ]
+            for chunk in _chunks(output_paths):
+                bucket.remove(chunk)
+        except Exception:  # noqa: BLE001 — the rows are gone; orphaned output isn't worth failing over
+            logger.warning("project %s deleted but its generated code could not be removed", project_id, exc_info=True)
+
+
+def _list_objects(bucket, prefix: str) -> list[str]:
+    """Every object path under `prefix`, recursively. Storage lists one folder level at
+    a time, and a folder comes back as an entry with no `id`."""
+    paths: list[str] = []
+    offset = 0
+    while True:
+        entries = bucket.list(prefix, {"limit": _PAGE_SIZE, "offset": offset})
+        for entry in entries:
+            path = f"{prefix}/{entry['name']}"
+            if entry.get("id") is None:
+                paths.extend(_list_objects(bucket, path))
+            else:
+                paths.append(path)
+        if len(entries) < _PAGE_SIZE:
+            return paths
+        offset += _PAGE_SIZE

@@ -14,18 +14,34 @@ The same as `tasks_agent2.md`:
 
 ### Prerequisites (outside this file)
 - [ ] **Agent 1 source snapshot** (`tasks.md`, "Agent 3 prerequisites"): commit SHA, snapshot upload, `end_line` in `raw_facts`. Nothing in Phase 2 onwards can run on real data without it.
-- [ ] At least one plan reaches `approved` live, end to end (ingest → plan → submit → approve every phase). This is blocked on the same Azure endpoint issue as `tasks_agent2.md`'s prerequisites. Until then, Phases 0–4 build against `tests/fakes.py::FakeClient` and `tests/fixtures/agent2_cycle_repo/`, extending `tests/test_agent2_pipeline_fixture.py`.
+- [ ] At least one plan reaches `approved` live, end to end, for a **WordPress** repo: ingest → plan → submit → clear every `needs_facade` flag → approve every phase. The repo must be ingested after the Agent 1 source-snapshot task, so the plan's source job has a snapshot. Agent 1 jobs already reach `done` live, so the Azure endpoint note in `tasks.md` Phase 4 is out of date (`design_agent2.md` §15: Laravel `hospital_test`, 2026-09-23). What's missing is a WordPress repo taken through to an approved plan. Until then, Phases 0–4 build against `tests/fakes.py::FakeClient` and `tests/fixtures/agent2_cycle_repo/`, extending `tests/test_agent2_pipeline_fixture.py`.
 - [ ] Docker is installed on every machine that runs the executor, and gVisor (`runsc`) on the production host.
 
 ---
 
 ## Phase 0 — Foundations
 
-- [ ] **Blocking:** runner image `backend/agent3_runner/Dockerfile` (`design_agent3.md` §7), plus `sandbox.py::run_pytest(workspace, params)` returning parsed JUnit results. Add `tests/test_agent3_sandbox.py` with the four §7 smoke tests: no network, killed on memory/pids, killed on timeout, read-only root. Also add a positive control (a passing test reports passed). Record the Docker Desktop vs gVisor findings in `design_agent3.md` §7. No endpoint, so no frontend pair.
-- [ ] Migration `<ts>_agent3_execution_tables.sql`: `execution_jobs` (including the partial unique index `execution_jobs_one_active_per_plan`) and `unit_executions` (§2). RLS enabled with `select` policies on `org_id = current_org_id()`. No insert or update policies. Apply to the live project and verify. No endpoint, so no frontend pair.
-- [ ] Migration `<ts>_agent3_pgmq_queue.sql`: `pgmq.create('agent3_execution_jobs')`. Add the `enqueue_execution_job` / `read_next_execution_job` / `delete_execution_job_message` helpers to `queue.py` with the `$2::bigint` cast, and extend `tests/test_queue.py`. No endpoint, so no frontend pair.
-- [ ] Migration `<ts>_agent3_output_bucket.sql`: private `agent3-output` bucket, with an org-scoped `select` policy only (pattern: `20260918040000_agent1_uploads_bucket.sql`). No endpoint, so no frontend pair.
-- [ ] Executor skeleton `backend/document_analyzer/agent3/worker/run.py` plus a `document-analyzer-executor` script in `pyproject.toml`. Copy the `agent2/worker/run.py` shape:
+> **Live project (2026-09-25).** The "applied live" notes below were first checked on a personal Supabase project. The team then moved to one shared project, and everything was re-applied and re-checked there:
+> - It had been missing `20260923030000` (Agent 2) plus the four Agent 3 / Agent 1 migrations below (renamed `20260925100000`–`130000` so they sort after `main`'s `20260925000000`–`020000`). All were applied in the SQL Editor.
+> - It also had three Agent 2 user FKs drifted to an out-of-band `app_private.accounts`, fixed by `20260925140000_plan_user_fks_back_to_auth_users.sql` (`design_agent2.md` §2).
+> - Re-checked there: every Agent 3 table/column, index, policy and queue; a queue round trip; the bucket check (9/9); and `tests/test_rls_multi_tenancy.py` 46/46.
+> - That test's fixture now cleans up after a failed setup too. Earlier failed runs had left throwaway `rls-smoke-*` users and rows, and the ones from this session were deleted.
+
+- [x] **Blocking:** runner image `backend/agent3_runner/Dockerfile` (`design_agent3.md` §7), plus `sandbox.py::run_pytest(workspace, params)` returning parsed JUnit results. Add `tests/test_agent3_sandbox.py` with the four §7 smoke tests: no network, killed on memory/pids, killed on timeout, read-only root. Also add a positive control (a passing test reports passed). Record the Docker Desktop vs gVisor findings in `design_agent3.md` §7. No endpoint, so no frontend pair.
+  - *Done 2026-09-25:* image `galvanise-agent3-runner:0.1`. 21 unit tests plus 8 live smoke tests pass on Docker Desktop 29.6.1 (also checked: non-root uid, no host env, DNS blocked). The gVisor test is skipped because Docker Desktop has no `runsc`, so it still needs a run on the Linux production host. Output capping and untrusted-XML handling are in §7, along with the known limitation that verdicts are advisory.
+- [x] Migration `<ts>_agent3_execution_tables.sql`: `execution_jobs` (including the partial unique index `execution_jobs_one_active_per_plan`) and `unit_executions` (§2). RLS enabled with `select` policies on `org_id = current_org_id()`. No insert or update policies. Apply to the live project and verify. No endpoint, so no frontend pair.
+  - *Done 2026-09-25:* `20260925100000_agent3_execution_tables.sql`. First checked in a throwaway Postgres 17 container, with stubs for the referenced tables and `current_org_id()`. 14 behaviour checks pass there: the one-active-job index (`23505`, then allowed after `done`), the unit uniqueness, the flag/attempts/status constraints, no cascade from plans or clusters, the cascade from the job to its units, and RLS (org A sees its rows, org B sees none, authenticated inserts refused). It was then applied live in the SQL Editor, together with the four `20260923*` Agent 2 migrations, which the live project was missing. Every column of both tables was checked through the REST API, and anonymous inserts are refused by RLS. `tests/test_rls_multi_tenancy.py` now passes (36/36) against the live project.
+- [x] Migration `<ts>_agent3_pgmq_queue.sql`: `pgmq.create('agent3_execution_jobs')`. Add the `enqueue_execution_job` / `read_next_execution_job` / `delete_execution_job_message` helpers to `queue.py` with the `$2::bigint` cast, and extend `tests/test_queue.py`. No endpoint, so no frontend pair.
+  - *Done 2026-09-25:* `20260925110000_agent3_pgmq_queue.sql` was applied live in the SQL Editor, and `pgmq.list_queues()` shows `agent1_ingestion_jobs`, `agent2_planning_jobs` and `agent3_execution_jobs`. The message is `{execution_job_id, org_id}`, and the visibility timeout defaults to 3600 s (`AGENT3_QUEUE_VISIBILITY_TIMEOUT_SECONDS`, §11). `tests/test_queue.py` has 5 new tests and all 13 pass. A live round trip through the helpers (`enqueue` → `read_next` → `delete`) passes over the Session pooler URL, and the queue was left empty. The direct `db.<ref>.supabase.co` host is IPv6-only and didn't resolve from the dev machine, so `SUPABASE_DB_URL` has to be the pooler string there.
+- [x] Migration `<ts>_agent3_output_bucket.sql`: private `agent3-output` bucket, with an org-scoped `select` policy only (pattern: `20260918040000_agent1_uploads_bucket.sql`). No endpoint, so no frontend pair.
+  - *Done 2026-09-25:* `20260925120000_agent3_output_bucket.sql` was applied live in the SQL Editor. It was checked live with two throwaway orgs and users (9/9), then everything was removed:
+    - the bucket is private, and the service role can write;
+    - org A's user can download its own object and make a signed URL for it (the positive control);
+    - org B's user gets `404` downloading it and an empty list for org A's folder;
+    - neither user can upload (`403`, RLS), and org A's user can't delete.
+
+    The Agent 3 tables and this bucket get a permanent test in the `test_rls_multi_tenancy.py` task below.
+- [x] Executor skeleton `backend/document_analyzer/agent3/worker/run.py` plus a `document-analyzer-executor` script in `pyproject.toml`. Copy the `agent2/worker/run.py` shape:
   - `load_dotenv()` first;
   - the terminal-status guard;
   - the stage list with stub stages;
@@ -34,25 +50,90 @@ The same as `tasks_agent2.md`:
   - startup checks for Docker, the runner image and gVisor (§10).
 
   Add `tests/test_agent3_worker_run.py`. No endpoint, so no frontend pair.
-- [ ] Extend `tests/test_rls_multi_tenancy.py`: one row per Agent 3 table under org A, invisible to org B, with a positive control. No endpoint, so no frontend pair.
-- [ ] Update `docs/skills.md` with Docker, gVisor and the runner image's pinned libraries, and why each was chosen. No endpoint, so no frontend pair.
+  - *Done 2026-09-25:*
+    - `agent3/worker/run.py` and `agent3/worker/status.py`, with an `ExecutionState` dataclass.
+    - The stub stages **raise** `NotImplementedError`, so a real job ends `failed` ("not implemented yet") and never `done` with nothing generated.
+    - `check_sandbox_at_startup` calls `sandbox.check_sandbox_available` with the env params and `AGENT3_REQUIRE_GVISOR`, and logs a warning without `runsc`. There's no embedding check (§10).
+    - The README has an "Executor" section.
+    - 21 tests in `tests/test_agent3_worker_run.py`.
+    - Checked live:
+      - with the image missing, `uv run document-analyzer-executor` refuses to start and names the build command;
+      - with the image present, it warns about gVisor, polls, dequeues a message for a nonexistent job, drops it as not found, and deletes it (the queue is left empty).
+- [x] Extend `tests/test_rls_multi_tenancy.py`: one row per Agent 3 table under org A, invisible to org B, with a positive control. No endpoint, so no frontend pair.
+  - *Done 2026-09-25:*
+    - `_seed_agent3_chain` seeds one `execution_jobs` and one `unit_executions` row under org A, chained onto the Agent 2 plan and unit/phase clusters.
+    - Both tables are in the parametrized "org B can't read" and "org A can" (positive control) checks.
+    - New checks:
+      - signed-in users can't insert into either table (RLS);
+      - the `agent3-output` bucket: org A downloads its object (positive control), org B gets not-found and an empty listing, and neither user can upload.
+    - Cleanup deletes the Agent 3 rows first and removes the bucket object.
+    - 46/46 pass live, and no rows or objects are left afterwards.
+- [x] Update `docs/skills.md` with Docker, gVisor and the runner image's pinned libraries, and why each was chosen. Include the image's distribution: a local build in development, and a private registry pinned by digest in production (`design_agent3.md` §7, "Where the image comes from"). No endpoint, so no frontend pair.
+  - *Done 2026-09-25:* `skills.md` has a new "Agent 3 (Execute)" section:
+    - Sandbox: Docker CLI, gVisor and the stdlib XML parser, with the reason each was chosen.
+    - Runner image: every pinned package, why it's in the image, and the versions read from inside the built image (Python 3.14.7).
+    - Where the image comes from: local build in development, registry by digest in production.
+    - Queue, worker and storage, plus the Agent 3 decisions.
+    - The title, the intro and the Agent 1 sandbox note now cover Agent 3, and `CLAUDE.md` says `skills.md` covers all three agents.
+
+    Open point recorded there: the image's transitive dependencies aren't pinned (only the six top-level packages are).
 
 ## Phase 1 — Trigger & execution status
 
-- [ ] `POST /api/agent3/plans/{plan_id}/executions` (§9): `agent3/router.py`, mounted in `app.py`. Gates: `approved`, not stale (reuse `mark_stale_plans`), snapshot present, no active job (plus the `23505` race → `409`). Freezes `params` from §11, inserts `execution_jobs` plus a `pending` `unit_executions` row per plan item, and enqueues. Tests: happy path, each `409`, `404`, `401`.
+- [x] `POST /api/agent3/plans/{plan_id}/executions` (§9): `agent3/router.py`, mounted in `app.py`. Gates: `approved`, not stale (reuse `mark_stale_plans`), snapshot present, no active job (plus the `23505` race → `409`). Freezes `params` from §11, inserts `execution_jobs` plus a `pending` `unit_executions` row per plan item, and enqueues. Tests: happy path, each `409`, `404`, `401`.
+  - *Done 2026-09-25:*
+    - `agent3/router.py`, mounted in `app.py`. Gates in order: `404`, stale (`409`, and the plan is marked `stale`), not approved (`409`), no source snapshot (`409` "re-ingest"), no units (`409`), active job (`409`, plus the `23505` race).
+    - Params frozen from §11. One `pending` `unit_executions` row per plan item.
+    - If creating the units or enqueueing fails, the job is marked `failed`, so it can't block the plan through the one-active-job index.
+    - `mark_stale_plans` / `is_stale` moved to `document_analyzer/shared/plan_staleness.py`, and Agent 2's router imports them from there.
+    - New Agent 1 column `ingestion_jobs.source_snapshot_path` (`20260925130000_agent1_source_snapshot_path.sql`, `design.md` §2), always null until the snapshot upload task. It **must be applied live** before this endpoint is used there, or the snapshot check fails with a 500.
+    - 21 tests in `tests/test_agent3_executions_api.py`.
 
 ### Frontend sync — Generate code
-- [ ] A "Generate code" action on `PlanPage`, shown only when the plan is `approved` and not stale. Otherwise it explains why ("approve every phase first", "plan is stale"). Show the backend's `409` verbatim. On `202`, call `navigateToExecution(execution_job_id)`.
+- [x] A "Generate code" action on `PlanPage`, shown only when the plan is `approved` and not stale. Otherwise it explains why ("approve every phase first", "plan is stale"). Show the backend's `409` verbatim. On `202`, call `navigateToExecution(execution_job_id)`.
+  - *Done 2026-09-25:*
+    - `GenerateCodeAction` in the `PlanPage` header. It's disabled with the reason for draft, in-review, rejected and stale plans (`generateCodeBlocker`).
+    - `navigateToExecution` with the `execution` page param. `ExecutionStatusPage` is a placeholder until the next task.
+    - Checked with `vite build` and in a browser against the real app over a seeded `FakeClient` (dev harness in the session scratchpad):
+      - draft, in-review and stale plans show a disabled button with the right hint;
+      - approved with no snapshot, and approved with a job already running, each show the backend's `409` verbatim;
+      - approved lands on `?execution=<id>` with the job, 3 unit rows and one enqueue recorded.
 
-- [ ] `GET /api/agent3/executions/{execution_job_id}` (§9). Tests: each status, `404`, `401`.
+- [x] `GET /api/agent3/executions/{execution_job_id}` (§9). Tests: each status, `404`, `401`.
+  - *Done 2026-09-25:*
+    - `agent3/router.py::get_execution_status`, with the response rebuilt field by field.
+    - `counts` = `{total, done, passed, failed_verification, error, built_on_failed_dependency}`, computed live from the job's `unit_executions` on every poll (design §9 updated). `execution_jobs.counts` is only written at the end, so it can't drive the progress count.
+    - `has_output` instead of exposing `output_zip_path`.
+    - 9 tests: queued, running with a mixed unit breakdown, failed, done, no pass-through, `404` missing and other-org, counts scoped to this job and org, `401`.
 
 ### Frontend sync — Execution status
-- [ ] `ExecutionStatusPage` (`?execution=`): polls until terminal. `ProgressStages` with `prepare → units → assemble → final_test → done`, a count of units done out of the total from `counts`, `error` on failure, and a "View results" button on `done`.
+- [x] `ExecutionStatusPage` (`?execution=`): polls until terminal. `ProgressStages` with `prepare → units → assemble → final_test → done`, a count of units done out of the total from `counts`, `error` on failure, and a "View results" button on `done`.
+  - *Done 2026-09-25:*
+    - Replaces the placeholder. It polls every 3 s until `done`/`failed` (`EXECUTION_STAGES` in the `ProgressStages` stepper) and shows "N of M units done" with passed / failed verification / error / built-on-failed-dependency badges.
+    - On failure it shows the error. On `done` it shows the final test line. "Back to plan" appears in the header and on terminal states.
+    - Checked in a browser against the real router over a seeded `FakeClient`:
+      - queued;
+      - failed (with the Prepare step marked failed, and polling stopped);
+      - done;
+      - running, stepped forward live with a dev endpoint from 2 of 5 units through Assemble to Done without a reload;
+      - "Back to plan" navigation.
+    - **Deferred:** the "View results" button on `done` goes in with `ExecutionResultsPage` (Phase 5 "Results" task), because the page it opens doesn't exist yet.
 
-- [ ] `GET /api/agent3/plans/{plan_id}/executions` (§9). Tests: ordering, other-org `404`.
+- [x] `GET /api/agent3/plans/{plan_id}/executions` (§9). Tests: ordering, other-org `404`.
+  - *Done 2026-09-25:*
+    - `agent3/router.py::list_executions`, newest first. `404` for a missing or other-org plan.
+    - `counts` has the same live shape as the status endpoint. It's read for all the plan's jobs in one batched `in_` query (`_counts_by_job`, now shared with `GET /executions/{id}`). Design §9 updated.
+    - 7 tests: ordering with counts, empty, only this plan's runs, `404` missing and other-org, another org's runs on the same plan id hidden, `401`.
 
 ### Frontend sync — Execution list
-- [ ] A "Code generation runs" list on the approved `PlanPage` (status, counts, date), linking to each execution. Include an empty state.
+- [x] A "Code generation runs" list on the approved `PlanPage` (status, counts, date), linking to each execution. Include an empty state.
+  - *Done 2026-09-25:*
+    - `ExecutionRunsList` below the plan header. Each run shows its date, "N of M units done (K passed)", the current stage while running, and its status. Each row opens that run's status page.
+    - Shown for approved plans, and for stale ones, because an approved plan that went stale keeps its earlier runs. There's an empty state.
+    - Checked in a browser over the seeded fake:
+      - an approved plan with no runs shows the empty state, and a draft plan shows no list;
+      - a stale plan lists its failed run, and a done run shows "3 of 3 units done (2 passed)" and opens its status page;
+      - the full loop: Generate code → status page (queued) → Back to plan → the new queued run is listed.
 
 ## Phase 2 — Unit context & generation (worker only)
 
@@ -77,7 +158,7 @@ The same as `tasks_agent2.md`:
 - [ ] `GET /api/agent3/executions/{id}/units` (§9): verdicts grouped by phase, with merged-item labels following Agent 2's stand-in rules. Tests.
 
 ### Frontend sync — Results
-- [ ] `ExecutionResultsPage`: phases, then units with verdict pills (`passed` / `failed_verification` / `error`), flag badges, attempts and contract vs behaviour counts. Include empty and error states.
+- [ ] `ExecutionResultsPage`: phases, then units with verdict pills (`passed` / `failed_verification` / `error`), flag badges, attempts and contract vs behaviour counts. Include empty and error states. Also add the "View results" button to `ExecutionStatusPage` on `done`, deferred from Phase 1.
 
 - [ ] `GET /api/agent3/executions/{id}/units/{cluster_id}` (§9): legacy slices from the snapshot, plus the last attempt's files, tests and log from storage. `404` for a unit not in this job. Tests.
 
@@ -94,7 +175,22 @@ The same as `tasks_agent2.md`:
 - [ ] Write-path multi-tenancy test for the executor (pattern: `tests/test_worker_write_path_multi_tenancy.py`): repo content or LLM output containing another org's id never changes the stamped `org_id` or the storage prefix. An update with the wrong `org_id` is a no-op. Include a positive control. No endpoint, so no frontend pair.
 - [ ] Sandbox abuse suite with generated code that tries network access, fork bombs, huge writes to `/tmp`, reading `/proc/1/environ` or host paths, and `import ctypes`. Each ends `failed_verification` / `error`, the job completes, and nothing leaks into the log. No endpoint, so no frontend pair.
 - [ ] Redelivery: kill the worker mid-`units`. On restart, the terminal units are kept, the rest run, and there are no duplicate `unit_executions` rows. No endpoint, so no frontend pair.
-- [ ] Project delete covers Agent 3 (`tasks.md` item): rows plus `agent3-output` objects are removed, and `409` while an execution is active. Frontend check: `DeleteProjectAction`'s confirm text mentions generated code.
+- [x] Project delete covers Agent 3 (`tasks.md` item): rows plus `agent3-output` objects are removed, and `409` while an execution is active. Frontend check: `DeleteProjectAction`'s confirm text mentions generated code.
+  - *Done 2026-09-27, brought forward from Phase 6:* Phase 1 lets users create runs, and after the `main` merge (Agent 1's snapshot work), deleting a project with a run would otherwise hit a foreign-key error.
+    - `projects.py::delete_project` checks `execution_jobs` in the `409` gate ("…ingestion, planning or code generation job…").
+    - It deletes `unit_executions`, then `execution_jobs`, before the Agent 2 rows they reference.
+    - It removes every `agent3-output` object under `{org_id}/{execution_job_id}/` using a recursive `_list_objects`, best effort like the other storage removals. The recursion was checked against the real bucket.
+    - `DeleteProjectAction`'s confirm text now mentions "the code generated from those plans".
+    - `design.md` §4 updated. 5 new tests in `tests/test_projects_delete.py`, and every seeded project now has an Agent 3 run, so the existing tests cover Agent 3 too.
+- [ ] Production runner image and host (`design_agent3.md` §7, "Where the image comes from"), deferred on 2026-09-25 until there's a production host:
+  - choose a private registry (GHCR, ACR or Docker Hub);
+  - push `galvanise-agent3-runner` with a version tag;
+  - set `AGENT3_RUNNER_IMAGE` to its `@sha256:` digest;
+  - make the deploy step `docker pull` that digest before starting the executor;
+  - install gVisor and set `AGENT3_SANDBOX_RUNTIME=runsc` and `AGENT3_REQUIRE_GVISOR=true`;
+  - run `tests/test_agent3_sandbox.py` on the host, including `test_live_gvisor_runtime`, which has only ever been skipped on Docker Desktop.
+
+  No endpoint, so no frontend pair.
 - [ ] A larger run over a synthetic plan (reuse `tests/test_load_large_repo.py`'s generator through Agent 2). Record per-unit time, tokens and total cost in `design_agent3.md`, and use them to settle specs §9 (attempts, timeout, parallelism). No endpoint, so no frontend pair.
 - [ ] Frontend audit across `ExecutionStatusPage`, `ExecutionResultsPage`, `ExecutionUnitPage` and the `PlanPage` additions: loading, empty and error states, keyboard reachability, and readability of long logs.
 

@@ -57,8 +57,8 @@ Rules shared by every table below (same as `design_agent2.md` §2):
 | `project_id` | uuid, FK → `projects` | denormalized for listing and project delete |
 | `plan_id` | uuid, FK → `migration_plans` | must be `approved` at creation |
 | `source_job_id` | uuid, FK → `ingestion_jobs` | copied from the plan: the snapshot this run reads |
-| `status` | enum(`queued`,`running`,`done`,`failed`) | |
-| `progress_stage` | enum(`prepare`,`units`,`assemble`,`final_test`), nullable | |
+| `status` | `job_status` (`queued`,`running`,`done`,`failed`) | reuses Agent 1's enum |
+| `progress_stage` | `execution_stage` (`prepare`,`units`,`assemble`,`final_test`), nullable | |
 | `error` | text, nullable | job-level failure only; unit failures live on `unit_executions` |
 | `params` | jsonb | `{model_deployment, max_attempts, max_context_chars, sandbox_timeout_seconds, sandbox_memory_mb, runner_image}`, frozen from §11 at creation |
 | `counts` | jsonb, nullable | `{total, passed, failed_verification, error, built_on_failed_dependency}` |
@@ -73,17 +73,19 @@ Partial unique index `execution_jobs_one_active_per_plan` on `(plan_id)` where `
 | `id` | uuid, PK | |
 | `execution_job_id` | uuid, FK → `execution_jobs` on delete cascade | |
 | `cluster_id` | uuid, FK → `clusters` | the plan item's key (`migration_plan_items` PK is `(plan_id, cluster_id)`) |
-| `phase_cluster_id` | uuid | copied from the plan item |
+| `phase_cluster_id` | uuid, FK → `clusters` | copied from the plan item |
 | `phase_order`, `unit_order` | int | copied from the plan item |
-| `status` | enum(`pending`,`running`,`passed`,`failed_verification`,`error`) | |
-| `attempts` | int, default 0 | |
-| `flags` | text[] | `unverified_inputs`, `built_on_failed_dependency`, `stubbed` |
+| `status` | `unit_execution_status` (`pending`,`running`,`passed`,`failed_verification`,`error`) | |
+| `attempts` | int, default 0 | check `>= 0` |
+| `flags` | text[], default `{}` | `unverified_inputs`, `built_on_failed_dependency`, `stubbed`. A check constraint allows only these values. |
 | `symbol_map` | jsonb, nullable | `{entity_id: {python_module, python_name, kind}}` for every `public_interface` entry |
 | `test_summary` | jsonb, nullable | `{contract: {passed, failed}, behaviour: {passed, failed}, duration_s}` for the last attempt |
 | `last_error` | text, nullable | truncated failure reason for the last attempt |
 | `storage_prefix` | text, nullable | `{org_id}/{execution_job_id}/units/{cluster_id}/` |
 
 Unique `(execution_job_id, cluster_id)`.
+
+Nothing cascades from Agent 1 or Agent 2 rows (plans are immutable snapshots). Only `unit_executions` cascades with its `execution_jobs` row. Migration: `20260925100000_agent3_execution_tables.sql`.
 
 ### Queue
 `agent3_execution_jobs`, created with `pgmq.create` in its own migration. Its helpers go in `queue.py` next to Agent 1's and 2's (`enqueue_execution_job`, `read_next_execution_job`, `delete_execution_job_message`), with the explicit `$2::bigint` cast (`design.md` §3 bug #2). It is never shared.
@@ -171,31 +173,57 @@ Behaviour tests (LLM) are marked `@pytest.mark.behaviour`, and contract tests `@
 
 **Runner image** `galvanise-agent3-runner`: `python:3.14-slim` with pinned `fastapi`, `pydantic`, `sqlalchemy`, `httpx`, `pytest`, `pytest-timeout`. It's built from `backend/agent3_runner/Dockerfile`, and the tag is frozen in `params.runner_image`. There's no pip install at run time, because there's no network.
 
+**Where the image comes from.**
+- **Development:** built locally with `docker build -t galvanise-agent3-runner:0.1 backend/agent3_runner`. When the image is missing, the executor refuses to start and prints that build command (§10).
+- **Docker Desktop name lookup (2026-09-25):** on Docker Desktop 29.6.1 with the containerd image store, `docker image inspect galvanise-agent3-runner:0.1` intermittently answers "No such image" for an image that exists. `docker image ls` lists it, `docker run` resolves it, and the fully qualified `docker.io/library/galvanise-agent3-runner:0.1` always inspects. An earlier "image deleted" diagnosis that day was this bug. `check_sandbox_available` therefore retries a missed short name under its qualified name before reporting the image missing (`sandbox.qualified_image_name`).
+- **Production:** push the image to a private registry and set `AGENT3_RUNNER_IMAGE` to its digest (`<registry>/galvanise-agent3-runner@sha256:…`), not a tag.
+  - A digest can't be re-pointed, so the image frozen in `params.runner_image` is exactly the one that ran. That keeps runs reproducible and auditable (specs NFR5).
+  - A lost image can be pulled back unchanged.
+  - `sandbox.py` runs with `--pull never`, so the deploy step pulls the image before the executor starts, and the startup check confirms it's present.
+  - Every change to `requirements.txt` or the Dockerfile means a new tag and a new digest, never an overwrite.
+
 **Invocation** (`sandbox.py`, via the Docker CLI, the same way Agent 1 shells out to `git` and `php`):
 
 ```
-docker run --rm
+docker run --rm --name agent3-<uuid>
+  --pull never --log-driver none
   --network none
-  --read-only --tmpfs /tmp:rw,size=256m
+  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m
   --cap-drop ALL --security-opt no-new-privileges
   --user 65534:65534
   --memory {sandbox_memory_mb}m --memory-swap {sandbox_memory_mb}m
-  --cpus 1 --pids-limit 256
+  --cpus 1 --pids-limit 256 --ulimit nofile=1024:1024
+  -e PYTHONDONTWRITEBYTECODE=1 -e HOME=/tmp
   [--runtime runsc]
-  -v {workspace}:/work:ro -w /work
-  {runner_image} python -m pytest -q -p no:cacheprovider --junitxml=/tmp/junit.xml ...
+  --mount type=bind,src={workspace},dst=/work,readonly -w /work
+  {runner_image} sh -c 'python -m pytest -q -p no:cacheprovider --junitxml=/tmp/junit.xml >/tmp/out.txt 2>&1; c=$?;
+                        tail -c 65536 /tmp/out.txt; echo; echo <sentinel>; head -c 5000000 /tmp/junit.xml; exit $c'
 ```
 
-- The wall-clock timeout is enforced by the worker (`subprocess` timeout → `docker kill`), plus `pytest-timeout` per test.
-- The JUnit XML is streamed back on stdout (`cat /tmp/junit.xml` after pytest, split on a sentinel), so nothing needs a writable mount.
+- `--mount` rather than `-v`, because Windows paths contain `:`. A workspace path containing `,` is refused (it would inject mount options).
+- `--pull never`: a missing image fails fast instead of trying a pull. `--log-driver none`: container output never lands in the daemon's log files.
+- The host environment is never forwarded (`docker run` doesn't inherit it), so worker secrets stay out of the container. Only the two `-e` values above are set.
+- On Linux, `run_pytest` makes the workspace tree world-readable (not writable) first, because `mkdtemp` dirs are `0700` and the container runs as uid 65534.
+- The wall-clock timeout is enforced by the worker (`subprocess` timeout → `docker kill` + `docker rm -f` by container name, because killing the CLI doesn't stop the container). Per-test `pytest-timeout` is configured by the template's pytest settings (§8), not on the command line.
+- The JUnit XML is streamed back on stdout after the output tail, split on a random per-run sentinel, so nothing needs a writable mount.
+- **Output is capped.** Inside the container: the last 64 KB of pytest output and the first 5 MB of JUnit XML. On the host: the CLI's stdout and stderr are drained on threads that keep the first 10 MB / 64 KB and discard the rest. Generated code can write to the container's stdout directly, bypassing the redirect, so neither host memory nor host disk can be flooded.
+- **Untrusted XML.** `parse_junit` refuses anything over 5 MB or containing `<!DOCTYPE` / `<!ENTITY`, then parses with stdlib `ElementTree`. Unparseable XML gives an empty test list, which the verdict logic treats as failing.
+- **Result:** `SandboxResult{status, exit_code, tests[{classname, name, outcome, message}], output_tail, junit_xml, duration_s}`. `status` is `completed`, `timed_out` (worker killed it), or `killed` (exit 137: the OOM killer or another SIGKILL). `classname` is the dotted module path, which is how `test_contract.py` and `test_behaviour.py` results are told apart. `output_tail` and `junit_xml` are what §2 stores as `log.txt` and `junit.xml`.
+- `SandboxUnavailableError` covers infrastructure errors: no Docker binary, daemon down, image missing, gVisor required but absent, or `docker run` exiting 125/126/127 without the sentinel. The worker fails the *job* on it and never turns it into a unit verdict.
 - **gVisor:** `--runtime runsc` is added when `AGENT3_SANDBOX_RUNTIME=runsc`. The worker refuses to start if `AGENT3_REQUIRE_GVISOR=true` and `runsc` isn't registered with Docker (production setting). On a developer machine (for example Docker Desktop on Windows) it runs with the default runtime, keeping every other flag, and logs a warning.
 - The worker never imports, execs or `eval`s generated code in its own process. Parsing with `ast` is the only thing it does with it.
 
-**Sandbox smoke tests (blocking before any generation work):**
-1. A test that opens a socket fails.
-2. A test that forks without limit or allocates beyond the limit is killed, and the unit gets `failed_verification`.
-3. A test that sleeps past the timeout is killed.
-4. A write outside `/tmp` fails.
+**Known limitation: the sandbox protects the host, not the verdict.** Generated code runs in the same process as pytest, so it can fake its own results. It can monkeypatch pytest, rewrite `/tmp/junit.xml`, or read the sentinel from `/proc/1/cmdline` and print a forged report. Verdicts are therefore advisory. The backstops are the reviewer UI (the code is shown next to its tests and log) and the final assembled run (§5), where one unit can't easily fake another unit's tests. None of this lets code out of the container.
+
+**Docker Desktop vs gVisor (2026-09-25).** Docker Desktop on Windows (WSL 2 backend) doesn't ship `runsc`, and registering it inside Docker Desktop's VM isn't supported. Developer machines therefore run with the default `runc` runtime, keeping every other flag above. gVisor is only verified on a Linux production host (`test_live_gvisor_runtime` skips elsewhere). Verified live on Docker Desktop 29.6.1 (engine runtimes: `runc`, `io.containerd.runc.v2`, `nvidia`; no `runsc`) with `tests/test_agent3_sandbox.py`: 8 of 8 smoke tests pass, and the gVisor test is skipped. Observed: allocating 512 MB under a 256 MB limit is OOM-killed in about 2 s (exit 137 → `killed`, no JUnit), a `sleep(600)` test is `timed_out` after the 5 s limit and its container is gone afterwards, and 1,000 threads hit the 256 pids limit (`RuntimeError`).
+
+**Sandbox smoke tests (blocking before any generation work)**, in `tests/test_agent3_sandbox.py`, run live against the image:
+1. A test that opens a socket or resolves DNS fails.
+2. A test that allocates beyond the memory limit is killed, and a thread bomb hits the pids limit.
+3. A test that sleeps past the timeout is killed, and its container is removed.
+4. A write outside `/tmp` (to `/work` or `/etc`) fails, while `/tmp` is writable.
+
+Plus: a positive control (one pass, one fail reported correctly), the uid is 65534, a host env canary isn't visible inside the container, and a gVisor run (skipped without `runsc`).
 
 ## 8. Target architecture (WordPress → FastAPI)
 
@@ -240,8 +268,8 @@ The conventions are the same as Agents 1 and 2 (`design.md` §4, `design_agent2.
 | Method & path | Purpose | Notes |
 |---|---|---|
 | `POST /plans/{plan_id}/executions` | Create an execution job | `202 {execution_job_id, status}`. `404` for missing or other-org plan. `409` if not `approved`, stale (runs Agent 2's `mark_stale_plans` check first, imported as a pure helper or moved to `shared/`), no source snapshot, or an active job exists (also the unique-index `23505` race). |
-| `GET /plans/{plan_id}/executions` | List execution jobs for the plan | `{executions: [{id, status, progress_stage, counts, created_at}]}`, newest first. |
-| `GET /executions/{execution_job_id}` | Poll status | `{execution_job_id, plan_id, project_id, status, progress_stage, error, counts, final_test_summary, has_output}` |
+| `GET /plans/{plan_id}/executions` | List execution jobs for the plan | `{executions: [{id, status, progress_stage, counts, created_at}]}`, newest first. `counts` has the same live shape as `GET /executions/{id}`, fetched for all the plan's jobs in one batched read. `404` for a missing or other-org plan. |
+| `GET /executions/{execution_job_id}` | Poll status | `{execution_job_id, plan_id, project_id, status, progress_stage, error, counts, final_test_summary, has_output}`. `counts` is `{total, done, passed, failed_verification, error, built_on_failed_dependency}`, computed live from this job's `unit_executions` rows on every poll, so the status page can show progress while `units` runs (`execution_jobs.counts` is only written at the end, §5). `done` counts terminal units (`passed` + `failed_verification` + `error`). `has_output` is whether `output_zip_path` is set. `404` for missing and other-org jobs alike. |
 | `GET /executions/{execution_job_id}/units` | Verdicts | `{phases: [{phase_cluster_id, phase_order, label, units: [{cluster_id, unit_order, label, status, attempts, flags, test_summary}]}]}`. Labels come from `clusters`, the same stand-in rules as `design_agent2.md` §11 for merged items. |
 | `GET /executions/{execution_job_id}/units/{cluster_id}` | Unit detail | `{cluster_id, status, attempts, flags, last_error, test_summary, symbol_map, legacy: [{entity_id, name, file_path, line, end_line, source}], files: [{path, content}], tests: [{path, content}], log}`. Reads the last attempt from storage. `404` for a unit not in this job. |
 | `GET /executions/{execution_job_id}/download` | Assembled zip | `200 {url, expires_in}` (a signed URL, 5 min). `409` until `output_zip_path` is set. |
@@ -289,10 +317,10 @@ Agent 3 is read-only on Agent 1 and 2 tables. These gaps are fixed in their own 
   - Upload the boilerplate-stripped source as `agent1-snapshots/{org_id}/{job_id}/source.tar.gz`, and add `ingestion_jobs.source_snapshot_path`.
   - Add `end_line` to function, method and class `raw_facts` (`extract.php` `getEndLine()`) and to the WordPress extractor's entities.
 
-  Jobs ingested before this fix get `409` "re-ingest this project to generate code".
+  Jobs ingested before this fix get `409` "re-ingest this project to generate code". The `source_snapshot_path` column was added ahead of the rest (2026-09-25, `20260925130000_agent1_source_snapshot_path.sql`), so the gate is live. Until Agent 1 uploads snapshots, every plan gets that `409`.
 - **Sparse call graph** (`design_agent2.md` §13). Missing edges mean incomplete `outgoing_dependencies`, so a unit may call code it wasn't given the symbol map for. Mitigation: the prompt also gets a list of every earlier unit's exported symbols (names only), and an unresolved import makes the contract test fail, which triggers a retry.
 - **`include` edges have no target.** File-level includes are invisible. Their effect should show up as unresolved-symbol test failures.
-- **Project delete** (`projects.py::delete_project`, Agent 1) must also remove Agent 3 rows and `agent3-output` objects for the project, and refuse (`409`) while an execution job is active. That's a cross-agent change to an Agent 1 endpoint, recorded as a task in `tasks.md`.
+- **Project delete** (`projects.py::delete_project`, Agent 1) removes Agent 3's `unit_executions`, `execution_jobs` and `agent3-output` objects for the project, and refuses (`409`) while an execution job is active. It was done 2026-09-27 (`design.md` §4), after Agent 1's snapshot work and Agent 3's Phase 1 landed together.
 - **Staleness** is checked with Agent 2's rule (`design_agent2.md` §9.1). An existing execution of a plan that later goes stale is kept, and new executions are refused.
 
 ## 14. Later: differential testing

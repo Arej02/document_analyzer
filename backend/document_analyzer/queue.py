@@ -112,3 +112,55 @@ async def delete_planning_job_message(msg_id: int) -> None:
         await conn.fetchval("select pgmq.delete($1, $2::bigint)", PLANNING_QUEUE_NAME, msg_id)
     finally:
         await conn.close()
+
+
+# Agent 3 (Execute) — design_agent3.md §1, §2 "Queue". Its own queue, never shared
+# (CLAUDE.md); FastAPI's POST /api/agent3/plans/{plan_id}/executions enqueues, the
+# executor worker (agent3/worker/run.py) reads and deletes.
+EXECUTION_QUEUE_NAME = "agent3_execution_jobs"
+
+# Same semantics as DEFAULT_VISIBILITY_TIMEOUT_SECONDS above, but must cover one
+# execution job's prepare -> units -> assemble -> final_test pipeline, which runs
+# longer than Agents 1 and 2 (design_agent3.md §11).
+DEFAULT_EXECUTION_VISIBILITY_TIMEOUT_SECONDS = int(os.environ.get("AGENT3_QUEUE_VISIBILITY_TIMEOUT_SECONDS", 3600))
+
+
+async def enqueue_execution_job(execution_job_id: str, org_id: str) -> None:
+    dsn = os.environ["SUPABASE_DB_URL"]
+    payload = json.dumps({"execution_job_id": execution_job_id, "org_id": org_id})
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.fetchval("select pgmq.send($1, $2::jsonb)", EXECUTION_QUEUE_NAME, payload)
+    finally:
+        await conn.close()
+
+
+async def read_next_execution_job(vt_seconds: int | None = None) -> dict | None:
+    """Agent 3 counterpart of `read_next_job`. Returns
+    `{"msg_id", "execution_job_id", "org_id"}`, or None if the queue is empty."""
+    dsn = os.environ["SUPABASE_DB_URL"]
+    vt = vt_seconds if vt_seconds is not None else DEFAULT_EXECUTION_VISIBILITY_TIMEOUT_SECONDS
+    conn = await asyncpg.connect(dsn)
+    try:
+        row = await conn.fetchrow("select msg_id, message from pgmq.read($1, $2, 1)", EXECUTION_QUEUE_NAME, vt)
+        if row is None:
+            return None
+        message = json.loads(row["message"])
+        return {
+            "msg_id": row["msg_id"],
+            "execution_job_id": message["execution_job_id"],
+            "org_id": message["org_id"],
+        }
+    finally:
+        await conn.close()
+
+
+async def delete_execution_job_message(msg_id: int) -> None:
+    """Agent 3 counterpart of `delete_job_message`."""
+    dsn = os.environ["SUPABASE_DB_URL"]
+    conn = await asyncpg.connect(dsn)
+    try:
+        # Same explicit $2::bigint cast as delete_job_message (design.md §3 bug #2).
+        await conn.fetchval("select pgmq.delete($1, $2::bigint)", EXECUTION_QUEUE_NAME, msg_id)
+    finally:
+        await conn.close()

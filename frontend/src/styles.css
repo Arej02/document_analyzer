@@ -91,6 +91,8 @@ h1 em { display: inline-block; padding: 3px 0 10px; color: var(--ring); font-sty
 .job-stage-failed { color: var(--danger); }
 .job-stage-failed .job-stage-dot { background: #ff5c4d; box-shadow: 0 0 0 4px rgba(255,92,77,.22); }
 .job-failed-message { max-width: 560px; }
+.execution-progress { margin: 18px 0 10px; color: var(--text); font-size: 15px; }
+.execution-progress strong { color: var(--emphasis); }
 .live-entity-tree { margin: 4px 0 32px; width: 100%; max-width: 980px; height: 420px; border: 1px solid rgba(var(--neutral-rgb),.12); border-radius: 14px; overflow: hidden; background: rgba(var(--neutral-rgb),.02); }
 .live-entity-tree .react-flow__pane { cursor: default; }
 .live-entity-tree-empty { display: flex; align-items: center; justify-content: center; height: 140px; }

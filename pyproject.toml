@@ -27,6 +27,7 @@ dependencies = [
 document-analyzer = "document_analyzer:main"
 document-analyzer-worker = "document_analyzer.worker.run:main"
 document-analyzer-planner = "document_analyzer.agent2.worker.run:main"
+document-analyzer-executor = "document_analyzer.agent3.worker.run:main"
 document-analyzer-add-org-member = "document_analyzer.admin.add_org_member:main"
 
 [tool.uv.build-backend]

@@ -1,0 +1,9 @@
+# Agent 3 sandbox runner image (design_agent3.md §7). Every version is pinned:
+# the image has no network at run time, so this is everything generated code can import.
+# fastapi / pydantic / httpx match uv.lock.
+fastapi==0.141.1
+pydantic==2.13.5
+httpx==0.28.1
+sqlalchemy==2.1.0
+pytest==9.1.1
+pytest-timeout==2.4.0
