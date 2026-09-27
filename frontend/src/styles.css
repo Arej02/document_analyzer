@@ -118,6 +118,20 @@ h1 em { display: inline-block; padding: 3px 0 10px; color: var(--ring); font-sty
 .unverified-badge-warn .unverified-badge-icon { color: var(--surface); background: var(--warning); }
 .unverified-badge-clear { color: var(--emphasis); background: rgba(160,161,207,.1); border: 1px solid rgba(160,161,207,.25); }
 .unverified-badge-clear .unverified-badge-icon { color: var(--button-text); background: var(--button); }
+/* Grounding-confidence pill (validation metrics: high/medium/low grade beyond the
+   binary verified/unverified grounding_status) — same shape as .risk-level, but low
+   confidence maps to the "bad" (danger) color, opposite of risk's own low/high mapping. */
+.confidence { display: inline-block; margin: 0; padding: 4px 11px; border-radius: 20px; font: 700 11px/1 'Geist Mono', monospace; text-transform: uppercase; letter-spacing: .6px; }
+.confidence-high { color: var(--emphasis); background: rgba(160,161,207,.14); }
+.confidence-medium { color: var(--warning); background: rgba(255,207,122,.14); }
+.confidence-low { color: var(--danger); background: rgba(255,92,77,.16); }
+.grounding-issues { list-style: none; margin: 6px 0 0; padding: 0; font-size: 12px; color: var(--muted-foreground); }
+.grounding-issues li { padding: 2px 0 2px 14px; position: relative; }
+.grounding-issues li::before { content: '·'; position: absolute; left: 2px; }
+.extraction-stats { margin: 4px 0 0; color: var(--muted-foreground); font-size: 13px; }
+.extraction-stats strong { color: var(--text); }
+.extraction-stats-list { list-style: none; display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 4px 0 0; padding: 0; }
+.extraction-stats-errored { color: var(--warning); }
 .repo-summary-text { margin: 0 0 18px; color: var(--text); font-size: 15px; line-height: 1.6; }
 .entity-counts { list-style: none; display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 0; padding: 0; color: var(--emphasis); font-size: 13px; }
 .entity-counts strong { color: var(--text); }

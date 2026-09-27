@@ -4,8 +4,10 @@ and strings [the individual worker steps] together in order").
 
 Every step this module calls was already built and independently unit-tested;
 this module's only job is ordering and wiring — dequeue a job, and for it in
-order: mark it `running`, fetch its source, detect/boilerplate-filter, run
-whichever `Extractor`s apply, persist entities/edges, diff the job's files
+order: mark it `running`, fetch its source, record which commit it cloned
+(design_agent3.md §13), detect/boilerplate-filter, archive a post-filter
+source snapshot (same Agent 3 prerequisite), run whichever `Extractor`s
+apply, persist entities/edges, diff the job's files
 against the project's previous `done` job (diff.py, tasks.md Phase 5) and
 record the changed/unchanged/removed counts, fan entity-level
 summarization+grounding out concurrently (a content_hash-unchanged entity's
@@ -74,7 +76,14 @@ from document_analyzer.worker.laravel_extractor import LaravelExtractor
 from document_analyzer.worker.persist import persist_extraction_result
 from document_analyzer.worker.persist_summary import persist_summary
 from document_analyzer.worker.php_extractor import PhpExtractionError, PhpExtractor
-from document_analyzer.worker.status import mark_job_failed, mark_job_running, mark_progress_stage
+from document_analyzer.worker.snapshot import SnapshotError, archive_source_snapshot
+from document_analyzer.worker.status import (
+    mark_job_failed,
+    mark_job_running,
+    mark_progress_stage,
+    persist_source_commit_sha,
+    persist_source_snapshot_path,
+)
 from document_analyzer.worker.summarize import (
     EntitySummary,
     SummarizationError,
@@ -101,7 +110,14 @@ POLL_INTERVAL_SECONDS = 5
 # Known extraction failure modes worth catching by name (so the job is marked
 # `failed` with a specific, readable `error` rather than an opaque traceback);
 # anything else still hits the catch-all in `process_job` below.
-_PIPELINE_ERRORS = (SourceFetchError, PhpExtractionError, WordPressExtractionError, SummarizationError, GroundingCheckError)
+_PIPELINE_ERRORS = (
+    SourceFetchError,
+    PhpExtractionError,
+    WordPressExtractionError,
+    SummarizationError,
+    GroundingCheckError,
+    SnapshotError,
+)
 
 
 # Same guard as Agent 2's planner worker (agent2/worker/run.py).
@@ -325,8 +341,12 @@ def process_job(job_id: str, org_id: str) -> None:
 
         with tempfile.TemporaryDirectory(prefix=f"agent1-job-{job_id}-") as tmp:
             dest_dir = Path(tmp)
-            repo_path = fetch_source(client, job, dest_dir)
+            fetch_result = fetch_source(client, job, dest_dir)
+            repo_path = fetch_result.repo_path
+            persist_source_commit_sha(client, job_id, org_id, fetch_result.source_commit_sha)
             _strip_boilerplate(repo_path, client, job_id, org_id)
+            snapshot_path = archive_source_snapshot(client, job_id, org_id, repo_path)
+            persist_source_snapshot_path(client, job_id, org_id, snapshot_path)
             _run_extractors(repo_path, client, job_id, org_id)
 
         diff = diff_against_previous_job(client, org_id, job_row.get("project_id"), job_id)

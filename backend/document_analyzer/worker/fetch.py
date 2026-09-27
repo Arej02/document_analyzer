@@ -19,6 +19,7 @@ import base64
 import subprocess
 import tarfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from supabase import Client
@@ -32,8 +33,14 @@ class SourceFetchError(Exception):
     """Raised when a job's source can't be materialized (bad archive, clone failure, ...)."""
 
 
-def fetch_source(client: Client, job: dict, dest_dir: Path) -> Path:
-    """Materializes an ingestion_jobs row's source under dest_dir. Returns the repo root path.
+@dataclass(frozen=True)
+class FetchResult:
+    repo_path: Path
+    source_commit_sha: str | None  # design.md §2 `ingestion_jobs.source_commit_sha` — null for uploads
+
+
+def fetch_source(client: Client, job: dict, dest_dir: Path) -> FetchResult:
+    """Materializes an ingestion_jobs row's source under dest_dir.
 
     `job` needs `source_type` and `source_ref`; for a private GitHub repo, an
     `access_token` key (resolved from `github_token_ref` — see the next tasks.md
@@ -47,7 +54,7 @@ def fetch_source(client: Client, job: dict, dest_dir: Path) -> Path:
     raise SourceFetchError(f"unsupported source_type: {source_type!r}")
 
 
-def _fetch_upload(client: Client, object_path: str, dest_dir: Path) -> Path:
+def _fetch_upload(client: Client, object_path: str, dest_dir: Path) -> FetchResult:
     try:
         archive_bytes = client.storage.from_(UPLOAD_BUCKET).download(object_path)
     except Exception as exc:  # supabase-py raises its own storage exception type
@@ -60,7 +67,7 @@ def _fetch_upload(client: Client, object_path: str, dest_dir: Path) -> Path:
     extract_dir = dest_dir / "repo"
     extract_dir.mkdir(parents=True, exist_ok=True)
     _extract_archive_safely(archive_path, extract_dir)
-    return extract_dir
+    return FetchResult(repo_path=extract_dir, source_commit_sha=None)
 
 
 def _extract_archive_safely(archive_path: Path, extract_dir: Path) -> None:
@@ -102,7 +109,7 @@ def _assert_entry_count_within_bounds(entry_count: int) -> None:
         raise SourceFetchError(f"archive contains {entry_count} entries, exceeding max allowed count of {MAX_FILE_COUNT}")
 
 
-def _fetch_github(repo_url: str, dest_dir: Path, access_token: str | None = None) -> Path:
+def _fetch_github(repo_url: str, dest_dir: Path, access_token: str | None = None) -> FetchResult:
     repo_dir = dest_dir / "repo"
     cmd = ["git"]
     if access_token:
@@ -123,7 +130,20 @@ def _fetch_github(repo_url: str, dest_dir: Path, access_token: str | None = None
     file_count = sum(1 for path in repo_dir.rglob("*") if path.is_file())
     _assert_entry_count_within_bounds(file_count)
 
-    return repo_dir
+    source_commit_sha = _rev_parse_head(repo_dir)
+
+    return FetchResult(repo_path=repo_dir, source_commit_sha=source_commit_sha)
+
+
+def _rev_parse_head(repo_dir: Path) -> str:
+    """Records exactly which commit a `--depth 1` clone landed on (design.md §2
+    `source_commit_sha`) — Agent 3 needs this to re-fetch the same source it's
+    translating (design_agent3.md §13). A shallow clone's HEAD is still a real,
+    resolvable commit, so this is just `git rev-parse HEAD` in the clone's own dir."""
+    result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=repo_dir)
+    if result.returncode != 0:
+        raise SourceFetchError(f"could not resolve cloned commit: {result.stderr}")
+    return result.stdout.strip()
 
 
 def _redact(message: str, access_token: str | None) -> str:

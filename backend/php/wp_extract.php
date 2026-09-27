@@ -162,18 +162,21 @@ final class WpCallCollector extends NodeVisitorAbstract
                 'priority' => literalOrNull($args, 2),
                 'accepted_args' => literalOrNull($args, 3),
                 'line' => $node->getStartLine(),
+                'end_line' => $node->getEndLine(),
             ];
         } elseif (in_array($fn, ['do_action', 'do_action_ref_array', 'apply_filters', 'apply_filters_ref_array'], true)) {
             $this->hookInvocations[] = [
                 'hook_type' => str_starts_with($fn, 'do_action') ? 'action' : 'filter',
                 'hook_name' => literalOrNull($args, 0),
                 'line' => $node->getStartLine(),
+                'end_line' => $node->getEndLine(),
             ];
         } elseif ($fn === 'register_post_type') {
             $this->cpts[] = [
                 'slug' => literalOrNull($args, 0),
                 'args' => literalOrNull($args, 1),
                 'line' => $node->getStartLine(),
+                'end_line' => $node->getEndLine(),
             ];
         } elseif ($fn === 'register_post_meta' || $fn === 'register_meta') {
             $this->metas[] = [
@@ -181,6 +184,7 @@ final class WpCallCollector extends NodeVisitorAbstract
                 'meta_key' => literalOrNull($args, 1),
                 'args' => literalOrNull($args, 2),
                 'line' => $node->getStartLine(),
+                'end_line' => $node->getEndLine(),
             ];
         }
 

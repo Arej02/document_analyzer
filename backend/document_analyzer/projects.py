@@ -6,6 +6,7 @@ from supabase import Client
 
 from .storage import BUCKET
 from .supabase_client import insert_scoped
+from .worker.snapshot import SNAPSHOT_BUCKET
 
 logger = logging.getLogger(__name__)
 
@@ -149,10 +150,17 @@ def delete_project(client: Client, org_id: str, project_id: str) -> None:
     `DELETE /api/agent1/projects/{project_id}`. `client` is the service-role client;
     every query is filtered by `org_id`. Children go before parents because Agent 1's
     FKs don't cascade, and every step is a filtered delete, so a partial failure can be
-    retried. Raises ProjectBusyError while a job for the project is queued/running."""
+    retried. Raises ProjectBusyError while a job for the project is queued/running.
+
+    Agent 3 prerequisite (design_agent3.md §13, tasks.md "Agent 3 prerequisites"):
+    also removes each job's `agent1-snapshots` source tarball. The rest of that
+    task — `execution_jobs`/`unit_executions` rows, `agent3-output` objects, and
+    refusing while an execution job is active — is deliberately not here yet:
+    Agent 3 isn't built (no such tables/bucket exist to query), so there's
+    nothing to delete or check. Revisit once Agent 3 lands."""
     jobs = (
         client.table("ingestion_jobs")
-        .select("id, status, source_type, source_ref")
+        .select("id, status, source_type, source_ref, source_snapshot_path")
         .eq("org_id", org_id)
         .eq("project_id", project_id)
         .execute()
@@ -196,3 +204,10 @@ def delete_project(client: Client, org_id: str, project_id: str) -> None:
             client.storage.from_(BUCKET).remove(upload_paths)
         except Exception:  # noqa: BLE001 — the rows are gone; an orphaned archive isn't worth failing over
             logger.warning("project %s deleted but its uploaded archives could not be removed", project_id, exc_info=True)
+
+    snapshot_paths = [job["source_snapshot_path"] for job in jobs if job.get("source_snapshot_path")]
+    if snapshot_paths:
+        try:
+            client.storage.from_(SNAPSHOT_BUCKET).remove(snapshot_paths)
+        except Exception:  # noqa: BLE001 — the rows are gone; an orphaned snapshot isn't worth failing over
+            logger.warning("project %s deleted but its source snapshots could not be removed", project_id, exc_info=True)

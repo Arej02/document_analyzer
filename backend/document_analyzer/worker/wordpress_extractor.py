@@ -127,6 +127,7 @@ class WordPressExtractor:
                         "kind": reg["hook_type"],
                         "file": file_path,
                         "line": reg["line"],
+                        "end_line": reg["end_line"],
                         "callback": reg["callback_name"],
                         "priority": reg["priority"],
                         "accepted_args": reg["accepted_args"],
@@ -151,7 +152,13 @@ class WordPressExtractor:
                 hook["kinds"].add(inv["hook_type"])
                 hook.setdefault("file_path", file_path)
                 hook["occurrences"].append(
-                    {"role": "invoke", "kind": inv["hook_type"], "file": file_path, "line": inv["line"]}
+                    {
+                        "role": "invoke",
+                        "kind": inv["hook_type"],
+                        "file": file_path,
+                        "line": inv["line"],
+                        "end_line": inv["end_line"],
+                    }
                 )
 
             for cpt in file_result.get("cpts", []):
@@ -163,7 +170,12 @@ class WordPressExtractor:
                         entity_type="schema",
                         name=slug or f"(dynamic post type at {file_path}:{cpt['line']})",
                         file_path=file_path,
-                        raw_facts={"kind": "post_type", "args": cpt["args"], "line": cpt["line"]},
+                        raw_facts={
+                            "kind": "post_type",
+                            "args": cpt["args"],
+                            "line": cpt["line"],
+                            "end_line": cpt["end_line"],
+                        },
                     )
                 )
 
@@ -181,6 +193,7 @@ class WordPressExtractor:
                             "object_type": meta["object_type"],
                             "args": meta["args"],
                             "line": meta["line"],
+                            "end_line": meta["end_line"],
                         },
                     )
                 )

@@ -102,7 +102,12 @@ class PhpExtractor:
                         entity_type="function",
                         name=fn["name"],
                         file_path=file_path,
-                        raw_facts={"params": fn["params"], "line": fn["line"], "calls": _call_names(fn["calls"])},
+                        raw_facts={
+                            "params": fn["params"],
+                            "line": fn["line"],
+                            "end_line": fn["end_line"],
+                            "calls": _call_names(fn["calls"]),
+                        },
                     )
                 )
                 function_by_name.setdefault(fn["name"], local_id)
@@ -120,6 +125,7 @@ class PhpExtractor:
                             "extends": cls["extends"],
                             "implements": cls["implements"],
                             "line": cls["line"],
+                            "end_line": cls["end_line"],
                             "methods": [m["name"] for m in cls["methods"]],
                         },
                     )
@@ -140,6 +146,7 @@ class PhpExtractor:
                                 "visibility": method["visibility"],
                                 "static": method["static"],
                                 "line": method["line"],
+                                "end_line": method["end_line"],
                                 "calls": _call_names(method["calls"]),
                             },
                         )
