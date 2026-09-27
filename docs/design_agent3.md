@@ -320,7 +320,7 @@ Agent 3 is read-only on Agent 1 and 2 tables. These gaps are fixed in their own 
   Jobs ingested before this fix get `409` "re-ingest this project to generate code". The `source_snapshot_path` column was added ahead of the rest (2026-09-25, `20260925130000_agent1_source_snapshot_path.sql`), so the gate is live. Until Agent 1 uploads snapshots, every plan gets that `409`.
 - **Sparse call graph** (`design_agent2.md` §13). Missing edges mean incomplete `outgoing_dependencies`, so a unit may call code it wasn't given the symbol map for. Mitigation: the prompt also gets a list of every earlier unit's exported symbols (names only), and an unresolved import makes the contract test fail, which triggers a retry.
 - **`include` edges have no target.** File-level includes are invisible. Their effect should show up as unresolved-symbol test failures.
-- **Project delete** (`projects.py::delete_project`, Agent 1) must also remove Agent 3 rows and `agent3-output` objects for the project, and refuse (`409`) while an execution job is active. That's a cross-agent change to an Agent 1 endpoint, recorded as a task in `tasks.md`.
+- **Project delete** (`projects.py::delete_project`, Agent 1) removes Agent 3's `unit_executions`, `execution_jobs` and `agent3-output` objects for the project, and refuses (`409`) while an execution job is active. It was done 2026-09-27 (`design.md` §4), after Agent 1's snapshot work and Agent 3's Phase 1 landed together.
 - **Staleness** is checked with Agent 2's rule (`design_agent2.md` §9.1). An existing execution of a plan that later goes stale is kept, and new executions are refused.
 
 ## 14. Later: differential testing

@@ -175,7 +175,13 @@ The same as `tasks_agent2.md`:
 - [ ] Write-path multi-tenancy test for the executor (pattern: `tests/test_worker_write_path_multi_tenancy.py`): repo content or LLM output containing another org's id never changes the stamped `org_id` or the storage prefix. An update with the wrong `org_id` is a no-op. Include a positive control. No endpoint, so no frontend pair.
 - [ ] Sandbox abuse suite with generated code that tries network access, fork bombs, huge writes to `/tmp`, reading `/proc/1/environ` or host paths, and `import ctypes`. Each ends `failed_verification` / `error`, the job completes, and nothing leaks into the log. No endpoint, so no frontend pair.
 - [ ] Redelivery: kill the worker mid-`units`. On restart, the terminal units are kept, the rest run, and there are no duplicate `unit_executions` rows. No endpoint, so no frontend pair.
-- [ ] Project delete covers Agent 3 (`tasks.md` item): rows plus `agent3-output` objects are removed, and `409` while an execution is active. Frontend check: `DeleteProjectAction`'s confirm text mentions generated code.
+- [x] Project delete covers Agent 3 (`tasks.md` item): rows plus `agent3-output` objects are removed, and `409` while an execution is active. Frontend check: `DeleteProjectAction`'s confirm text mentions generated code.
+  - *Done 2026-09-27, brought forward from Phase 6:* Phase 1 lets users create runs, and after the `main` merge (Agent 1's snapshot work), deleting a project with a run would otherwise hit a foreign-key error.
+    - `projects.py::delete_project` checks `execution_jobs` in the `409` gate ("…ingestion, planning or code generation job…").
+    - It deletes `unit_executions`, then `execution_jobs`, before the Agent 2 rows they reference.
+    - It removes every `agent3-output` object under `{org_id}/{execution_job_id}/` using a recursive `_list_objects`, best effort like the other storage removals. The recursion was checked against the real bucket.
+    - `DeleteProjectAction`'s confirm text now mentions "the code generated from those plans".
+    - `design.md` §4 updated. 5 new tests in `tests/test_projects_delete.py`, and every seeded project now has an Agent 3 run, so the existing tests cover Agent 3 too.
 - [ ] Production runner image and host (`design_agent3.md` §7, "Where the image comes from"), deferred on 2026-09-25 until there's a production host:
   - choose a private registry (GHCR, ACR or Docker Hub);
   - push `galvanise-agent3-runner` with a version tag;

@@ -26,6 +26,7 @@ AGENT2_TABLES = (
     "phase_approvals",
     "plan_overrides",
 )
+AGENT3_TABLES = ("execution_jobs", "unit_executions")
 
 
 @pytest.fixture
@@ -85,6 +86,14 @@ def _seed_project(client, org_id="org-123", source_type="github", source_ref="ht
     _insert(client, "migration_plan_items", org_id, {"plan_id": plan["id"], "cluster_id": unit["id"]})
     _insert(client, "phase_approvals", org_id, {"plan_id": plan["id"], "phase_cluster_id": unit["id"]})
     _insert(client, "plan_overrides", org_id, {"plan_id": plan["id"], "kind": "pin"})
+
+    execution_job = _insert(
+        client,
+        "execution_jobs",
+        org_id,
+        {"project_id": project["id"], "plan_id": plan["id"], "source_job_id": job["id"], "status": "done"},
+    )
+    _insert(client, "unit_executions", org_id, {"execution_job_id": execution_job["id"], "cluster_id": unit["id"]})
     return project, job, planning_job
 
 
@@ -99,7 +108,7 @@ def test_delete_removes_the_project_and_everything_derived_from_it(api, fake_cli
 
     assert response.status_code == 204
     assert _rows(fake_client, "projects") == []
-    for table in AGENT1_TABLES + AGENT2_TABLES + ("summary_cache",):
+    for table in AGENT1_TABLES + AGENT2_TABLES + AGENT3_TABLES + ("summary_cache",):
         assert _rows(fake_client, table) == [], table
 
 
@@ -107,7 +116,7 @@ def test_delete_leaves_other_projects_and_other_orgs_untouched(api, fake_client)
     target, _, _ = _seed_project(fake_client)
     other, _, _ = _seed_project(fake_client, source_ref="https://github.com/org/other")
     foreign, _, _ = _seed_project(fake_client, org_id="org-999", source_ref="https://github.com/org/repo")
-    before = {t: len(_rows(fake_client, t)) for t in AGENT1_TABLES + AGENT2_TABLES + ("summary_cache",)}
+    before = {t: len(_rows(fake_client, t)) for t in AGENT1_TABLES + AGENT2_TABLES + AGENT3_TABLES + ("summary_cache",)}
 
     assert api.delete(f"/api/agent1/projects/{target['id']}").status_code == 204
 
@@ -189,3 +198,72 @@ def test_delete_tolerates_a_job_with_no_source_snapshot_path(api, fake_client):
     project, _, _ = _seed_project(fake_client)
 
     assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
+
+
+# --- Agent 3 (design_agent3.md §13) -------------------------------------------
+
+
+def _execution_job_of(client, project):
+    return next(row for row in _rows(client, "execution_jobs") if row["project_id"] == project["id"])
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_delete_is_refused_while_a_code_generation_job_is_active(api, fake_client, status):
+    project, _, _ = _seed_project(fake_client)
+    _execution_job_of(fake_client, project)["status"] = status
+
+    response = api.delete(f"/api/agent1/projects/{project['id']}")
+
+    assert response.status_code == 409
+    assert "code generation" in response.json()["detail"]
+    assert len(_rows(fake_client, "execution_jobs")) == 1
+    assert len(_rows(fake_client, "unit_executions")) == 1
+    assert len(_rows(fake_client, "migration_plans")) == 1
+
+
+def test_delete_removes_generated_code_recursively(api, fake_client):
+    """agent3-output holds every attempt's files under nested folders
+    ({org_id}/{execution_job_id}/units/{cluster_id}/attempt_n/...), plus the zip."""
+    project, _, _ = _seed_project(fake_client)
+    other, _, _ = _seed_project(fake_client, source_ref="https://github.com/org/other")
+    job_id = _execution_job_of(fake_client, project)["id"]
+    other_job_id = _execution_job_of(fake_client, other)["id"]
+    bucket = fake_client.storage.from_("agent3-output")
+    mine = [
+        f"org-123/{job_id}/units/u1/attempt_1/code/app/units/x/main.py",
+        f"org-123/{job_id}/units/u1/attempt_1/log.txt",
+        f"org-123/{job_id}/units/u1/attempt_2/junit.xml",
+        f"org-123/{job_id}/units/u2/attempt_1/log.txt",
+        f"org-123/{job_id}/project.zip",
+    ]
+    kept = f"org-123/{other_job_id}/project.zip"
+    for path in mine + [kept]:
+        bucket.upload(path, b"x")
+
+    assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
+
+    assert set(bucket._objects) == {kept}
+
+
+def test_delete_tolerates_a_storage_failure_on_generated_code(api, fake_client, monkeypatch):
+    project, _, _ = _seed_project(fake_client)
+    bucket = fake_client.storage.from_("agent3-output")
+
+    def broken_list(*args, **kwargs):
+        raise Exception("storage unavailable")
+
+    monkeypatch.setattr(bucket, "list", broken_list)
+
+    assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
+    assert _rows(fake_client, "execution_jobs") == []
+
+
+def test_list_objects_pages_through_large_folders(fake_client, monkeypatch):
+    from document_analyzer import projects
+
+    monkeypatch.setattr(projects, "_PAGE_SIZE", 2)
+    bucket = fake_client.storage.from_("agent3-output")
+    for n in range(5):
+        bucket.upload(f"org-123/job/units/u{n}/log.txt", b"x")
+
+    assert sorted(projects._list_objects(bucket, "org-123/job")) == [f"org-123/job/units/u{n}/log.txt" for n in range(5)]

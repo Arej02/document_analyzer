@@ -172,6 +172,20 @@ class FakeStorageBucket:
             raise Exception(f"object not found: {path}")
         return self._objects[path]
 
+    def list(self, path="", options=None):
+        """Like Supabase Storage: the entries directly under `path` (one level), where a
+        sub-folder is an entry with `id` None. Honours `limit`/`offset`."""
+        prefix = f"{path.rstrip('/')}/" if path else ""
+        entries = {}
+        for key in sorted(self._objects):
+            if not key.startswith(prefix):
+                continue
+            head, _, rest = key[len(prefix):].partition("/")
+            entries.setdefault(head, {"name": head, "id": None if rest else f"obj-{key}"})
+        options = options or {}
+        offset = options.get("offset", 0)
+        return list(entries.values())[offset : offset + options.get("limit", 100)]
+
 
 class FakeStorage:
     def __init__(self):
