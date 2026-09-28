@@ -79,3 +79,17 @@ def persist_source_snapshot_path(client: Client, job_id: str, org_id: str, sourc
         .eq("org_id", org_id)
         .execute()
     )
+
+
+def persist_extraction_coverage(client: Client, job_id: str, org_id: str, coverage: dict) -> None:
+    """Records what extraction and evidence actually covered (design.md §2
+    `ingestion_jobs.extraction_coverage`): Graphify's per-status/per-language file counts
+    and samples of files it didn't extract, files no extractor handles, and the evidence
+    report. Bounded by the producers (samples are capped), never the full file list."""
+    (
+        client.table("ingestion_jobs")
+        .update({"extraction_coverage": coverage})
+        .eq("id", job_id)
+        .eq("org_id", org_id)
+        .execute()
+    )

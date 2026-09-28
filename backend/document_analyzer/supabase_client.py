@@ -1,11 +1,33 @@
 import os
+import re
+from urllib.parse import urlsplit
 
 from supabase import Client, ClientOptions, create_client
+
+_DIRECT_HOST = re.compile(r"^db\.([a-z0-9]+)\.supabase\.co$")
+
+
+def project_url_from_db_url(dsn: str) -> str:
+    """https://<ref>.supabase.co from a Supabase connection string: the pooler's
+    `postgres.<ref>` username, or the direct `db.<ref>.supabase.co` host."""
+    parts = urlsplit(dsn)
+    username, _, ref = (parts.username or "").partition(".")
+    if username == "postgres" and ref:
+        return f"https://{ref}.supabase.co"
+    match = _DIRECT_HOST.match(parts.hostname or "")
+    if match:
+        return f"https://{match.group(1)}.supabase.co"
+    raise RuntimeError("Set SUPABASE_URL: can't derive the project URL from SUPABASE_DB_URL")
+
+
+def supabase_url() -> str:
+    """SUPABASE_URL when set (self-hosted, custom domain), else derived from SUPABASE_DB_URL."""
+    return os.environ.get("SUPABASE_URL") or project_url_from_db_url(os.environ["SUPABASE_DB_URL"])
 
 
 def get_service_role_client() -> Client:
     """Async worker connection. Bypasses RLS by construction — never use from a request handler."""
-    url = os.environ["SUPABASE_URL"]
+    url = supabase_url()
     key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
     return create_client(url, key)
 
@@ -18,7 +40,7 @@ def get_request_scoped_client(access_token: str) -> Client:
     has already been copied into the underlying httpx session, so it's silently
     ignored on outgoing requests.
     """
-    url = os.environ["SUPABASE_URL"]
+    url = supabase_url()
     key = os.environ["SUPABASE_ANON_KEY"]
     options = ClientOptions(headers={"Authorization": f"Bearer {access_token}"})
     return create_client(url, key, options=options)

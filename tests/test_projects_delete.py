@@ -17,6 +17,8 @@ AGENT1_TABLES = (
     "knowledge_summaries",
     "filtered_files",
     "secret_findings",
+    "source_chunks",
+    "source_chunk_entities",
 )
 AGENT2_TABLES = (
     "planning_jobs",
@@ -72,6 +74,8 @@ def _seed_project(client, org_id="org-123", source_type="github", source_ref="ht
     _insert(client, "summary_cache", org_id, {"content_hash": f"h-{project['id']}", "summary_id": summary["id"]})
     _insert(client, "filtered_files", org_id, {"job_id": job["id"], "file_path": "vendor/x.php"})
     _insert(client, "secret_findings", org_id, {"job_id": job["id"], "entity_id": a["id"]})
+    chunk = _insert(client, "source_chunks", org_id, {"job_id": job["id"], "file_path": "a.php", "content": "x"})
+    _insert(client, "source_chunk_entities", org_id, {"job_id": job["id"], "chunk_id": chunk["id"], "entity_id": a["id"]})
 
     planning_job = _insert(
         client, "planning_jobs", org_id, {"project_id": project["id"], "source_job_id": job["id"], "status": "done"}

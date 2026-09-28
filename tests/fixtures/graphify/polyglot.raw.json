@@ -1,0 +1,502 @@
+{
+ "_provenance": "graphify.extract.extract() raw output for tests/fixtures/polyglot, graphifyy 0.9.68 in galvanise-worker image (linux/arm64), root=/src",
+ "edges": [
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "relation": "contains",
+   "source": "pkg_alpha_util",
+   "source_file": "pkg/alpha/util.py",
+   "source_location": "L4",
+   "target": "pkg_alpha_util_helper",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "relation": "contains",
+   "source": "pkg_alpha_util",
+   "source_file": "pkg/alpha/util.py",
+   "source_location": "L8",
+   "target": "pkg_alpha_util_greeter",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "relation": "method",
+   "source": "pkg_alpha_util_greeter",
+   "source_file": "pkg/alpha/util.py",
+   "source_location": "L9",
+   "target": "pkg_alpha_util_greeter_greet",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "relation": "contains",
+   "source": "pkg_beta_util",
+   "source_file": "pkg/beta/util.py",
+   "source_location": "L4",
+   "target": "pkg_beta_util_helper",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "relation": "rationale_for",
+   "source": "pkg_beta_util_rationale_1",
+   "source_file": "pkg/beta/util.py",
+   "source_location": "L1",
+   "target": "pkg_beta_util",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "import",
+   "relation": "imports_from",
+   "source": "pkg_main",
+   "source_file": "pkg/main.py",
+   "source_location": "L1",
+   "target": "pkg_alpha_util",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "import",
+   "relation": "imports_from",
+   "source": "pkg_main",
+   "source_file": "pkg/main.py",
+   "source_location": "L2",
+   "target": "pkg_beta_init",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "relation": "contains",
+   "source": "pkg_main",
+   "source_file": "pkg/main.py",
+   "source_location": "L5",
+   "target": "pkg_main_run",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "relation": "contains",
+   "source": "pkg_main",
+   "source_file": "pkg/main.py",
+   "source_location": "L11",
+   "target": "pkg_main_ping",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "relation": "contains",
+   "source": "pkg_main",
+   "source_file": "pkg/main.py",
+   "source_location": "L17",
+   "target": "pkg_main_pong",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "call",
+   "relation": "calls",
+   "source": "pkg_main_ping",
+   "source_file": "pkg/main.py",
+   "source_location": "L13",
+   "target": "pkg_main_pong",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "call",
+   "relation": "calls",
+   "source": "pkg_main_pong",
+   "source_file": "pkg/main.py",
+   "source_location": "L18",
+   "target": "pkg_main_ping",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "import",
+   "relation": "imports_from",
+   "source": "web_app",
+   "source_file": "web/app.ts",
+   "source_location": "L1",
+   "target": "web_math",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "import",
+   "relation": "imports",
+   "source": "web_app",
+   "source_file": "web/app.ts",
+   "source_location": "L1",
+   "target": "web_math_add",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "import",
+   "relation": "imports",
+   "source": "web_app",
+   "source_file": "web/app.ts",
+   "source_location": "L1",
+   "target": "web_math_counter",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "relation": "contains",
+   "source": "web_app",
+   "source_file": "web/app.ts",
+   "source_location": "L3",
+   "target": "web_app_main",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "relation": "contains",
+   "source": "web_math",
+   "source_file": "web/math.ts",
+   "source_location": "L1",
+   "target": "web_math_add",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "relation": "contains",
+   "source": "web_math",
+   "source_file": "web/math.ts",
+   "source_location": "L5",
+   "target": "web_math_counter",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "relation": "method",
+   "source": "web_math_counter",
+   "source_file": "web/math.ts",
+   "source_location": "L7",
+   "target": "web_math_counter_increment",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "call",
+   "relation": "calls",
+   "source": "web_math_counter_increment",
+   "source_file": "web/math.ts",
+   "source_location": "L8",
+   "target": "web_math_add",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "import",
+   "relation": "imports",
+   "source": "pkg_main",
+   "source_file": "pkg/main.py",
+   "source_location": "L1",
+   "target": "pkg_alpha_util_greeter",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "import",
+   "relation": "imports",
+   "source": "pkg_main",
+   "source_file": "pkg/main.py",
+   "source_location": "L1",
+   "target": "pkg_alpha_util_helper",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "submodule_import",
+   "relation": "imports_from",
+   "source": "pkg_main",
+   "source_file": "pkg/main.py",
+   "source_location": "L2",
+   "target": "pkg_beta_util",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "call",
+   "relation": "calls",
+   "source": "web_app_main",
+   "source_file": "web/app.ts",
+   "source_location": "L6",
+   "target": "web_math_add",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "call",
+   "relation": "calls",
+   "source": "pkg_main_run",
+   "source_file": "pkg/main.py",
+   "source_location": "L6",
+   "target": "pkg_alpha_util_greeter",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "context": "call",
+   "relation": "calls",
+   "source": "pkg_main_run",
+   "source_file": "pkg/main.py",
+   "source_location": "L8",
+   "target": "pkg_alpha_util_helper",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "INFERRED",
+   "confidence_score": 0.95,
+   "relation": "uses",
+   "source": "pkg_main_run",
+   "source_file": "pkg/main.py",
+   "source_location": "L6",
+   "target": "pkg_alpha_util_greeter",
+   "weight": 0.8
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "confidence_score": 1.0,
+   "context": "call",
+   "relation": "calls",
+   "source": "web_app_main",
+   "source_file": "web/app.ts",
+   "source_location": "L4",
+   "target": "web_math_counter",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "EXTRACTED",
+   "confidence_score": 1.0,
+   "context": "call",
+   "relation": "calls",
+   "source": "pkg_main_run",
+   "source_file": "pkg/main.py",
+   "source_location": "L8",
+   "target": "pkg_beta_util_helper",
+   "weight": 1.0
+  },
+  {
+   "_origin": "ast",
+   "confidence": "INFERRED",
+   "confidence_score": 0.8,
+   "context": "call",
+   "relation": "calls",
+   "source": "web_app_main",
+   "source_file": "web/app.ts",
+   "source_location": "L5",
+   "target": "web_math_counter_increment",
+   "weight": 1.0
+  }
+ ],
+ "failed_sources": [],
+ "nodes": [
+  {
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "pkg_init",
+   "label": "__init__.py",
+   "source_file": "pkg/__init__.py",
+   "source_location": "L1"
+  },
+  {
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "pkg_alpha_init",
+   "label": "__init__.py",
+   "source_file": "pkg/alpha/__init__.py",
+   "source_location": "L1"
+  },
+  {
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "pkg_alpha_util",
+   "label": "util.py",
+   "source_file": "pkg/alpha/util.py",
+   "source_location": "L1"
+  },
+  {
+   "_callable": true,
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "pkg_alpha_util_helper",
+   "label": "helper()",
+   "source_file": "pkg/alpha/util.py",
+   "source_location": "L4"
+  },
+  {
+   "_callable": true,
+   "_callable_class": true,
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "pkg_alpha_util_greeter",
+   "label": "Greeter",
+   "source_file": "pkg/alpha/util.py",
+   "source_location": "L8"
+  },
+  {
+   "_callable": true,
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "pkg_alpha_util_greeter_greet",
+   "label": ".greet()",
+   "source_file": "pkg/alpha/util.py",
+   "source_location": "L9"
+  },
+  {
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "pkg_beta_init",
+   "label": "__init__.py",
+   "source_file": "pkg/beta/__init__.py",
+   "source_location": "L1"
+  },
+  {
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "pkg_beta_util",
+   "label": "util.py",
+   "source_file": "pkg/beta/util.py",
+   "source_location": "L1"
+  },
+  {
+   "_callable": true,
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "pkg_beta_util_helper",
+   "label": "helper()",
+   "source_file": "pkg/beta/util.py",
+   "source_location": "L4"
+  },
+  {
+   "_origin": "ast",
+   "file_type": "rationale",
+   "id": "pkg_beta_util_rationale_1",
+   "label": "Beta utilities: a same-named module and function in a different package.",
+   "source_file": "pkg/beta/util.py",
+   "source_location": "L1"
+  },
+  {
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "pkg_main",
+   "label": "main.py",
+   "source_file": "pkg/main.py",
+   "source_location": "L1"
+  },
+  {
+   "_callable": true,
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "pkg_main_run",
+   "label": "run()",
+   "source_file": "pkg/main.py",
+   "source_location": "L5"
+  },
+  {
+   "_callable": true,
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "pkg_main_ping",
+   "label": "ping()",
+   "source_file": "pkg/main.py",
+   "source_location": "L11"
+  },
+  {
+   "_callable": true,
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "pkg_main_pong",
+   "label": "pong()",
+   "source_file": "pkg/main.py",
+   "source_location": "L17"
+  },
+  {
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "web_app",
+   "label": "app.ts",
+   "source_file": "web/app.ts",
+   "source_location": "L1"
+  },
+  {
+   "_callable": true,
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "web_app_main",
+   "label": "main()",
+   "source_file": "web/app.ts",
+   "source_location": "L3"
+  },
+  {
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "web_math",
+   "label": "math.ts",
+   "source_file": "web/math.ts",
+   "source_location": "L1"
+  },
+  {
+   "_callable": true,
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "web_math_add",
+   "label": "add()",
+   "source_file": "web/math.ts",
+   "source_location": "L1"
+  },
+  {
+   "_callable": true,
+   "_callable_class": true,
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "web_math_counter",
+   "label": "Counter",
+   "source_file": "web/math.ts",
+   "source_location": "L5"
+  },
+  {
+   "_callable": true,
+   "_origin": "ast",
+   "file_type": "code",
+   "id": "web_math_counter_increment",
+   "label": ".increment()",
+   "source_file": "web/math.ts",
+   "source_location": "L7"
+  }
+ ]
+}

@@ -155,10 +155,11 @@ def run_once() -> bool:
 
 
 def check_sandbox_at_startup() -> None:
-    """Refuses to start (SandboxUnavailableError) unless Docker is reachable, the runner
-    image exists, and — when AGENT3_REQUIRE_GVISOR is set — gVisor is registered and
-    selected (design_agent3.md §7, §10). Without gVisor it warns and carries on, every
-    other sandbox flag still applies (developer machines, e.g. Docker Desktop)."""
+    """Refuses to start (SandboxUnavailableError) unless the configured engine is
+    reachable (and, for Colima, really is that profile — shared/container_engine.py), the runner image exists,
+    and — when AGENT3_REQUIRE_GVISOR is set — gVisor is registered and selected
+    (design_agent3.md §7, §10). Without gVisor it warns and carries on, every other
+    sandbox flag still applies (developer machines: neither Colima's VM nor Docker Desktop has `runsc` by default)."""
     params = SandboxParams.from_env()
     check_sandbox_available(params, require_gvisor=require_gvisor_from_env())
     if params.runtime != "runsc":

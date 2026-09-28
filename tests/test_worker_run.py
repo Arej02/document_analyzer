@@ -290,3 +290,18 @@ def test_process_job_marks_failed_on_unexpected_error(monkeypatch):
     [job_row] = client.table("ingestion_jobs").rows
     assert job_row["status"] == "failed"
     assert "something else broke" in job_row["error"]
+
+
+def test_process_job_does_not_raise_when_recording_the_failure_also_fails(monkeypatch):
+    # A poison queue message (e.g. a non-uuid org_id) fails the job-row fetch *and* the
+    # mark_job_failed write; process_job must still return so run_forever deletes it.
+    client = FakeClient(org_id="org-1")
+    monkeypatch.setattr(run_module, "get_service_role_client", lambda: client)
+
+    def raise_bad_input(*args, **kwargs):
+        raise RuntimeError('invalid input syntax for type uuid: "org-dev"')
+
+    monkeypatch.setattr(run_module, "_fetch_job_row", raise_bad_input)
+    monkeypatch.setattr(run_module, "mark_job_failed", raise_bad_input)
+
+    run_module.process_job("job-1", "org-dev")
