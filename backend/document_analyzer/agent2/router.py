@@ -35,6 +35,7 @@ from ..supabase_client import get_service_role_client, insert_many_scoped, inser
 from ..shared.plan_staleness import STALEABLE_STATUSES as _STALEABLE_STATUSES
 from ..shared.plan_staleness import is_stale as _is_stale
 from ..shared.plan_staleness import mark_stale_plans
+from ..shared.unit_sources import unit_sources as _unit_sources
 from ..worker.risk_rollup import rollup_risk
 from .overrides import (
     OverrideError,
@@ -318,17 +319,6 @@ def _parent_version(client, org_id: str, plan: dict) -> int | None:
         .execute()
     ).data
     return rows[0]["version"] if rows else None
-
-
-def _unit_sources(item: dict, merged_from: dict[str, list[str]]) -> list[str]:
-    """The units whose reports stand for this plan item: the override-merged units
-    (§9.2), a merged_scc unit's originals (§7), or just the item's own cluster. An
-    override merge that took in a merged_scc unit stands on that unit's originals."""
-    unit_id = item["cluster_id"]
-    override_merged = (item.get("test_contract") or {}).get("merged_cluster_ids") or []
-    if override_merged:
-        return [source for merged in override_merged for source in merged_from.get(merged, [merged])]
-    return merged_from.get(unit_id) or [unit_id]
 
 
 def _item_cluster_ids(item: dict) -> list[str]:
