@@ -29,6 +29,7 @@ class AuthContext:
 def _extract_bearer_token(request: Request) -> str:
     header = request.headers.get("authorization")
     if not header or not header.lower().startswith("bearer "):
+        logger.warning("rejecting request: missing or malformed Authorization header")
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
     return header.split(" ", 1)[1].strip()
 
@@ -69,6 +70,7 @@ def _decode_claims(token: str) -> dict:
         signing_key = _jwks_client(supabase_url()).get_signing_key_from_jwt(token)
         return jwt.decode(token, signing_key.key, algorithms=[alg], audience="authenticated")
     except (jwt.PyJWTError, KeyError) as exc:
+        logger.warning("rejecting token: %s: %s", type(exc).__name__, exc)
         raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
 
 
