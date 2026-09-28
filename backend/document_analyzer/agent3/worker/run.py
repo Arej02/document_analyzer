@@ -20,9 +20,11 @@ having generated anything.
 
 import asyncio
 import logging
+import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -30,7 +32,9 @@ load_dotenv()  # must run before any env-reading import below (design.md §3 bug
 
 from supabase import Client
 
+from document_analyzer.agent3.worker.prepare import run_prepare_stage
 from document_analyzer.agent3.worker.sandbox import SandboxParams, check_sandbox_available, require_gvisor_from_env
+from document_analyzer.agent3.worker.units import run_units_stage
 from document_analyzer.agent3.worker.status import (
     mark_execution_done,
     mark_execution_failed,
@@ -55,10 +59,41 @@ class ExecutionState:
     `PlanningState` pattern). Filled in by the stages as they're built."""
 
     plan: dict | None = None
-    # migration_plan_items rows in (phase_order, unit_order) order (§3).
+    # migration_plan_items rows in (phase_order, unit_order) order, each with a
+    # "member_entity_ids" list, a "report_source_cluster_ids" list (§4 step 1: the
+    # units whose cluster_reports stand in for this item) and a "unit_slug" (§8)
+    # attached by stage `prepare`.
     items: list[dict] = field(default_factory=list)
+    # canonical entity id -> extracted_entities / knowledge_summaries row, for every
+    # member of every item (§3 step 3).
+    entities: dict[str, dict] = field(default_factory=dict)
+    summaries: dict[str, dict] = field(default_factory=dict)
+    # cluster_id -> cluster_reports row, for every id any item's report_source_cluster_ids
+    # names (§4 step 1).
+    cluster_reports: dict[str, dict] = field(default_factory=dict)
+    # cluster_id -> {kind, label}, for every id any item's own cluster_id or
+    # report_source_cluster_ids names (§8 unit_slug derivation, unit_slug.py).
+    clusters: dict[str, dict] = field(default_factory=dict)
+    # Unpacked, read-only source snapshot (§3 step 4). Removed by process_execution_job
+    # once the job finishes, whatever the outcome.
+    snapshot_dir: Path | None = None
     # cluster_id -> symbol map of every unit finished so far, for its dependents (§4).
+    # Pre-populated from already-terminal units on a resumed (redelivered) job (§3 step 5).
     symbol_maps: dict[str, dict] = field(default_factory=dict)
+    # cluster_ids already at a terminal verdict before this run started; stage `units`
+    # (Phase 3) skips them (§3 step 5).
+    terminal_unit_ids: set[str] = field(default_factory=set)
+    # cluster_id -> that unit's last-attempt files (real or a generate_stub_unit
+    # stand-in), for a dependent's workspace (§4 step 4, units.py). Built up during
+    # THIS run only — unlike symbol_maps, resume does not currently repopulate this
+    # from storage for units finished in an earlier run; a dependent of one of those
+    # would need units.py to fetch its files from storage instead (tasks_agent3.md
+    # Phase 6 "Redelivery" owns full resumption correctness, not this task).
+    unit_files: dict[str, list] = field(default_factory=dict)
+    # cluster_ids whose unit_files is a generate_stub_unit stand-in, not real
+    # generated code — a unit depending on one of these gets flagged
+    # built_on_failed_dependency (specs FR7).
+    stubbed_units: set[str] = field(default_factory=set)
 
 
 StageFn = Callable[[Client, dict, ExecutionState], None]
@@ -69,13 +104,13 @@ def _not_implemented(stage: str) -> None:
 
 
 def stage_prepare(client: Client, execution_job: dict, state: ExecutionState) -> None:
-    """design_agent3.md §3. Stub until tasks_agent3.md Phase 2."""
-    _not_implemented("prepare")
+    """design_agent3.md §3."""
+    run_prepare_stage(client, execution_job, state)
 
 
 def stage_units(client: Client, execution_job: dict, state: ExecutionState) -> None:
-    """design_agent3.md §4. Stub until tasks_agent3.md Phase 3."""
-    _not_implemented("units")
+    """design_agent3.md §4."""
+    run_units_stage(client, execution_job, state)
 
 
 def stage_assemble(client: Client, execution_job: dict, state: ExecutionState) -> None:
@@ -115,6 +150,7 @@ def process_execution_job(execution_job_id: str, org_id: str) -> None:
     """Runs one execution job's stages to completion (or a handled failure). Never raises:
     any stage error is written to `execution_jobs.error` and the job is marked `failed`."""
     client = get_service_role_client()
+    state: ExecutionState | None = None
 
     try:
         execution_job = _fetch_execution_job(client, execution_job_id, org_id)
@@ -136,6 +172,11 @@ def process_execution_job(execution_job_id: str, org_id: str) -> None:
     except Exception as exc:  # noqa: BLE001 — one bad job must never kill the loop
         logger.exception("execution job %s failed", execution_job_id)
         mark_execution_failed(client, execution_job_id, org_id, str(exc) or type(exc).__name__)
+    finally:
+        # The unpacked source snapshot (stage `prepare`) must not outlive the job,
+        # whatever stage it ended at.
+        if state is not None and state.snapshot_dir is not None:
+            shutil.rmtree(state.snapshot_dir, ignore_errors=True)
 
 
 def run_once() -> bool:

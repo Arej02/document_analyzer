@@ -26,6 +26,7 @@ from ..queue import enqueue_execution_job
 from ..shared.plan_staleness import is_stale, mark_stale_plans
 from ..supabase_client import get_service_role_client, insert_many_scoped, insert_scoped
 from .worker.sandbox import SandboxParams
+from .worker.status import TERMINAL_UNIT_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +44,6 @@ _PAGE_SIZE = 1000
 _IN_CHUNK = 200
 
 _ACTIVE_JOB_DETAIL = "code generation is already queued or running for this plan"
-
-# Unit statuses that are a final verdict (specs FR7).
-_TERMINAL_UNIT_STATUSES = ("passed", "failed_verification", "error")
 
 
 def execution_params_from_env() -> dict:
@@ -278,7 +276,7 @@ def _counts_by_job(client, org_id: str, execution_job_ids: list[str]) -> dict[st
             for unit in page:
                 job_counts = counts[unit["execution_job_id"]]
                 job_counts["total"] += 1
-                if unit["status"] in _TERMINAL_UNIT_STATUSES:
+                if unit["status"] in TERMINAL_UNIT_STATUSES:
                     job_counts["done"] += 1
                     job_counts[unit["status"]] += 1
                 if "built_on_failed_dependency" in (unit.get("flags") or []):

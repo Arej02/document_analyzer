@@ -124,15 +124,20 @@ def test_exception_without_message_still_gets_a_readable_error(monkeypatch, clie
     assert row["error"] == "KeyError"
 
 
-def test_stub_stages_fail_the_job_instead_of_marking_it_done(client):
-    """Until Phases 2-4 exist, a real job must fail readably, never end `done` with nothing generated."""
+def test_stub_stages_fail_the_job_instead_of_marking_it_done(monkeypatch, client):
+    """Until Phase 4 exists, a real job must fail readably, never end `done` with nothing
+    assembled. `prepare` is real now (tests/test_agent3_prepare.py covers it on its own) and so
+    is `units` (tests/test_agent3_units.py), so both are stubbed out here to isolate the
+    still-unimplemented `assemble`/`final_test` stages. Stubbing `prepare` leaves `state.items`
+    empty, so the real `stage_units` has nothing to iterate and returns immediately."""
     _seed_execution_job(client)
+    monkeypatch.setattr(run_module, "stage_prepare", lambda c, execution_job, state: None)
 
     run_module.process_execution_job("ej-1", "org-1")
 
     [row] = client.table("execution_jobs").rows
     assert row["status"] == "failed"
-    assert row["progress_stage"] == "prepare"
+    assert row["progress_stage"] == "assemble"
     assert "not implemented" in row["error"]
 
 

@@ -113,19 +113,23 @@ The `select` policy uses `(storage.foldername(name))[1] = current_org_id()::text
 3. Load the members' `extracted_entities` rows (pinned to `source_job_id`, `org_id`-scoped) and their entity summaries.
 4. Download and unpack the source snapshot into a temp dir. It's read-only input, never executed.
 5. Resume: any `unit_executions` row already terminal (a redelivered message) keeps its result and symbol map, and is skipped by stage `units`.
+6. **`unit_slug` (§8)**, added 2026-09-28: `unit_slug.py::derive_unit_slug(item, state)` computes and attaches `item["unit_slug"]` for every item, once, right after `report_source_cluster_ids`. It needs a label, and `clusters.label` isn't on any row `prepare` fetched otherwise, so this step also loads `state.clusters` (`id -> {kind, label}`) for `{item.cluster_id} ∪ report_source_cluster_ids` — the same rows `agent2/router.py::_unit_fields` reads. The label itself mirrors that function's rule exactly (own label when not merged; a `merged_scc` unit's own label or else its originals' sorted-and-joined labels; an override merge always joins), so a plan item gets the same slug whichever agent looks at it. A cluster with no label at all (for example grounding failed before one was produced) falls back to a short id-derived slug, so this never raises. `generate.py` and `tests_gen.py` both just read `item["unit_slug"]`.
 
 ## 4. Stage `units`: per-unit loop
 
 For each non-terminal unit, in order:
 
-1. **Context** (`context.py`, specs FR3):
-   - Source slices per member: `file_path` lines `line..end_line` from the snapshot, with the class header included for methods.
-   - `raw_facts` and the test contract.
-   - The cluster report text (or the constituent reports for a merged item).
-   - For each `outgoing_dependencies.to_unit_id`, that unit's symbol map plus the public signatures from its generated code.
-   - The §8 rules.
+1. **Context** (`context.py`, specs FR3), pure over the already-loaded `ExecutionState` (no DB or filesystem calls beyond reading the unpacked snapshot):
+   - Source slices per member: `file_path` lines `line..end_line` from the snapshot, with the class header included for methods. A member with no `line`/`end_line` in `raw_facts` (a hook, route, schema entity, or a legacy extractor that never recorded one) gets no source slice, just its `raw_facts`. A member with a `line` but no `end_line` is a data error, not a "no span" case, and raises `ContextError` rather than silently reading the rest of the file.
+   - Every member's `raw_facts`, plus the unit's own `test_contract` (both passed through as-is, so `generate.py` and `tests_gen.py` see exactly what Agent 2 computed).
+   - The cluster report text: the unit's own `cluster_reports` row, or — for a `merged_scc` unit or an override merge (no report of its own, `design_agent2.md` §7/§9.2) — its constituent units' reports, using the same stand-in rule as `agent2/router.py::_unit_sources`.
+   - For each `outgoing_dependencies.to_unit_id`, that unit's symbol map (`state.symbol_maps`, populated as each unit finishes, or from resume) joined with the **dependency's own `test_contract.public_interface`** (already known from Agent 2, not from generated code — the contract pins the parameter shape, and the sandbox contract test, §6, is what actually verifies the generated code honors it; nothing here needs to parse or import another unit's output).
+   - The exported symbol names (not full signatures) of **every** earlier-finished unit in `state.symbol_maps`, not just this unit's declared `outgoing_dependencies` — the sparse-call-graph mitigation (§13): a missing edge still leaves the name visible to the prompt, and an unresolved import then fails the contract test and triggers a retry.
+   - The §8 target-architecture rules. Kept as a fixed block assembled by `generate.py` (it's static, not per-unit data), but `build_unit_context` takes the rules block's reserved length and subtracts it from `max_context_chars` before checking its own payload, so the two pieces together can never exceed the frozen `params.max_context_chars`.
 
-   Summaries of `unverified_member_ids` are dropped, and the unit is flagged `unverified_inputs`. If the total goes over `max_context_chars`, the unit ends with `error`.
+   Summaries of `unverified_member_ids` are dropped, and the unit is flagged `unverified_inputs`. If the total (context payload + the reserved rules length) goes over `max_context_chars`, the unit ends with `error`.
+
+   Snapshot paths are untrusted input read a second time here (`prepare` already unpacked them safely, §3): each member's `file_path` is resolved strictly inside `state.snapshot_dir`, rejecting `..`, absolute paths, and a resolved path that (via a symlink) escapes the snapshot directory.
 2. **Generate** (`generate.py`, specs FR4): an Azure OpenAI call (client from `worker/summarize.py::get_azure_openai_client`) with structured output `{files: [{path, content}], symbol_map: {...}}`. Then validate:
    - every path is under `app/units/{unit_slug}/`;
    - every file passes `ast.parse`;
@@ -133,6 +137,16 @@ For each non-terminal unit, in order:
 
    A validation failure counts as a failed attempt.
 3. **Tests** (`tests_gen.py`, specs FR5): contract tests from §6, plus one LLM call for behaviour tests (given the legacy slices and the generated code), written under `tests/units/{unit_slug}/`.
+
+   **Contract tests, implementation notes** (`tests_gen.py::generate_contract_tests(unit_slug, test_contract, symbol_map, dependencies)`, added 2026-09-28): no LLM. `dependencies` is `UnitContext.dependencies` (step 1 above) — each entry's own `symbol_map`, already known for every earlier-finished unit, so an `outgoing_dependencies[]` test (§6) never needs that unit's generated file text, only its symbol map. Every generated test resolves a module with `importlib.import_module(...)`, matching §8's `unit_slug`-starts-with-a-digit rule — never a literal `import`/`from` statement. The file's own emitted source also never uses an f-string for a dynamic value (plain string concatenation / `%`-formatting instead), so there is no risk of confusing the *generator's* f-string braces with braces meant to appear literally in the *generated* code. A dependency with no symbol map yet (still generating, or `error` with no stub in place) makes its `outgoing_dependencies[]` test `pytest.skip`, not fail — there's nothing to check against yet, and this isn't a verdict on the current unit. Returns one file, `tests/units/{unit_slug}/test_contract.py`; calling it twice with the same inputs gives byte-identical output (§6's determinism requirement, checked directly in `tests/test_agent3_tests_gen.py`, independent of the golden-file test below).
+
+   **Behaviour tests, implementation notes** (`tests_gen.py::generate_behaviour_tests(context, unit_slug, generated, llm_client, model_deployment, max_attempts)`, added 2026-09-28): one Azure OpenAI call (same client/param-sourcing convention as `generate.py` — `model_deployment` is always the job-frozen value, never read from env here), given `context` (legacy source, facts, report, this unit's own `test_contract` — which already carries `side_effect_signals`, so no extra plumbing) plus `generated` (the `GeneratedUnit` `generate.py` just produced: its files and symbol map, so the model writes tests against the real generated names, not guessed ones). Structured output `{"content": "<tests/units/{unit_slug}/test_behaviour.py source>"}`, validated in order: JSON object shape with a non-empty `content` string, `ast.parse` succeeds (never executed — same rule as `generate.py`), and every `def test_*` is decorated `@pytest.mark.behaviour` (a non-`test_*` helper needs no marker). A validation failure retries with feedback, the same conversation-continuation pattern as `generate.py`, up to `max_attempts`.
+
+   **Exhausting every attempt does not fail the unit.** Behaviour tests are explicitly less trustworthy than contract tests (specs Glossary, §6) and CLAUDE.md's "grounding failures never block" applies here too: `generate_behaviour_tests` returns `BehaviourTestResult(files=[], generated=False, attempts=max_attempts)` rather than raising, so the unit's own generated code and its deterministic contract tests are unaffected — there is simply no `test_behaviour.py` for the sandbox to run. Stage `units` (Phase 3, next task) uses `generated` to set `test_summary.behaviour`: the normal `{passed, failed}` shape once the sandbox has produced real results, or `{"passed": 0, "failed": 0, "generated": false}` when generation was abandoned, so a reviewer can see that `side_effect_signals` went unchecked for that unit. This is deliberately **not** a new `unit_executions.flags` value — that column has a fixed DB check constraint (`unverified_inputs`, `built_on_failed_dependency`, `stubbed`), and a fourth value is a migration (§2, "writes are service-role only" / CLAUDE.md multi-tenancy migrations are the user's to run); `test_summary` is free-form jsonb already shown per unit by Phase 5's review UI, so recording it there needs no schema change.
+
+   The prompt also tells the model to use the template's own test fixtures (§8, `tests/conftest.py`) to check side effects rather than only return values: `wp_compat_fake` (the autouse fake backend's `.calls` list) for a `side_effect_signals` member, or `real_wp_compat`/`db_session` for a test that specifically needs persisted state.
+
+   Unlike contract tests, there is no byte-identical-output requirement or golden-file test for behaviour tests: LLM output isn't deterministic (specs NFR6), and re-running an execution job may reasonably produce different (but still valid) behaviour tests.
 4. **Run** (`sandbox.py`, §7): build a workspace containing:
    - the template;
    - the last attempt of every unit this one depends on (directly or transitively);
@@ -143,6 +157,20 @@ For each non-terminal unit, in order:
 6. **Persist**: upload the attempt's files, log and junit to storage (every attempt, not just the last), then update `unit_executions` (`status`, `attempts`, `symbol_map`, `test_summary`, `last_error`, `flags`, `storage_prefix`), filtered by `id` and `org_id`.
 
 **Failed dependencies (specs FR7):** if a dependency ended `error` with no symbol map, stage `units` generates a stub module for it from the contract's `public_interface` (with the correct names and params, and bodies that `raise NotImplementedError`). The dependent is flagged `built_on_failed_dependency`, and the stubbed unit is flagged `stubbed`.
+
+**Orchestration, implementation notes** (`agent3/worker/units.py::run_units_stage`, added 2026-09-28 — the module isn't in §1's per-step file list because it's the glue *between* the steps, not a step of its own):
+
+- **Two retry loops, not one, deliberately kept separate.** `generate.py::generate_unit_code` already retries internally, up to `max_attempts`, for *its own* validation failures (bad JSON, path, syntax, missing symbol) — unchanged from Phase 2. `units.py` adds an **outer** loop, also bounded by `max_attempts`, around generate + test-gen + sandbox-run as a whole: a round whose sandbox run has failing tests feeds the failing test names + truncated assertion output into the *next* outer round via one new, additive parameter, `generate_unit_code(..., extra_feedback=...)` (`None` by default; every Phase 2 test is unaffected). `unit_executions.attempts` is the outer round count — what a reviewer means by "attempt 2 of 3" — not raw LLM calls. Worst case is `max_attempts²` LLM calls; the common case (valid JSON the first time each round) is close to `max_attempts`. A `GenerationError` (the *inner* loop's own budget exhausted) ends the unit `error` immediately, with no outer retry — that already represents a dedicated, generous attempt budget for "can this even become valid Python," so retrying it again outside adds no signal. Contract and behaviour tests are regenerated fresh every outer round (their inputs — the round's own `symbol_map` and generated files — changed).
+- **`generate.py::generate_stub_unit(item, unit_slug) -> GeneratedUnit`** (new, deterministic, no LLM): every `public_interface` entry becomes a function or method (grouped by `raw_facts.class`) that raises `NotImplementedError`, with a symbol map in the exact same shape (including the method dotted-name convention, §6) as a real attempt — so downstream context-building, contract-test generation and workspace assembly all treat a stub identically to a real one. Used two ways: permanently, for a unit that itself ends `error` (stored into `state.symbol_maps`/`state.unit_files`, flagged `stubbed` on its own row); ad hoc, for a transitive dependency that hasn't run yet (an unresolved cross-phase `needs_facade` cycle, §13, can put a "dependency" after the current unit in plan order) — not stored back into `state`, just used for that one workspace. Either way, the *dependent* whose workspace needed a stub is flagged `built_on_failed_dependency`.
+- **The `__init__.py` re-export guarantee.** `app.main`'s router discovery and this unit's own `hooks_bound`/`routes_bound` contract tests (§6) both import the *package* (`app.units.{unit_slug}`), not a specific submodule, and rely on that import alone running the unit's module-level code. `generate.py`'s prompt now asks the model to make its `__init__.py` import every other file it wrote, but `units.py::_ensure_package_init` never trusts that alone: it appends the same guaranteed `importlib.import_module(...)` lines on top of whatever the model (or a stub) produced, for every unit, always.
+- **Per-unit workspace**: the template's `app/` tree (not `tests/test_template_smoke.py` — that's whole-project, Phase 4's `assemble`/`final_test`), this unit's own files, every transitive dependency's last-attempt files, this round's `tests/units/{unit_slug}/test_contract.py` (+ `test_behaviour.py` if generated), and a per-unit `app/units/__init__.py` importing only those, dependencies first (§8's note under "One unit-loading mechanism").
+- **Verdict**: `sandbox_result.status == "completed" and exit_code == 0 and failed == 0 and len(tests) > 0` counts as a pass — the `len(tests) > 0` guard extends §7's "an empty test list is treated as failing" (there for unparseable JUnit XML) to a clean-looking but empty run (a collection error, or nothing to run at all). `timed_out`/`killed` count as a failed *attempt*, eligible for retry and, if attempts run out, `failed_verification` — never `error`, since real code was produced and just didn't verify cleanly within the limits.
+- **`test_summary`**: contract vs. behaviour counts come from `TestCaseResult.classname` containing `test_contract` or `test_behaviour` (§7). If behaviour-test generation was abandoned (`BehaviourTestResult.generated is False`, §4 step 3), `test_summary.behaviour` gets an explicit `"generated": false` alongside `{"passed": 0, "failed": 0}`.
+- **Storage** (§2's object layout, exactly): `{prefix}attempt_{n}/code/{file.path}` for generated code (`file.path` already starts with `app/...`, so `code/` is the only segment added) and `{prefix}attempt_{n}/{file.path}` for test files (`file.path` already starts with `tests/...`, so nothing is added — prepending `tests/` again would duplicate it), plus `{prefix}attempt_{n}/log.txt` and `{prefix}attempt_{n}/junit.xml`. `attempt_{n}` is exactly the outer round number stored in `unit_executions.attempts` for that round. `error` units (no successful attempt) upload nothing and keep `storage_prefix = null`.
+
+**Known gaps, out of scope for this task (recorded 2026-09-28):**
+- **§8's `app/models/{name}.py`** (a unit owning a schema entity writes a shared model file) is not reachable: `generate.py::_validate_path` only ever allows `app/units/{unit_slug}/`. Fixing it means deciding how two units sharing one model file would coexist across separate per-unit sandbox workspaces — a real design question, not a one-line fix, and the fixture repo has no schema entities to force the issue yet.
+- **Resume and `state.unit_files`.** §3 step 5 repopulates `state.symbol_maps` from `unit_executions.symbol_map` for units finished in an earlier run, but nothing yet repopulates `state.unit_files` (this module's in-memory cache of actual file contents, needed to assemble a *dependent's* workspace) — it's only ever filled in during the current run. A dependent of a unit that finished before a crash would need `units.py` to fetch that unit's last attempt back from storage instead of finding it in `state`. `tasks_agent3.md` Phase 6 ("Redelivery") owns full resumption correctness and should close this gap before relying on it.
 
 ## 5. Stages `assemble` and `final_test`
 
@@ -158,16 +186,19 @@ Built from `migration_plan_items.test_contract` (`design_agent2.md` §10) and th
 
 | Contract field | Generated contract test |
 |---|---|
-| `public_interface[]` | For each entry, the symbol from `symbol_map` is importable and callable. Parameter count and names match `params` (snake_cased, defaults allowed). For `kind = method`, it's defined on the mapped class. |
+| `public_interface[]` | For each entry, the symbol from `symbol_map` is importable and callable (via `importlib.import_module`, never a literal `import`/`from` naming a `unit_slug` — see §8). Parameter count and names match `params` (snake_cased, defaults allowed). For `kind = method`, it's defined on the mapped class. |
 | `incoming_call_sites[]` | For each calling unit, the call site's target symbol is exported at the mapped path. This checks that downstream units can still import what they call. |
 | `outgoing_dependencies[]` | The unit imports each dependency only through that unit's symbol-mapped module, never by re-implementing it. Checked by an AST scan of the unit's code. |
-| `external_calls[]` | Each legacy `wp_*` / PHP builtin call routes through `wp_compat` (AST scan). Calling the public functions with `wp_compat`'s in-memory fake records the expected external calls, as a smoke test only. |
+| `external_calls[]` | Each legacy `wp_*` / PHP builtin call routes through `wp_compat` (AST scan). `wp_compat`'s in-memory fake backend is active by default in every test (`tests/conftest.py`, §8) — specs FR5 ("tests never touch the network") — so calling the public functions and checking the fake's recorded calls is a smoke test only; nothing here needs a DB session or `set_backend` to run a real one. |
 | `hooks_bound[]` | Importing the unit registers a handler for each hook name on the event dispatcher (`app.events.handlers_for(name)` is non-empty). |
+| `routes_bound[]` | Importing the unit's package exposes a `router` attribute (§8) whose `router.routes` has an entry matching the bound method and path (e.g. `"GET /appointments"`). Same shape as `hooks_bound`, added 2026-09-28 — this row was missing even though Agent 2's contract (`design_agent2.md` §10) always includes the field. |
 | `side_effect_signals[]` | These members get a behaviour test that must assert on `wp_compat` or DB state, not only on return values. This is a hint passed to the behaviour-test prompt, not a generated test. |
 | `unverified_member_ids[]` | No test. The unit is flagged `unverified_inputs` and the prompt leaves those summaries out. |
 | `merged_cluster_ids[]` | No test. It only widens the member set in §3. |
 
-Behaviour tests (LLM) are marked `@pytest.mark.behaviour`, and contract tests `@pytest.mark.contract`, so `test_summary` can split them.
+Behaviour tests (LLM, `tests_gen.py::generate_behaviour_tests`, §4 step 3) are marked `@pytest.mark.behaviour`, and contract tests `@pytest.mark.contract`, so `test_summary` can split them. Unlike the rows above, `side_effect_signals[]` isn't checked by a generated assertion here — it's a hint the behaviour-test prompt is told to honor (request `wp_compat_fake` or `real_wp_compat`/`db_session` and assert on recorded calls or persisted state, not just a return value), so whether it was actually honored is exactly as trustworthy as any other behaviour test: advisory, not verified by this module. If the LLM call itself never produces valid output within `max_attempts`, there is no `test_behaviour.py` at all for that unit (§4 step 3) — this never fails the unit, but it does mean `side_effect_signals` went completely unchecked, which `test_summary.behaviour` records explicitly (`{"passed": 0, "failed": 0, "generated": false}`) for the review UI (Phase 5).
+
+**`symbol_map`'s dotted name for a method** (added 2026-09-28, pins down §4 step 2's `{python_module, python_name, kind}}` shape, which otherwise leaves `kind = method` unable to say *which* class a method landed on): `python_name` is `"ClassName.method_name"` and `python_module` is the module the class itself lives in. This is the only way a `public_interface[]` contract test can check "is this defined on the mapped class" from a three-field symbol map entry, and it's what `generate.py`'s prompt asks the model for.
 
 ## 7. Sandbox
 
@@ -233,20 +264,38 @@ Plus: a positive control (one pass, one fail reported correctly), the uid is 655
 
 ## 8. Target architecture (WordPress → FastAPI)
 
-The rules every generation prompt includes. This is the contract between units, so changing it is a design change.
+The rules every generation prompt includes. This is the contract between units, so changing it is a design change. The fixed, non-generated files (`main.py`, `events.py`, `wp_compat/`, `db.py`, `pytest.ini`, `tests/conftest.py`) live in `agent3/template/` and are copied verbatim by stage `assemble` (§5); nothing in `generate.py` ever touches them.
 
 ```
 app/
-  main.py              # FastAPI app; includes routers; imports app.units
+  main.py              # FastAPI app; imports app.units, then walks its unit packages for a `router` attribute
   events.py            # hook dispatcher: on(name, priority)(fn), fire(name, *args), apply_filters(name, value, *args)
   wp_compat/           # fixed template: options, post/user meta, transients, http (wp_remote_*), escaping, i18n no-ops
   db.py                # SQLAlchemy engine/session dependency ($wpdb replacement)
   models/              # SQLAlchemy models for CPTs / post meta (generated by the unit that owns the schema entities)
+  units/__init__.py    # written by stage assemble, in plan order (§5) — imports every unit package, nothing else
   units/{unit_slug}/   # one package per plan item; only files the unit generated
 tests/
-  conftest.py          # wp_compat in-memory fake, SQLite session, event dispatcher reset
+  conftest.py          # wp_compat fake backend (autouse), SQLite session, event dispatcher reset
   units/{unit_slug}/test_contract.py, test_behaviour.py
+pytest.ini             # registers the contract/behaviour markers, --strict-markers, a default per-test timeout
 ```
+
+**One unit-loading mechanism.** `app/units/__init__.py` is the only place units get imported: stage `assemble` writes it in plan order, and importing each unit package runs its module-level `@events.on(...)` registrations. `app/main.py` imports `app.units` (triggering that), then walks `app.units`'s own submodules **in the same sorted order** and includes each one's `router` attribute if it has one — there is no separate `pkgutil` discovery pass and no second way to reach a unit's code, so a unit that was never imported by `units/__init__.py` is invisible to the running app. A per-unit sandbox workspace (stage `units`, §4) needs its own `app/units/__init__.py` too, importing only that unit and its (transitive) dependencies — see the Phase 3 task note in `tasks_agent3.md`.
+
+**`unit_slug` starts with a digit, so it can't be a literal import target.** `{phase_order:02d}_{unit_order:02d}_{slugified label}` (e.g. `01_01_cart`) is not a valid Python dotted-import expression — `from . import 01_01_cart` is a `SyntaxError`, only `importlib.import_module("...")` (a plain string) works. Every place a unit gets imported therefore uses `importlib`, never a literal `import`/`from` statement: `app/main.py` already does (`pkgutil.iter_modules` + `import_module`); `app/units/__init__.py` (stage `assemble`, and the per-unit version stage `units` builds) must too, e.g.:
+```python
+import importlib
+for _slug in ["01_01_cart", "02_01_orders", ...]:  # plan order
+    importlib.import_module(f"{__name__}.{_slug}")
+```
+Generated tests (`tests_gen.py`, §6) resolve a unit's own or a dependency's module the same way, never with a literal `import`/`from` statement naming a `unit_slug`.
+
+**`wp_compat`'s backend interface.** `wp_compat/backend.py` defines an ABC (`get_option`/`update_option`/`delete_option`, `get_post_meta`/`update_post_meta`, `get_user_meta`/`update_user_meta`, `get_transient`/`set_transient`/`delete_transient`, `wp_remote_get`/`wp_remote_post`). `wp_compat/real.py` implements it against `app.db` (options/meta/transients as tables) and `httpx` (the two `wp_remote_*` calls); `wp_compat/fake.py` implements the same interface entirely in memory, recording every call (`FakeWPCompatBackend.calls`) so a behaviour test can assert on them (§6 `external_calls`). `wp_compat.set_backend(backend)` swaps the active one and returns the previous one; `wp_compat/__init__.py` re-exports flat functions (`wp_compat.get_option(...)`) that delegate to whichever backend is active, plus the stateless `escaping.py`/`i18n.py` helpers (`esc_html`, `esc_attr`, `esc_url`, `sanitize_text_field`, `__`, `_e`), which need no backend since they carry no state. **The fake backend is active by default in every test** (`tests/conftest.py` installs it, autouse) — specs FR5 ("tests never touch the network"); a test that specifically wants the real, DB-backed behavior opts in by calling `wp_compat.set_backend(RealWPCompatBackend())` itself.
+
+**Event ordering.** `events.on(name, priority=10)` matches WordPress: handlers run in ascending priority order, and handlers registered at the same priority run in registration order (stable sort on insertion index, not on name or anything else).
+
+**`pytest.ini`** (copied to the assembled project's root, so it's the config `python -m pytest` reads when the sandbox runs from `/work`, §7): registers the `contract` and `behaviour` markers plus `--strict-markers` (an unmarked or misspelled marker on a generated test is caught as an error, not silently ignored), and a default per-test `timeout = 30` (pytest-timeout) — this is what §7 means by "per-test timeout is configured by the template's pytest settings, not on the command line."
 
 | Legacy construct | Generated form |
 |---|---|
@@ -255,7 +304,7 @@ tests/
 | `add_action` / `add_filter` | `@events.on("hook_name", priority=n)` at module level. `do_action` → `events.fire`, `apply_filters` → `events.apply_filters`. |
 | `register_post_type`, post meta | SQLAlchemy model in `app/models/{name}.py`, written by the unit owning the `schema` entity. |
 | `$wpdb` queries | SQLAlchemy via `app.db` session, parameterized. No raw string SQL built from input. |
-| `add_shortcode`, REST routes, `admin-ajax` handlers | An `APIRouter` in the unit package, which `app.main` picks up by convention (`router` attribute). |
+| `add_shortcode`, REST routes, `admin-ajax` handlers | An `APIRouter` in the unit package, exposed as that package's `router` attribute — picked up by `app.main`'s single unit-loading pass above, not a separate discovery mechanism. |
 | `wp_*` / PHP builtins with no Python equivalent | A call through `app.wp_compat`. If `wp_compat` lacks it, the unit adds a private adapter inside its own package and marks it `# TODO(wp_compat)`. |
 | Globals | A module-level constant or a settings object. No mutable module globals shared across units. |
 
