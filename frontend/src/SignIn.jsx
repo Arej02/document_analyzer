@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { supabase } from './supabaseClient'
+import { useAuth } from './AuthProvider'
 import PrimaryButton from './PrimaryButton'
 
 
@@ -38,6 +38,7 @@ const EyeOffIcon = () => (
 // AuthProvider or any of the API call sites, since they all just read
 // session off context.
 export function SignIn() {
+  const { supabase } = useAuth()
   const [mode, setMode] = useState('sign-in') // 'sign-in' | 'sign-up'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')

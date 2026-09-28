@@ -211,7 +211,15 @@ def delete_project(client: Client, org_id: str, project_id: str) -> None:
         # job's summaries (their only link), so the cache never dangles.
         summary_ids = _ids(client, "knowledge_summaries", org_id, "job_id", job_id)
         _delete_in(client, "summary_cache", org_id, "summary_id", summary_ids)
-        for table in ("secret_findings", "knowledge_summaries", "entity_edges", "extracted_entities", "filtered_files"):
+        for table in (
+            "secret_findings",
+            "source_chunk_entities",
+            "source_chunks",
+            "knowledge_summaries",
+            "entity_edges",
+            "extracted_entities",
+            "filtered_files",
+        ):
             client.table(table).delete().eq("org_id", org_id).eq("job_id", job_id).execute()
     client.table("ingestion_jobs").delete().eq("org_id", org_id).eq("project_id", project_id).execute()
     client.table("projects").delete().eq("org_id", org_id).eq("id", project_id).execute()

@@ -1,135 +1,90 @@
 # Galvanise
 
-Agentic system that migrates legacy codebases (starting with PHP / WordPress) to a
-modern stack (FastAPI). The full pipeline is three independent agents connected
-only through a shared Supabase store — Agent 1 (**Understand**, this repo),
-Agent 2 (Plan), Agent 3 (Execute). **This repo currently implements Agent 1
-only.**
+Migrates legacy codebases (starting with PHP / WordPress) to FastAPI. Three independent agents, connected only through Supabase:
 
-See [`CLAUDE.md`](CLAUDE.md) for the architectural rules, [`docs/specs.md`](docs/specs.md)
-for the functional spec, [`docs/design.md`](docs/design.md) for the data model and
-API contract, and [`docs/tasks.md`](docs/tasks.md) for what's built vs. outstanding.
+- **Agent 1 — Understand:** codebase → queryable knowledge base
+- **Agent 2 — Plan:** knowledge base → reviewable migration plan
+- **Agent 3 — Execute:** approved plan → generated code + test verdicts (in progress)
+
+Architecture rules are in [`CLAUDE.md`](CLAUDE.md). Specs, design and task lists are in [`docs/`](docs/).
 
 ## Repo layout
 
 ```
-/
-├── backend/          # FastAPI app (Python) — Agent 1's API + worker
-├── frontend/          # React app (Vite) — upload UI, job status, knowledge base browser
-├── supabase/
-│   └── migrations/    # SQL migrations — tables, RLS policies, pgmq queue, Vault
-├── tests/             # Backend tests (pytest)
-└── docs/               # specs.md, design.md, skills.md, tasks.md
+backend/            FastAPI app, workers, container images
+frontend/           React app (Vite)
+supabase/migrations SQL migrations
+tests/              pytest suite
+docs/               specs, design, tasks
 ```
 
 ## Prerequisites
 
 - Python 3.14+ and [uv](https://docs.astral.sh/uv/)
 - Node.js and npm
-- A [Supabase](https://supabase.com) project (Postgres + Auth + Storage + pgmq + Vault)
-- `git`, and the `git` CLI available on `PATH` (the worker shells out to it to clone repos)
+- A [Supabase](https://supabase.com) project
+- `git`
+- [Colima](https://github.com/abiosoft/colima) and the `docker` CLI: `brew install colima docker` (Docker Desktop is not used)
+- PHP + Composer, then `composer install` in `backend/php/`
 
 ## Setup
 
-1. **Environment variables** — copy `.env.example` to `.env` and fill in your Supabase project's values (Project Settings → API / Database):
-
-   ```
-   cp .env.example .env
-   ```
+1. **Environment:** `cp .env.example .env` and fill in the required values:
 
    | Variable | Where to find it |
    |---|---|
-   | `SUPABASE_URL` | Project Settings → API |
-   | `SUPABASE_ANON_KEY` | Project Settings → API |
-   | `SUPABASE_SERVICE_ROLE_KEY` | Project Settings → API (keep secret — worker-only, bypasses RLS) |
-   | `SUPABASE_JWT_SECRET` | Project Settings → API → JWT Settings |
-   | `SUPABASE_DB_URL` | **Connect** (dashboard top bar) → **Session pooler** connection string — used for pgmq/Vault calls that aren't exposed over PostgREST. Use the pooler, not the direct `db.<ref>.supabase.co` string: the direct host is IPv6-only and doesn't resolve on IPv4-only networks. |
+   | `SUPABASE_DB_URL` | Connect → **Session pooler** (port 5432) |
+   | `SUPABASE_ANON_KEY` | Project Settings → API Keys → Legacy |
+   | `SUPABASE_SERVICE_ROLE_KEY` | Project Settings → API Keys → Legacy (keep secret) |
+   | `AZURE_OPENAI_*` | Your Azure OpenAI resource |
 
-2. **Apply database migrations** — run everything in `supabase/migrations/` against your project, in order (via the [Supabase CLI](https://supabase.com/docs/guides/cli): `supabase link` then `supabase db push`, or paste each file into the SQL Editor in order). This creates the tables, RLS policies, the `agent1_ingestion_jobs` pgmq queue, the `agent1-uploads` storage bucket, and enables Vault.
+   The frontend needs no `.env`; it gets its Supabase settings from the backend.
 
-3. **Install backend dependencies:**
+2. **Database:** apply the migrations. Re-run this after every pull that adds one.
+
+   ```
+   uv run document-analyzer-setup-db
+   uv run document-analyzer-setup-db --status
+   ```
+
+3. **Dependencies:**
 
    ```
    uv sync
+   cd frontend && npm install
    ```
 
-4. **Install frontend dependencies:**
+4. **Containers:**
 
    ```
-   cd frontend
-   npm install
+   colima start --runtime docker --cpus 4 --memory 8
+   uv run document-analyzer-build-graphify-image
+   uv run document-analyzer-build-agent3-image
+   uv run document-analyzer-doctor
    ```
 
-5. **Build the Agent 3 runner image** (needs Docker running; the executor runs generated tests in it, `docs/design_agent3.md` §7):
+5. **User access:** sign up in the app, then give your account an org (any UUID):
 
    ```
-   docker build -t galvanise-agent3-runner:0.1 backend/agent3_runner
+   uv run document-analyzer-add-org-member you@example.com "$(uuidgen | tr A-Z a-z)"
    ```
 
-## Running it
+## Running
 
-Run these in separate terminals from the repo root.
+Each in its own terminal, from the repo root:
 
-**Backend** (FastAPI, on `http://localhost:8000`):
+| Process | Command |
+|---|---|
+| API (`localhost:8000`) | `uv run uvicorn document_analyzer.app:app --reload` |
+| Agent 1 worker | `uv run document-analyzer-worker` |
+| Agent 2 planner | `uv run document-analyzer-planner` |
+| Agent 3 executor | `uv run document-analyzer-executor` |
+| Frontend (`localhost:5173`) | `cd frontend && npm run dev` |
 
-```
-uv run uvicorn document_analyzer.app:app --reload
-```
-
-API docs are then available at `http://localhost:8000/docs`.
-
-**Worker** (polls `agent1_ingestion_jobs` and runs the ingestion pipeline):
-
-```
-uv run document-analyzer-worker
-```
-
-This is a separate long-lived process from the FastAPI app — nothing in Agent 1
-runs the pipeline synchronously from a request (see `CLAUDE.md` "Async by
-default"). It polls the queue every 5 seconds when idle and processes one job
-at a time; Ctrl+C to stop.
-
-**Planner** (polls `agent2_planning_jobs` and builds migration plans):
-
-```
-uv run document-analyzer-planner
-```
-
-Agent 2's own worker, separate from the ingestion worker above. Without it,
-"Generate plan" requests stay `queued` forever. Same polling behaviour:
-every 5 seconds when idle, one job at a time.
-
-**Executor** (polls `agent3_execution_jobs` and generates code from approved plans):
-
-```
-uv run document-analyzer-executor
-```
-
-Agent 3's own worker. It refuses to start unless Docker is running and the
-runner image is built (Setup step 5), because it runs generated tests in that
-sandbox. Without gVisor (`AGENT3_SANDBOX_RUNTIME=runsc`) it logs a warning and
-carries on; set `AGENT3_REQUIRE_GVISOR=true` in production to make that fatal.
-Its stages are still stubs (`docs/tasks_agent3.md` Phases 2–4), so any job it
-picks up ends `failed` with "not implemented yet". Same polling behaviour.
-
-**Frontend** (Vite dev server, on `http://localhost:5173`):
-
-```
-cd frontend
-npm run dev
-```
-
-The dev server proxies `/api/*` requests to `http://localhost:8000` (see
-`frontend/vite.config.js`), so the two need to be running together for the app
-to actually work end to end.
+A job stays `queued` until its agent's worker is running.
 
 ## Tests
 
 ```
 uv run pytest
 ```
-
-## Notes
-
-- Frontend auth (attaching a Supabase session JWT to API requests) isn't wired
-  up yet — see the `TODO`s in `frontend/src/main.jsx` and `docs/tasks.md`.

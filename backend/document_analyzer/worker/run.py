@@ -7,7 +7,10 @@ this module's only job is ordering and wiring — dequeue a job, and for it in
 order: mark it `running`, fetch its source, record which commit it cloned
 (design_agent3.md §13), detect/boilerplate-filter, archive a post-filter
 source snapshot (same Agent 3 prerequisite), run whichever `Extractor`s
-apply, persist entities/edges, diff the job's files
+apply (PHP/WordPress/Laravel, plus Graphify for every other code language),
+build secret-redacted source evidence from the still-on-disk repo
+(evidence.py), persist entities/edges, evidence chunks and the job's
+extraction coverage report, diff the job's files
 against the project's previous `done` job (diff.py, tasks.md Phase 5) and
 record the changed/unchanged/removed counts, fan entity-level
 summarization+grounding out concurrently (a content_hash-unchanged entity's
@@ -66,9 +69,11 @@ from document_analyzer.supabase_client import get_service_role_client
 from document_analyzer.worker.boilerplate import filter_boilerplate, log_filtered_files
 from document_analyzer.worker.diff import diff_against_previous_job, persist_diff_counts
 from document_analyzer.worker.embedding_config_check import assert_embedding_config_in_sync
+from document_analyzer.worker.evidence import build_evidence, persist_evidence
 from document_analyzer.worker.extract import ExtractedEntity, ExtractionResult
 from document_analyzer.worker.fetch import SourceFetchError, fetch_source
 from document_analyzer.worker.ground import GroundingCheckError
+from document_analyzer.worker.graphify.extractor import GraphifyExtractionError, GraphifyExtractor
 from document_analyzer.worker.ground_retry import GroundingRetryResult, check_grounding_with_retry
 from document_analyzer.worker.grounding_status import persist_grounding_status
 from document_analyzer.worker.job_completion import mark_job_done_if_ready
@@ -81,6 +86,7 @@ from document_analyzer.worker.status import (
     mark_job_failed,
     mark_job_running,
     mark_progress_stage,
+    persist_extraction_coverage,
     persist_source_commit_sha,
     persist_source_snapshot_path,
 )
@@ -114,6 +120,7 @@ _PIPELINE_ERRORS = (
     SourceFetchError,
     PhpExtractionError,
     WordPressExtractionError,
+    GraphifyExtractionError,
     SummarizationError,
     GroundingCheckError,
     SnapshotError,
@@ -165,11 +172,42 @@ def _fetch_job_row(client, job_id: str, org_id: str) -> dict:
     return result.data[0]
 
 
-def _run_extractors(repo_path: Path, client, job_id: str, org_id: str) -> None:
-    for extractor in (PhpExtractor(), WordPressExtractor(), LaravelExtractor()):
-        if extractor.detect(repo_path):
-            result: ExtractionResult = extractor.extract(repo_path)
-            persist_extraction_result(client, job_id, org_id, result)
+def _extractors(job_id: str) -> tuple:
+    """PHP first (nikic + the framework-wiring extractors), then Graphify for every other
+    code language — GraphifyExtractor never takes a `.php` file (graphify/extractor.py)."""
+    return (PhpExtractor(), WordPressExtractor(), LaravelExtractor(), GraphifyExtractor(job_id=job_id))
+
+
+def _run_extractors(repo_path: Path, client, job_id: str, org_id: str) -> dict[str, dict]:
+    """Runs every applicable extractor, builds source evidence from the still-on-disk repo,
+    persists entities/edges (each extractor's batch separately — local_ids are only unique
+    within one ExtractionResult), then the evidence chunks linked to the new entity ids, then
+    the job's coverage report. Returns extracted_entities.id -> evidence excerpt, which the
+    entity-summary step passes to the summarizer and grounding check."""
+    results: list[ExtractionResult] = [
+        extractor.extract(repo_path) for extractor in _extractors(job_id) if extractor.detect(repo_path)
+    ]
+    keyed = [((index, entity.local_id), entity) for index, result in enumerate(results) for entity in result.entities]
+    evidence = build_evidence(repo_path, keyed)
+
+    entity_ids: dict[tuple[int, str], str] = {}
+    for index, result in enumerate(results):
+        hashes = {
+            entity.local_id: evidence.excerpt_hash((index, entity.local_id))
+            for entity in result.entities
+            if evidence.excerpt_hash((index, entity.local_id))
+        }
+        ids = persist_extraction_result(client, job_id, org_id, result, excerpt_hashes=hashes)
+        entity_ids.update({(index, local_id): db_id for local_id, db_id in ids.items()})
+
+    persist_evidence(client, job_id, org_id, evidence, entity_ids, {key: e.name for key, e in keyed})
+
+    coverage: dict = {"evidence": evidence.report}
+    for result in results:
+        coverage.update(result.coverage or {})
+    persist_extraction_coverage(client, job_id, org_id, coverage)
+
+    return {entity_ids[key]: excerpt for key, excerpt in evidence.excerpts.items() if key in entity_ids}
 
 
 def _strip_boilerplate(repo_path: Path, client, job_id: str, org_id: str) -> None:
@@ -192,7 +230,9 @@ def _strip_boilerplate(repo_path: Path, client, job_id: str, org_id: str) -> Non
             path.unlink(missing_ok=True)
 
 
-def _process_one_entity(client, job_id: str, org_id: str, entity_row: dict, llm_client) -> _EntityOutcome:
+def _process_one_entity(
+    client, job_id: str, org_id: str, entity_row: dict, llm_client, excerpt: dict | None = None
+) -> _EntityOutcome:
     entity = ExtractedEntity(
         local_id=entity_row["id"],
         entity_type=entity_row["entity_type"],
@@ -212,10 +252,12 @@ def _process_one_entity(client, job_id: str, org_id: str, entity_row: dict, llm_
             risk_factors=[],
         )
 
-    facts = _entity_facts_payload(entity)
-    retry_result: GroundingRetryResult = check_grounding_with_retry(
-        facts, generate=lambda: summarize_entity(entity, client=llm_client), client=llm_client
-    )
+    facts = _entity_facts_payload(entity, excerpt)
+    if excerpt:
+        generate = lambda: summarize_entity(entity, client=llm_client, excerpt=excerpt)  # noqa: E731
+    else:  # no stored evidence for this entity (no line info, unreadable file): facts only
+        generate = lambda: summarize_entity(entity, client=llm_client)  # noqa: E731
+    retry_result: GroundingRetryResult = check_grounding_with_retry(facts, generate=generate, client=llm_client)
     row = persist_summary(client, job_id, org_id, retry_result.summary, entity_id=entity_row["id"])
     persist_grounding_status(client, row["id"], org_id, retry_result)
     write_through_cache(client, org_id, entity_row["content_hash"], row["id"])
@@ -229,7 +271,9 @@ def _process_one_entity(client, job_id: str, org_id: str, entity_row: dict, llm_
     )
 
 
-def _summarize_entities(client, job_id: str, org_id: str, llm_client) -> list[_EntityOutcome]:
+def _summarize_entities(
+    client, job_id: str, org_id: str, llm_client, excerpts: dict[str, dict] | None = None
+) -> list[_EntityOutcome]:
     entity_rows = (
         client.table("extracted_entities")
         .select("id, entity_type, name, file_path, raw_facts, content_hash")
@@ -244,7 +288,10 @@ def _summarize_entities(client, job_id: str, org_id: str, llm_client) -> list[_E
     with ThreadPoolExecutor(max_workers=SUMMARY_CONCURRENCY) as executor:
         return list(
             executor.map(
-                lambda row: _process_one_entity(_client_for_thread(), job_id, org_id, row, llm_client), entity_rows
+                lambda row: _process_one_entity(
+                    _client_for_thread(), job_id, org_id, row, llm_client, (excerpts or {}).get(row["id"])
+                ),
+                entity_rows,
             )
         )
 
@@ -315,6 +362,17 @@ def _fold_ancestors(client, job_id: str, org_id: str, entity_outcomes: list[_Ent
     _fold_children(client, job_id, org_id, "repo", "repo", "subsystem", subsystem_children, llm_client)
 
 
+def _record_job_failure(client, job_id: str, org_id: str, error: str) -> None:
+    """mark_job_failed, but never raises. A malformed queue message (non-uuid org_id,
+    a job row that no longer exists) makes the status write fail too — letting that
+    escape would crash the worker before run_forever deletes the message, so the same
+    poison message would come back after every visibility timeout."""
+    try:
+        mark_job_failed(client, job_id, org_id, error)
+    except Exception:  # noqa: BLE001
+        logger.exception("could not record failure for job %s (org %s)", job_id, org_id)
+
+
 def process_job(job_id: str, org_id: str) -> None:
     """Runs one job's full pipeline to completion (or a handled failure). Never raises —
     any pipeline error is caught, written to `ingestion_jobs.error`, and the job is
@@ -347,7 +405,7 @@ def process_job(job_id: str, org_id: str) -> None:
             _strip_boilerplate(repo_path, client, job_id, org_id)
             snapshot_path = archive_source_snapshot(client, job_id, org_id, repo_path)
             persist_source_snapshot_path(client, job_id, org_id, snapshot_path)
-            _run_extractors(repo_path, client, job_id, org_id)
+            excerpts = _run_extractors(repo_path, client, job_id, org_id) or {}
 
         diff = diff_against_previous_job(client, org_id, job_row.get("project_id"), job_id)
         persist_diff_counts(client, job_id, org_id, diff)
@@ -355,7 +413,7 @@ def process_job(job_id: str, org_id: str) -> None:
         llm_client = get_azure_openai_client()
 
         mark_progress_stage(client, job_id, org_id, "summarizing")
-        entity_outcomes = _summarize_entities(client, job_id, org_id, llm_client)
+        entity_outcomes = _summarize_entities(client, job_id, org_id, llm_client, excerpts)
 
         if entity_outcomes:
             mark_progress_stage(client, job_id, org_id, "grounding")
@@ -365,10 +423,10 @@ def process_job(job_id: str, org_id: str) -> None:
 
     except _PIPELINE_ERRORS as exc:
         logger.warning("job %s failed: %s", job_id, exc)
-        mark_job_failed(client, job_id, org_id, str(exc))
+        _record_job_failure(client, job_id, org_id, str(exc))
     except Exception as exc:  # noqa: BLE001 — last-resort net so one bad job can't kill the loop
         logger.exception("job %s failed with an unexpected error", job_id)
-        mark_job_failed(client, job_id, org_id, f"unexpected error: {exc}")
+        _record_job_failure(client, job_id, org_id, f"unexpected error: {exc}")
     finally:
         if github_token_ref:
             asyncio.run(delete_github_token(github_token_ref))

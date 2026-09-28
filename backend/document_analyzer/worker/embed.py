@@ -41,3 +41,13 @@ def embed_text(text: str, model=None) -> list[float]:
     callers (and tests) can avoid loading the real model."""
     model = model or get_embedding_model()
     return model.encode(text, convert_to_numpy=True).tolist()
+
+
+def embed_texts(texts: list[str], model=None, batch_size: int = 64) -> list[list[float]]:
+    """Batch form of `embed_text` for source evidence chunks (evidence.py) — same pinned
+    model, one encode call per batch instead of per chunk. Note the pin truncates input at
+    256 word pieces, so evidence.py puts the identifying header first."""
+    if not texts:
+        return []
+    model = model or get_embedding_model()
+    return model.encode(texts, batch_size=batch_size, convert_to_numpy=True).tolist()

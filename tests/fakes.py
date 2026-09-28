@@ -218,3 +218,34 @@ class FakeClient:
 
     def rpc(self, _name, *_args, **_kwargs):
         return FakeRpc(self.org_id)
+
+
+def stub_colima(monkeypatch, workdir):
+    """Stands in for a running Colima profile (shared/container_engine.py): a fixed socket,
+    an engine that names itself `colima`, and shared work dirs under `workdir`. The `docker`
+    CLI calls themselves still go through `subprocess.run`, so a test's own fake of that
+    sees them. Returns the fake DOCKER_HOST."""
+    import subprocess
+    from pathlib import Path
+
+    from document_analyzer.shared import container_engine
+
+    fake_env = {"DOCKER_HOST": "unix:///fake/colima/docker.sock"}
+
+    def docker(args, timeout=60, **kwargs):
+        return subprocess.run(
+            ["docker", *args], capture_output=True, text=kwargs.pop("text", True), timeout=timeout,
+            check=False, env=dict(fake_env), **kwargs,
+        )
+
+    def shared_workdir(kind):
+        path = Path(workdir) / kind
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    monkeypatch.setattr(container_engine, "docker_env", lambda: dict(fake_env))
+    monkeypatch.setattr(container_engine, "docker", docker)
+    monkeypatch.setattr(container_engine, "verify_engine", lambda: "colima")
+    monkeypatch.setattr(container_engine, "shared_workdir", shared_workdir)
+    monkeypatch.setattr(container_engine, "assert_shared", lambda path: Path(path).resolve())
+    return fake_env["DOCKER_HOST"]

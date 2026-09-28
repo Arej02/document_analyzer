@@ -25,6 +25,7 @@ const isValidGithubUrl = (value) => GITHUB_URL_RE.test(value)
 const formatJobErrorMessage = (status, body) => {
   const detail = body?.detail
   if (typeof detail === 'string' && detail) return detail
+  if (detail && typeof detail === 'object' && typeof detail.message === 'string') return detail.message
   if (Array.isArray(detail) && detail.length) {
     const messages = detail.map((item) => item?.msg).filter(Boolean)
     if (messages.length) return messages.join('; ')
@@ -962,6 +963,180 @@ function ExtractionStats({ job }) {
   )
 }
 
+// What extraction and source evidence actually covered — GET /api/agent1/jobs/{job_id}/
+// coverage (design.md §4, ingestion_jobs.extraction_coverage). Graphify handles every
+// non-PHP code language; this says which files it extracted, only partially extracted or
+// couldn't, and which files have no stored excerpt, so a reviewer knows what a summary or
+// an answer could never have seen.
+function ExtractionCoverage({ jobId }) {
+  const [coverage, setCoverage] = useState(undefined)
+  const [error, setError] = useState(null)
+  const apiFetch = useApiFetch()
+
+  useEffect(() => {
+    let cancelled = false
+    apiFetch(`/api/agent1/jobs/${jobId}/coverage`)
+      .then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(formatJobErrorMessage(response.status, body))
+        }
+        return response.json()
+      })
+      .then((data) => { if (!cancelled) setCoverage(data.coverage) })
+      .catch((err) => { if (!cancelled) setError(err.message) })
+    return () => { cancelled = true }
+  }, [jobId])
+
+  if (error) return <p className="error">{error}</p>
+  if (coverage === undefined) return <p className="summary-loading">Loading coverage…</p>
+  if (!coverage) return <p className="summary-loading">No coverage report for this run (it predates coverage reporting).</p>
+
+  const graphify = coverage.graphify
+  const evidence = coverage.evidence
+  const languages = Object.entries(graphify?.by_language || {})
+  const graphifyStatus = {
+    ran: null,
+    unavailable: `Graphify was unavailable${graphify?.reason ? ` (${graphify.reason})` : ''} — only PHP was analysed.`,
+    no_candidate_files: 'No non-PHP code files to analyse.',
+    no_analysable_files: 'Graphify could not analyse any of the non-PHP files.',
+  }[graphify?.status]
+
+  return (
+    <div className="extraction-stats coverage-report">
+      <strong>Coverage</strong>
+      {graphifyStatus && <p className="coverage-note">{graphifyStatus}</p>}
+      {languages.length > 0 && (
+        <ul className="extraction-stats-list">
+          {languages.map(([language, counts]) => (
+            <li key={language}>
+              {language}: {Object.entries(counts).map(([status, n]) => `${n} ${status}`).join(', ')}
+            </li>
+          ))}
+          {graphify.files_claimed_by_php_extractors > 0 && <li>php: {graphify.files_claimed_by_php_extractors} via PHP extractors</li>}
+          {graphify.files_without_code_extractor > 0 && (
+            <li className="extraction-stats-errored">{graphify.files_without_code_extractor} files with no code extractor</li>
+          )}
+        </ul>
+      )}
+      {graphify?.not_extracted_count > 0 && (
+        <details className="coverage-details">
+          <summary>{graphify.not_extracted_count} {graphify.not_extracted_count === 1 ? 'file' : 'files'} not fully extracted</summary>
+          <ul>
+            {graphify.not_extracted_sample.map((file) => (
+              <li key={file.path}><code>{file.path}</code> — {file.status}{file.reason ? `: ${file.reason}` : ''}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {evidence && (
+        <p className="coverage-note">
+          Source evidence: {evidence.chunks} {evidence.chunks === 1 ? 'excerpt' : 'excerpts'} from {evidence.files_chunked} files
+          {evidence.files_skipped_count > 0 && <span className="extraction-stats-errored"> · {evidence.files_skipped_count} files without excerpts</span>}
+          {evidence.redacted_chunks > 0 && <span> · {evidence.redacted_chunks} with secrets redacted</span>}
+        </p>
+      )}
+    </div>
+  )
+}
+
+// "Ask the codebase" — POST /api/agent1/jobs/{job_id}/ask (design.md §4). Answers cite
+// the stored source excerpts (E#) and graph relationships (R#) they rest on; the backend
+// rejects an answer that cites anything it wasn't given, so every chip below points at
+// something real. Clicking a citation shows the exact excerpt.
+function AskCodebase({ jobId }) {
+  const [question, setQuestion] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [answer, setAnswer] = useState(null)
+  const [error, setError] = useState(null)
+  const [openCitation, setOpenCitation] = useState(null)
+  const apiFetch = useApiFetch()
+
+  const ask = async (event) => {
+    event.preventDefault()
+    if (!question.trim() || submitting) return
+    setSubmitting(true)
+    setError(null)
+    setOpenCitation(null)
+    try {
+      const response = await apiFetch(`/api/agent1/jobs/${jobId}/ask`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(formatJobErrorMessage(response.status, body))
+      setAnswer(body)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const evidenceById = Object.fromEntries((answer?.context?.evidence || []).map((e) => [e.evidence_id, e]))
+  const citationChips = (ids) => ids.map((id) => (
+    <button key={id} type="button" className="citation-chip" onClick={() => setOpenCitation(openCitation === id ? null : id)}>{id}</button>
+  ))
+  const opened = openCitation && evidenceById[openCitation]
+  const openedRelationship = openCitation && !opened && answer?.citations.find((c) => c.id === openCitation)
+
+  return (
+    <section className="entity-browser ask-codebase" aria-label="Ask the codebase">
+      <h2>Ask the codebase</h2>
+      <form className="ask-form" onSubmit={ask}>
+        <input
+          type="text"
+          value={question}
+          maxLength={2000}
+          placeholder="e.g. What calls charge_card, and what does it write?"
+          onChange={(event) => setQuestion(event.target.value)}
+        />
+        <button type="submit" disabled={submitting || !question.trim()}>{submitting ? 'Asking…' : 'Ask'}</button>
+      </form>
+      {error && <p className="error">{error}</p>}
+      {answer && (
+        <div className="ask-answer">
+          {answer.outcome === 'insufficient_evidence' && <p className="unverified-badge unverified-badge-warn">insufficient evidence</p>}
+          <p className="repo-summary-text">{answer.summary}</p>
+          {[['Observed in the code', answer.observations], ['Interpretation', answer.interpretation]].map(([title, claims]) => (
+            claims.length > 0 && (
+              <div key={title}>
+                <strong>{title}</strong>
+                <ul className="ask-claims">
+                  {claims.map((claim, i) => <li key={i}>{claim.text} {citationChips(claim.citations)}</li>)}
+                </ul>
+              </div>
+            )
+          ))}
+          {answer.citations.length > 0 && (
+            <p className="ask-sources">
+              Sources: {answer.citations.map((c) => (
+                <span key={c.id}>
+                  {citationChips([c.id])} {c.kind === 'evidence' ? <code>{c.file_path}:{c.line_start}-{c.line_end}</code> : 'relationship'}{' '}
+                </span>
+              ))}
+            </p>
+          )}
+          {opened && (
+            <figure className="ask-excerpt">
+              <figcaption><code>{opened.file_path}</code> lines {opened.line_start}–{opened.line_end}</figcaption>
+              <pre>{opened.content}</pre>
+            </figure>
+          )}
+          {openedRelationship && <pre className="ask-excerpt">{openedRelationship.text}</pre>}
+          {answer.limitations.length > 0 && (
+            <details className="coverage-details">
+              <summary>Limitations ({answer.limitations.length})</summary>
+              <ul>{answer.limitations.map((line) => <li key={line}>{line}</li>)}</ul>
+            </details>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
 // Landing spot after a successful submit — job_id lives in a `?job=` query param
 // (no router in this app yet) so it survives a refresh/share. Polls
 // GET /api/agent1/jobs/{job_id} until the job leaves a terminal state's need
@@ -1027,6 +1202,7 @@ function JobStatusPage({ jobId, onBackToForm }) {
           </p>
         )}
         {done && <JobSummary jobId={jobId} />}
+        {done && <ExtractionCoverage jobId={jobId} />}
         <PrimaryButton
           label={failed ? 'Retry' : 'Analyze'}
           type="button"
@@ -1035,6 +1211,7 @@ function JobStatusPage({ jobId, onBackToForm }) {
         />
       </section>
       {done && <EntityBrowser jobId={jobId} />}
+      {done && <AskCodebase jobId={jobId} />}
     </main>
   )
 }
@@ -2585,16 +2762,18 @@ function App() {
 // Every child reads the session via useAuth()/useApiFetch() instead of
 // receiving it as a prop, so it stays out of the way of components that
 // don't need it.
-function SupabaseSetupNeeded() {
+function SupabaseSetupNeeded({ error }) {
   return (
     <main className="page-shell">
 
       <section className="hero" id="top">
         <p className="eyebrow">SETUP NEEDED</p>
         <h1>Supabase isn't configured</h1>
+        <p className="intro">{error}</p>
         <p className="intro">
-          Copy <code>frontend/.env.example</code> to <code>frontend/.env</code>, fill in{' '}
-          <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code>, then restart the dev server.
+          The app reads its Supabase settings from the backend (<code>GET /api/config</code>): set{' '}
+          <code>SUPABASE_DB_URL</code> and <code>SUPABASE_ANON_KEY</code> in the repo's <code>.env</code>, restart
+          the backend, then reload this page.
         </p>
       </section>
     </main>
@@ -2602,8 +2781,8 @@ function SupabaseSetupNeeded() {
 }
 
 function Root() {
-  const { session, loading, configured } = useAuth()
-  if (!configured) return <SupabaseSetupNeeded />
+  const { session, loading, configured, configError } = useAuth()
+  if (!configured) return <SupabaseSetupNeeded error={configError} />
   if (loading) return null
   if (!session) return <SignIn />
   return <App />

@@ -37,6 +37,17 @@ summary, grounding status, and its edges (both directions)") without a
 shape, so entities.py's `get_entity_detail` docstring decides it, mirrored in
 design.md §4. Same no-status-gate reasoning as the list endpoint.
 
+GET /jobs/{job_id}/coverage returns the job's `extraction_coverage` report (what
+Graphify extracted / only partially extracted / couldn't, files no extractor handles,
+and the source-evidence report) — design.md §4. Kept off the status-poll payload
+since it's larger and only changes once per job.
+
+POST /jobs/{job_id}/ask is the cited Q&A merged in from Galvanise (ask/): retrieval
+runs on the caller's RLS-scoped client, then one Azure OpenAI call whose citations are
+validated against the evidence it was given. It's a single bounded LLM call, like a
+chat turn, not pipeline work, so it's answered in the request (declared `def`, so it
+runs in FastAPI's threadpool) rather than queued — design.md §4.
+
 reingest_project_job (used by projects_router.py's
 `POST /api/agent1/projects/{project_id}/reingest`) lives here rather than in
 projects.py because it shares the upload/GitHub job-row assembly this file
@@ -56,6 +67,8 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ValidationError
 
+from .ask.answer import AnswerError, generate_answer
+from .ask.context import QuestionError, retrieve
 from .auth import AuthContext, get_auth_context
 from .entities import DEFAULT_LIMIT, MAX_LIMIT, get_entity_detail, list_job_entities
 from .github_token import store_github_token
@@ -69,6 +82,10 @@ router = APIRouter(prefix="/api/agent1", tags=["jobs"])
 _JOB_STATUS_COLUMNS = (
     "id, status, progress_stage, error, changed_file_count, unchanged_file_count, removed_file_count"
 )
+
+
+class AskRequest(BaseModel):
+    question: str
 
 
 class GithubJobRequest(BaseModel):
@@ -145,6 +162,57 @@ async def get_job_entity_detail(
     if entity is None:
         raise HTTPException(status_code=404, detail="entity not found")
     return entity
+
+
+@router.get("/jobs/{job_id}/coverage")
+async def get_job_coverage(job_id: str, auth: Annotated[AuthContext, Depends(get_auth_context)]):
+    rows = (
+        auth.client.table("ingestion_jobs")
+        .select("id, status, extraction_coverage")
+        .eq("org_id", auth.org_id)
+        .eq("id", job_id)
+        .limit(1)
+        .execute()
+    ).data
+    if not rows:
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"job_id": rows[0]["id"], "status": rows[0]["status"], "coverage": rows[0].get("extraction_coverage")}
+
+
+def _question_embedder():
+    """The pinned local model (worker/embed.py), loaded lazily on the first question."""
+    from .worker.embed import embed_text
+
+    return embed_text
+
+
+@router.post("/jobs/{job_id}/ask")
+def ask_job(job_id: str, body: AskRequest, auth: Annotated[AuthContext, Depends(get_auth_context)]):
+    rows = (
+        auth.client.table("ingestion_jobs")
+        .select("id, extraction_coverage")
+        .eq("org_id", auth.org_id)
+        .eq("id", job_id)
+        .limit(1)
+        .execute()
+    ).data
+    if not rows:
+        raise HTTPException(status_code=404, detail="job not found")
+    try:
+        context = retrieve(
+            auth.client,
+            auth.org_id,
+            job_id,
+            body.question,
+            embed=_question_embedder(),
+            coverage=rows[0].get("extraction_coverage"),
+        )
+    except QuestionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        return generate_answer(context)
+    except AnswerError as exc:
+        raise HTTPException(status_code=502, detail={"code": exc.code, "message": str(exc), **exc.details}) from exc
 
 
 def get_job_status(client, org_id: str, job_id: str) -> dict | None:

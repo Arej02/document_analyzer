@@ -15,7 +15,7 @@ The same as `tasks_agent2.md`:
 ### Prerequisites (outside this file)
 - [ ] **Agent 1 source snapshot** (`tasks.md`, "Agent 3 prerequisites"): commit SHA, snapshot upload, `end_line` in `raw_facts`. Nothing in Phase 2 onwards can run on real data without it.
 - [ ] At least one plan reaches `approved` live, end to end, for a **WordPress** repo: ingest → plan → submit → clear every `needs_facade` flag → approve every phase. The repo must be ingested after the Agent 1 source-snapshot task, so the plan's source job has a snapshot. Agent 1 jobs already reach `done` live, so the Azure endpoint note in `tasks.md` Phase 4 is out of date (`design_agent2.md` §15: Laravel `hospital_test`, 2026-09-23). What's missing is a WordPress repo taken through to an approved plan. Until then, Phases 0–4 build against `tests/fakes.py::FakeClient` and `tests/fixtures/agent2_cycle_repo/`, extending `tests/test_agent2_pipeline_fixture.py`.
-- [ ] Docker is installed on every machine that runs the executor, and gVisor (`runsc`) on the production host.
+- [ ] Colima (docker runtime) and the `docker` CLI client are installed on every machine that runs the executor — Docker Desktop is not used (2026-09-28) — and gVisor (`runsc`) is registered on the production host.
 
 ---
 
