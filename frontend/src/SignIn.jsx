@@ -57,9 +57,12 @@ export function SignIn() {
         const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
         if (signInError) throw signInError
       } else {
-        const { error: signUpError } = await supabase.auth.signUp({ email, password })
+        const { data, error: signUpError } = await supabase.auth.signUp({ email, password })
         if (signUpError) throw signUpError
-        setInfo('Account created. If email confirmation is enabled on this project, check your inbox before signing in.')
+        // With a session, AuthProvider's onAuthStateChange already switches to the app.
+        if (!data.session) {
+          setInfo('Account created. Check your inbox to confirm it, or turn off "Confirm email" in Supabase → Authentication → Sign In / Providers.')
+        }
       }
     } catch (err) {
       setError(err.message)

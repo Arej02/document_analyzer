@@ -23,6 +23,7 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 ├── CLAUDE.md                # this file
 ├── docs/
 │   ├── skills.md            # tech stack / tooling inventory (Agents 1, 2 + 3)
+│   ├── architecture.md      # cross-agent architecture diagrams (Mermaid)
 │   ├── specs.md             # Agent 1 functional + technical spec
 │   ├── design.md            # Agent 1 architecture, data model, API
 │   ├── tasks.md             # Agent 1 phased tasks (backend paired with frontend)

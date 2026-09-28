@@ -63,11 +63,7 @@ docs/               specs, design, tasks
    uv run document-analyzer-doctor
    ```
 
-5. **User access:** sign up in the app, then give your account an org (any UUID):
-
-   ```
-   uv run document-analyzer-add-org-member you@example.com "$(uuidgen | tr A-Z a-z)"
-   ```
+5. **Auth:** in Supabase → Authentication → Sign In / Providers → Email, turn off **Confirm email**. Then just sign up in the app; each account gets its own org automatically. To share an org with a teammate: `uv run document-analyzer-add-org-member <their-email> <your-org-id>` (`--list` shows org ids).
 
 ## Running
 

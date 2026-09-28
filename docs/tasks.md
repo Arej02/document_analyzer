@@ -173,6 +173,7 @@ Galvanise (`knowledge_base/galvanise`, a parallel build of this stage) had broad
 - [x] Backend `.env` down to three Supabase values: `SUPABASE_URL` derived from `SUPABASE_DB_URL` (`supabase_client.py::supabase_url`), `SUPABASE_JWT_SECRET` optional (only for HS256 tokens).
 - [x] `GET /api/config` (design.md §4): public Supabase URL + anon key for the frontend. `config_router.py`, tests in `tests/test_config_endpoint.py`.
   - [x] Frontend sync: `supabaseClient.js::loadSupabase()` builds the client from `/api/config` (`VITE_SUPABASE_*` only as an override), `AuthProvider` exposes the client, `SignIn` takes it from `useAuth()`, and the setup screen shows the backend's error.
+- [x] Signup is the only step: `20260928020000_auto_org_on_signup.sql` gives every new `auth.users` row its own org (and backfills existing users); `SignIn.jsx` goes straight into the app when `signUp` returns a session. design.md §1a updated. No endpoint.
 
 ## Cross-cutting: keeping backend and frontend in sync going forward
 
