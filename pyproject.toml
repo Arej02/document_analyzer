@@ -29,6 +29,10 @@ document-analyzer-worker = "document_analyzer.worker.run:main"
 document-analyzer-planner = "document_analyzer.agent2.worker.run:main"
 document-analyzer-executor = "document_analyzer.agent3.worker.run:main"
 document-analyzer-add-org-member = "document_analyzer.admin.add_org_member:main"
+document-analyzer-build-graphify-image = "document_analyzer.worker.graphify.image:main"
+document-analyzer-build-agent3-image = "document_analyzer.agent3.worker.image:main"
+document-analyzer-doctor = "document_analyzer.doctor:main"
+document-analyzer-setup-db = "document_analyzer.setup_db:main"
 
 [tool.uv.build-backend]
 module-root = "backend"
@@ -47,3 +51,4 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["live_container: runs real containers on the configured engine (skips when it isn't running)"]

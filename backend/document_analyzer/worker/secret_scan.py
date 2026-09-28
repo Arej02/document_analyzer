@@ -101,3 +101,29 @@ def log_findings(client: Client, job_id: str, org_id: str, findings_by_entity_id
     ]
     if rows:
         insert_many_scoped(client, "secret_findings", org_id, rows)
+
+
+# Source text (evidence excerpts, evidence.py) needs in-place redaction: replacing the
+# whole excerpt, as `_redact` does for a raw_facts string, would throw away the code
+# around a secret. So only the matched token — or, for a credential-named assignment,
+# only the quoted literal — is replaced.
+_ASSIGNMENT_RE = re.compile(
+    r"""(?P<key>["']?(?:%s)["']?\s*(?:=>|=|:)\s*)(?P<quote>["'])(?P<value>[^"'\n]{4,})(?P=quote)"""
+    % "|".join(sorted(_CREDENTIAL_KEY_NAMES, key=len, reverse=True)),
+    re.IGNORECASE,
+)
+
+
+def redact_text(text: str) -> tuple[str, list[str]]:
+    """Returns (redacted_text, reasons). Never returns or logs the matched value itself."""
+    reasons: list[str] = []
+
+    def assignment(match: re.Match) -> str:
+        reasons.append("hardcoded_credential_field")
+        return f"{match.group('key')}{match.group('quote')}[REDACTED:hardcoded_credential_field]{match.group('quote')}"
+
+    text = _ASSIGNMENT_RE.sub(assignment, text)
+    for reason, pattern in _PATTERN_REASONS:
+        text, count = pattern.subn(f"[REDACTED:{reason}]", text)
+        reasons.extend([reason] * count)
+    return text, reasons

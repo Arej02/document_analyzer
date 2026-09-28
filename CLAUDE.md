@@ -23,6 +23,7 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 ├── CLAUDE.md                # this file
 ├── docs/
 │   ├── skills.md            # tech stack / tooling inventory (Agents 1, 2 + 3)
+│   ├── architecture.md      # cross-agent architecture diagrams (Mermaid)
 │   ├── specs.md             # Agent 1 functional + technical spec
 │   ├── design.md            # Agent 1 architecture, data model, API
 │   ├── tasks.md             # Agent 1 phased tasks (backend paired with frontend)
@@ -34,8 +35,12 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 │   └── tasks_agent3.md      # Agent 3 phased tasks (backend paired with frontend)
 ├── backend/document_analyzer/          # Python / FastAPI
 │   ├── (Agent 1 API modules), worker/  # Agent 1 worker: `uv run document-analyzer-worker`
+│   │   └── worker/graphify/            # Graphify extractor host side (container runner, validation, mapping)
+│   ├── graphify_worker/                # stdlib-only code that runs *inside* the Graphify image
+│   ├── ask/                            # cited Q&A over a job (POST /api/agent1/jobs/{id}/ask)
 │   ├── agent2/                         # Agent 2 API router + worker: `uv run document-analyzer-planner`
 │   └── agent3/                         # Agent 3 API router + worker: `uv run document-analyzer-executor` (planned)
+├── backend/graphify_runner/ # Graphify image: `uv run document-analyzer-build-graphify-image`
 ├── supabase/migrations/     # every table/queue/RLS change goes here
 └── frontend/                # existing React app
 ```
@@ -49,7 +54,7 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 - **Plans are immutable snapshots.** A plan is pinned to one Agent 1 `job_id`. Reviewer edits create a new plan version, and re-ingestion marks older plans `stale`. Nothing is mutated in place.
 - **Clustering is deterministic.** Leiden is seeded, and the seed and all params are persisted on the planning job.
 - **Async by default.** Ingestion and planning run for minutes to hours. Nothing long-running is called synchronously from a FastAPI request. Everything goes through the job queues (`design.md` §3, `design_agent2.md` §1).
-- **Untrusted input, no code execution.** Ingested repos are arbitrary user-submitted code. Neither Agent 1 nor Agent 2 executes any of it (static parsing only; there's no sandbox in MVP scope). Agent 2's test contracts are derived from facts. Agent 3 runs only the Python it generated, never the legacy code, and only inside its sandbox (`design_agent3.md` §7): no network, read-only root, no capabilities, resource limits, a timeout, and gVisor in production. The worker never imports generated code in-process.
+- **Untrusted input, no code execution.** Ingested repos are arbitrary user-submitted code. Neither Agent 1 nor Agent 2 executes any of it (static parsing only). Graphify's parsers run in a disposable, network-less, hardened container because they read hostile input, not because anything from the repo runs (`design.md` §5a); keep Graphify out of the API/worker environment. Repository text that reaches an LLM (source excerpts, Q&A evidence) is untrusted data: fence it or mark it untrusted in the system prompt, never let it act as instructions. Agent 2's test contracts are derived from facts. Agent 3 runs only the Python it generated, never the legacy code, and only inside its sandbox (`design_agent3.md` §7): no network, read-only root, no capabilities, resource limits, a timeout, and gVisor in production. The worker never imports generated code in-process.
 - **Multi-tenancy from day one.** Every Supabase table is scoped by `org_id` with RLS. Don't add a table without RLS policies. Worker writes use the service-role connection, stamp `org_id` from the job row (never from repo content), and filter updates by both `id` and `org_id`.
 - **Embedding model is pinned**, not hardcoded. See `design.md` §2 Embeddings. Agent 2's cluster report embeddings use the same pin. A change is an explicit migration, never a silent update.
 - **Grounding failures never block.** A bad summary or cluster report gets flagged `unverified`, and the rest of the job keeps processing.
@@ -57,11 +62,14 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 ## Tech stack (short version — full detail in `docs/skills.md`)
 
 - Orchestration: Python 3.14, FastAPI, pgmq-driven long-lived worker processes (LangGraph is optional and not currently used)
-- PHP parsing: `nikic/php-parser` via subprocess; WordPress: custom extractor (hooks/CPTs/meta)
+- PHP parsing: `nikic/php-parser` via subprocess; WordPress: custom extractor (hooks/CPTs/meta); Laravel: routes
+- Every other code language: Graphify 0.9.68 (tree-sitter) in the `document-analyzer-graphify` image (`backend/graphify_runner/`), `AGENT1_GRAPHIFY=auto|required|off`
+- Source evidence: secret-redacted excerpts in `source_chunks` (pgvector), fed to summaries/grounding and to cited Q&A (`ask/`)
 - Storage: Supabase Postgres (+ pgvector), Supabase Auth, Vault
 - LLM: Azure OpenAI (summaries, cluster reports); embeddings: local pinned `all-MiniLM-L6-v2`
 - Agent 2 graph work: `python-igraph` + `leidenalg` (clustering), `networkx` (SCC / topological sort)
-- Agent 3 sandbox: Docker CLI (`agent3/worker/sandbox.py`), gVisor `runsc` in production, runner image `galvanise-agent3-runner` (`backend/agent3_runner/`)
+- Containers: **`CONTAINER_ENGINE=colima|docker`, Colima by default (docker by default on Windows).** Every container call goes through `shared/container_engine.py`. With `colima` it pins the `COLIMA_PROFILE` socket (the ambient docker context is ignored), refuses an engine that isn't that Colima VM, and stages anything mounted under `CONTAINER_WORKDIR` (Colima shares only `$HOME` and `/tmp/colima`). With `docker` it uses the ambient Docker engine (e.g. Docker Desktop). It never falls back from one engine to the other. Don't shell out to `docker` directly. `uv run document-analyzer-doctor` checks the setup
+- Agent 3 sandbox: `docker` CLI client against the configured engine (`agent3/worker/sandbox.py`), gVisor `runsc` in production, runner image `galvanise-agent3-runner` (`backend/agent3_runner/`, `uv run document-analyzer-build-agent3-image`)
 - Frontend: React (existing, in `frontend/`), React Flow for Agent 2's plan graph
 
 ## Working conventions

@@ -5,6 +5,8 @@ from document_analyzer.supabase_client import (
     get_service_role_client,
     insert_many_scoped,
     insert_scoped,
+    project_url_from_db_url,
+    supabase_url,
 )
 
 
@@ -90,3 +92,34 @@ def test_insert_many_scoped_rejects_org_id_already_in_any_row():
         insert_many_scoped(client, "extracted_entities", "org-123", [{"name": "a"}, {"org_id": "org-from-content"}])
 
     assert client.inserted == []
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        "postgresql://postgres.abcref123:pw@aws-0-us-east-1.pooler.supabase.com:5432/postgres",
+        "postgresql://postgres.abcref123:pw@aws-0-us-east-1.pooler.supabase.com:6543/postgres",
+        "postgresql://postgres:pw@db.abcref123.supabase.co:5432/postgres",
+    ],
+)
+def test_project_url_is_derived_from_supabase_connection_strings(dsn):
+    assert project_url_from_db_url(dsn) == "https://abcref123.supabase.co"
+
+
+def test_project_url_cannot_be_derived_from_a_non_supabase_dsn():
+    with pytest.raises(RuntimeError, match="Set SUPABASE_URL"):
+        project_url_from_db_url("postgresql://postgres:pw@localhost:5432/postgres")
+
+
+def test_explicit_supabase_url_wins_over_the_derived_one(monkeypatch):
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://postgres:pw@db.otherref.supabase.co/postgres")
+
+    assert supabase_url() == "https://example.supabase.co"
+
+
+def test_supabase_url_falls_back_to_the_connection_string(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL")
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://postgres.abcref123:pw@aws-0-eu-west-1.pooler.supabase.com:5432/postgres")
+
+    assert supabase_url() == "https://abcref123.supabase.co"
+    assert str(get_service_role_client().supabase_url).rstrip("/") == "https://abcref123.supabase.co"

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
 EntityType = Literal["function", "class", "route", "schema", "hook", "dependency"]
-EdgeType = Literal["calls", "hook_binding", "global", "include", "route_binding"]
+EdgeType = Literal["calls", "hook_binding", "global", "include", "route_binding", "inherits"]
 
 
 @dataclass(frozen=True)
@@ -36,12 +36,20 @@ class ExtractedEdge:
     from_local_id: str
     edge_type: EdgeType
     to_local_id: str | None = None  # None for edges to external/global targets
+    # Where the edge came from (extractor, upstream relation, confidence, line). Empty for
+    # the PHP/WordPress/Laravel extractors, whose edges are all directly parsed facts;
+    # GraphifyExtractor fills it because its cross-file resolution can be INFERRED.
+    provenance: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class ExtractionResult:
     entities: list[ExtractedEntity] = field(default_factory=list)
     edges: list[ExtractedEdge] = field(default_factory=list)
+    # Per-extractor file coverage report (what was extracted, partial, unsupported, ...),
+    # persisted onto ingestion_jobs.extraction_coverage. None when an extractor has
+    # nothing to report beyond its entities.
+    coverage: dict[str, Any] | None = None
 
 
 @runtime_checkable

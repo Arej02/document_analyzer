@@ -4,6 +4,7 @@ org_id is never trusted from the request; it's always resolved server-side from
 the validated Supabase JWT via the `current_org_id()` RPC (backed by `org_members`).
 """
 
+import logging
 import os
 from dataclasses import dataclass
 
@@ -12,7 +13,9 @@ from fastapi import HTTPException, Request
 from jwt import PyJWKClient
 from supabase import Client
 
-from .supabase_client import get_request_scoped_client
+from .supabase_client import get_request_scoped_client, supabase_url
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -49,14 +52,21 @@ def _decode_claims(token: str) -> dict:
         alg = jwt.get_unverified_header(token).get("alg")
         if alg == "HS256":
             # Legacy Supabase projects sign session tokens directly with the
-            # shared JWT secret.
-            secret = os.environ["SUPABASE_JWT_SECRET"]
+            # shared JWT secret — the only reason SUPABASE_JWT_SECRET is needed.
+            secret = os.environ.get("SUPABASE_JWT_SECRET")
+            if not secret:
+                logger.warning(
+                    "rejecting an HS256 token: SUPABASE_JWT_SECRET is not set. This project "
+                    "still signs with the legacy JWT secret; set it, or switch the project to "
+                    "JWT signing keys (Auth > JWT Keys)"
+                )
+                raise HTTPException(status_code=401, detail="Invalid or expired token")
             return jwt.decode(token, secret, algorithms=["HS256"], audience="authenticated")
         # Newer Supabase projects sign session tokens with an asymmetric key
         # (typically ES256) under Auth > JWT Signing Keys — verify against
         # the project's published JWKS instead of a shared secret. See
         # design.md §1a.
-        signing_key = _jwks_client(os.environ["SUPABASE_URL"]).get_signing_key_from_jwt(token)
+        signing_key = _jwks_client(supabase_url()).get_signing_key_from_jwt(token)
         return jwt.decode(token, signing_key.key, algorithms=[alg], audience="authenticated")
     except (jwt.PyJWTError, KeyError) as exc:
         raise HTTPException(status_code=401, detail="Invalid or expired token") from exc

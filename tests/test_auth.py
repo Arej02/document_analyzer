@@ -106,3 +106,15 @@ async def test_es256_token_verified_via_jwks(monkeypatch):
 
     assert ctx.user_id == "user-1"
     assert ctx.org_id == "org-456"
+
+
+@pytest.mark.asyncio
+async def test_hs256_token_without_jwt_secret_configured_raises_401(monkeypatch):
+    monkeypatch.delenv("SUPABASE_JWT_SECRET")
+    token = _make_token({"sub": "user-1", "aud": "authenticated"})
+    request = _make_request({"authorization": f"Bearer {token}"})
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_auth_context(request)
+
+    assert exc_info.value.status_code == 401

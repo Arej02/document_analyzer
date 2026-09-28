@@ -15,8 +15,11 @@ Upload (zip/tar) or GitHub URL
         │
         ├─► Ingest/unpack or clone repo
         ├─► Detect language/framework signals
-        ├─► AST-extract (Extractor protocol) ──► extracted_entities, entity_edges
         ├─► Boilerplate filter (log filtered files)
+        ├─► AST-extract (Extractor protocol) ──► extracted_entities, entity_edges
+        │     PHP/WordPress/Laravel in-process; every other code language via
+        │     Graphify in a disposable, network-less container (§5a)
+        ├─► Source evidence (redacted excerpts + embeddings) ──► source_chunks (§5a)
         ├─► Bottom-up LLM summarization ──► knowledge_summaries (draft)
         ├─► Grounding checker (retry up to cap, else flag unverified)
         └─► summary_cache updated (content hash → summary)
@@ -28,14 +31,14 @@ Upload (zip/tar) or GitHub URL
   Frontend polls/subscribes ──► shows knowledge base browser
 ```
 
-No step in this pipeline executes ingested code. Structural extraction (AST-extract) is static parsing only — there is no code-sampling/execution sandbox in Agent 1 (deliberate MVP scope cut, see `specs.md` NFR2).
+No step in this pipeline executes ingested code. Structural extraction (AST-extract) is static parsing only — there is no code-sampling/execution sandbox in Agent 1 (deliberate MVP scope cut, see `specs.md` NFR2). Graphify's container (§5a) is not an execution sandbox either: it runs Graphify's tree-sitter parsers over a copy of the source, never the source itself, and is isolated because the parsers themselves are fed hostile input.
 
 ## 1a. Auth (decided)
 
-- **Frontend**: authenticates via Supabase Auth (email/OAuth, whatever providers are enabled on the Supabase project). The Supabase client SDK holds the session and attaches the Supabase-issued JWT (`access_token`) to every request to the FastAPI backend as a `Bearer` header.
-- **Backend**: FastAPI validates the incoming JWT against Supabase's signing key (JWKS, or the project JWT secret depending on Supabase Auth config) on every request — this is a dependency, not per-route boilerplate. `org_id` is never accepted as a request parameter (see §4); it's resolved server-side from the validated token.
+- **Frontend**: authenticates via Supabase Auth (email/OAuth, whatever providers are enabled on the Supabase project). The Supabase URL and anon key it needs come from the backend's unauthenticated `GET /api/config` (§4), so the backend's `.env` is the only place Supabase is configured. The Supabase client SDK holds the session and attaches the Supabase-issued JWT (`access_token`) to every request to the FastAPI backend as a `Bearer` header.
+- **Backend**: FastAPI validates the incoming JWT against Supabase's signing key (JWKS at the project URL, or the project JWT secret for legacy HS256 projects — `SUPABASE_JWT_SECRET` is optional and only read for HS256 tokens) on every request — this is a dependency, not per-route boilerplate. `org_id` is never accepted as a request parameter (see §4); it's resolved server-side from the validated token.
 - **`org_id` resolution (decided): lookup table, not a custom JWT claim.** A custom claim would need a Supabase Auth Hook configured by hand in the dashboard — an out-of-band manual step outside migrations. Instead, `org_members` (`user_id` PK → `org_id`, one org per user for MVP) maps `auth.uid()` to `org_id`. RLS policies resolve it via a `current_org_id()` SQL function (`security definer`, reads `org_members` for `auth.uid()`) so every policy expression stays a one-liner. Revisit if multi-org-per-user is ever needed.
-- **No self-serve signup → org assignment.** Signing up via Supabase Auth only creates an `auth.users` row; it does not grant access to any org. `org_members` rows are provisioned out-of-band via the service-role-only `add_org_member_by_email` / `list_org_members` RPCs (`supabase/migrations/20260925000000_add_org_member_admin_helpers.sql`), wrapped by `uv run document-analyzer-add-org-member <email> <org_id>`. This is an ops step, not an API endpoint — revisit with a real invite flow if org sizes grow beyond a few manually-added collaborators.
+- **Signup creates a personal org (changed 2026-09-28).** The `on_auth_user_created` trigger on `auth.users` (`supabase/migrations/20260928020000_auto_org_on_signup.sql`) inserts an `org_members` row with a fresh `org_id` for every new user, so signing up is the only step and no user lands in another's data. To share an org with a teammate, move them with the service-role-only `add_org_member_by_email` RPC (`uv run document-analyzer-add-org-member <email> <org_id>`; `--list` shows each user's org). Supabase's *Confirm email* setting is Auth config, not schema: turn it off in the dashboard for sign-up-and-go.
 - The async worker's service-role connection (bypasses RLS, described below) is a separate credential from this request-scoped, JWT-validated client — never conflate the two paths.
 
 ## 2. Data model (Supabase Postgres)
@@ -70,6 +73,7 @@ RLS is enforced on every table below via the authenticated session for reads. Wr
 | `removed_file_count` | int, nullable | same as above; a file the previous job had entities for that this job has none for |
 | `source_commit_sha` | text, nullable | Agent 3 prerequisite (`design_agent3.md` §13) — the cloned commit's full SHA, from `git rev-parse HEAD` right after `fetch.py`'s `--depth 1` clone; null for archive uploads (no commit to record) and for jobs predating this column |
 | `source_snapshot_path` | text, nullable | Agent 3 prerequisite (`design_agent3.md` §13) — object path in the `agent1-snapshots` bucket for this job's post-boilerplate-strip source tarball, written by `worker/snapshot.py`; null for a job predating this column |
+| `extraction_coverage` | jsonb, nullable | (added 2026-09-28, §5a) what extraction and evidence actually covered: `graphify` (status `ran`/`unavailable`/`no_candidate_files`/`no_analysable_files`, per-status and per-language file counts, a capped sample of files not fully extracted, files claimed by the PHP extractors or with no code extractor, how Graphify relations were mapped/dropped) and `evidence` (chunks, files skipped, range basis, redactions). Bounded: counts plus capped samples, never the full file list. Null for jobs predating it |
 
 ### `extracted_entities`
 | column | type | notes |
@@ -91,7 +95,8 @@ RLS is enforced on every table below via the authenticated session for reads. Wr
 | `job_id` | uuid, FK | |
 | `from_entity_id` | uuid, FK → `extracted_entities` | |
 | `to_entity_id` | uuid, FK → `extracted_entities`, nullable | nullable for edges to external/global targets |
-| `edge_type` | enum(`calls`, `hook_binding`, `global`, `include`, `route_binding`) | `route_binding` added `supabase/migrations/20260924000000_route_binding_edge_type.sql` — a Laravel route binds to its controller method the same way a WordPress hook binds to a callback, just discovered later (§5) |
+| `edge_type` | enum(`calls`, `hook_binding`, `global`, `include`, `route_binding`, `inherits`) | `route_binding` added `supabase/migrations/20260924000000_route_binding_edge_type.sql` — a Laravel route binds to its controller method the same way a WordPress hook binds to a callback, just discovered later (§5). `inherits` (class → base class/interface) added `20260928000000_inherits_edge_type.sql` for Graphify (§5a); Agent 2 ignores it |
+| `provenance` | jsonb, default `{}` | (added 2026-09-28, §5a) where the edge came from. `{}` for the PHP-family extractors (every edge is a directly parsed fact); Graphify edges record `extractor`, the upstream `relation`, `confidence` (`EXTRACTED`/`INFERRED`), `confidence_score`, `file_path`, `line` — Graphify resolves cross-file names heuristically, so an `INFERRED` edge is a guess and is labelled as one |
 
 ### `filtered_files`
 | column | type | notes |
@@ -115,6 +120,34 @@ Queryable record of FR3's boilerplate filter (§ below) — every file it exclud
 | `reason` | text | which heuristic matched, e.g. `aws_access_key`, `private_key_block`, `hardcoded_credential_field` |
 
 specs.md NFR2's secret/credential scan: every extracted string is scanned before `extracted_entities.raw_facts` is persisted; a match is redacted in place (`[REDACTED:<reason>]`) before persisting, and the finding is logged here for audit — never the raw secret value, and never a reason to fail the entity or the job. Same write/RLS pattern as `filtered_files`.
+
+For a secret found in source evidence (§5a) the row points at the chunk's first associated entity and `field_path` is `source:<file>:L<start>-L<end>`; the chunk itself also records its redaction reasons.
+
+### `source_chunks` (added 2026-09-28, §5a)
+| column | type | notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `org_id` | uuid | RLS scope |
+| `job_id` | uuid, FK → `ingestion_jobs` | |
+| `file_path` | text | |
+| `line_start`, `line_end` | int | 1-based, inclusive |
+| `strategy` | text | `entity_range` (an entity's verified definition), `entity_range_part` (one that had to be split), `source_window` (overlapping windows over everything else) |
+| `content` | text | the excerpt, secret-redacted in place (`[REDACTED:<reason>]`) before it's persisted |
+| `content_hash` | text | sha256 of `content` |
+| `token_estimate` | int | conservative (chars / 3) |
+| `redactions` | jsonb | reasons of any redactions in this chunk — never the values |
+| `embedding` | vector(384) | same pinned model as `knowledge_summaries.embedding` (header = path, lines, entity names first, since the pin reads ~256 word pieces) |
+
+### `source_chunk_entities` (added 2026-09-28, §5a)
+| column | type | notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `org_id`, `job_id` | uuid | |
+| `chunk_id` | uuid, FK → `source_chunks` (cascade) | |
+| `entity_id` | uuid, FK → `extracted_entities` | |
+| `association` | text | `entity_range` (the chunk is the entity's definition) or `starts_in` (the entity's start line falls inside it). Associations come from file path + line numbers only, never from a name |
+
+Both are written by the worker (service role) and read-only to authenticated users of the org, same RLS pattern as `extracted_entities`. `match_source_chunks(job_id, query vector, count)` is a `SECURITY INVOKER` SQL function (exact cosine distance), so the caller's RLS still decides which rows exist.
 
 ### `knowledge_summaries`
 | column | type | notes |
@@ -233,6 +266,9 @@ None of these needed a design decision — they're the same ordering/wiring desc
 
 This is the contract `tasks.md` frontend tasks are built around. Adjust route prefixes to match your actual FastAPI router.
 
+### `GET /api/config` (added 2026-09-28)
+Unauthenticated. Returns `{"supabase_url", "supabase_anon_key"}` so the frontend needs no Supabase config of its own. `supabase_url` is `SUPABASE_URL` when set, else derived from `SUPABASE_DB_URL` (pooler username `postgres.<ref>` or direct host `db.<ref>.supabase.co` → `https://<ref>.supabase.co`, `supabase_client.py::supabase_url`). Both values are public by design; the service-role key and every other secret never appear here. `503` with a setup hint when the anon key is unset or the URL can't be derived.
+
 ### `POST /api/agent1/jobs`
 Create an ingestion job.
 
@@ -347,8 +383,33 @@ Response (`202`), same shape as `POST /api/agent1/jobs`:
 
 **Scope note:** the endpoint above only creates the job row and enqueues it (tasks.md Phase 5's first task). The `content_hash` diff (`worker/diff.py`), confirmed `summary_cache` reuse, and the `projects.latest_job_id` update (`worker/job_completion.py::mark_job_done_if_ready`, once the new job reaches `done`) are all now built too — see §3's "File diff", "Job completion gate", and `summary_cache`'s own entry above. What's still true: extraction itself still re-parses the whole current source tree unconditionally on every re-ingestion (the diff step's known limitation, §3) — only the *summarization* half of "only re-extract/re-summarize changed files" is actually skipped for unchanged content.
 
+### `GET /api/agent1/jobs/{job_id}/coverage` (added 2026-09-28)
+The job's `extraction_coverage` report (§2), kept off the status-poll payload because it's larger and only changes once per job. `404` for a missing or other-org job; `coverage` is `null` for a job that predates the report or hasn't finished extraction.
+```json
+{"job_id": "uuid", "status": "done", "coverage": {"graphify": {"status": "ran", "counts_by_status": {"extracted": 8}, "by_language": {"python": {"extracted": 6}}, "not_extracted_count": 0, "...": "..."}, "evidence": {"chunks": 11, "files_skipped_count": 0, "...": "..."}}}
+```
+
+### `POST /api/agent1/jobs/{job_id}/ask` (added 2026-09-28)
+Cited Q&A over one job's knowledge base, merged in from Galvanise. Body `{"question": "..."}` (1–2000 chars). Retrieval (`ask/context.py`) runs on the caller's RLS-scoped client and is deterministic: semantic search over `source_chunks` (`match_source_chunks`, the question embedded with the pinned local model) plus symbol/path search over the job's entity names, fused by reciprocal rank; the top chunks' entities seed a bounded two-hop expansion over `entity_edges` in both directions (per-node cap for hubs, edge and node caps); excerpts of the discovered entities join the candidates; overlapping excerpts of a file are merged and admitted by priority into a 12k-token budget (a quarter reserved for relationships). Then one Azure OpenAI call (`ask/answer.py`) that sees the repository data only inside per-request random fences, must answer in a fixed JSON shape, and may cite only the supplied `E#` evidence and `R#` relationship IDs.
+```json
+{
+  "outcome": "answered | insufficient_evidence",
+  "question": "...",
+  "summary": "1-4 sentences with inline [E1] / [R2] citations",
+  "observations": [{"text": "...", "citations": ["E1"]}],
+  "interpretation": [{"text": "...", "citations": ["E1", "R2"]}],
+  "limitations": ["..."],
+  "citations": [{"id": "E1", "kind": "evidence", "file_path": "...", "line_start": 1, "line_end": 9}, {"id": "R2", "kind": "relationship", "text": "..."}],
+  "context": {"evidence": ["...excerpts with ids, origins and why they were chosen..."], "relationships": ["..."], "terms": ["..."], "semantic_used": true, "truncated": [], "timings_ms": {}},
+  "model_called": true
+}
+```
+`404` missing/other-org job, `422` empty or over-long question, `502` with `{"code": "AI_INVALID_CITATION" | "AI_BAD_RESPONSE", ...}` when the model cites something it wasn't given, makes an uncited claim in an `answered` response, or returns malformed output — rejected, never shown as verified. Citation validity proves the cited evidence exists, not that every claim about it is right. A job with no stored evidence (predates §5a) answers `insufficient_evidence` without calling the model and says to reingest. Coverage gaps (Graphify unavailable, files not extracted, start-line-only excerpts) are added to `limitations`.
+
+This is one bounded LLM call, like a chat turn, not pipeline work, so it's answered inside the request (a sync `def` endpoint, run in FastAPI's threadpool) rather than queued — the "async by default" rule is about ingestion/planning jobs. The question's embedding model loads lazily on the API process's first question. Intended as a reviewer tool during Agent 2 plan approval; read-only on Agent 1's tables.
+
 ### `DELETE /api/agent1/projects/{project_id}`
-Permanently deletes a project and everything derived from it: every ingestion job and its `extracted_entities`, `entity_edges`, `knowledge_summaries`, `filtered_files` and `secret_findings`; the `summary_cache` rows pointing at those summaries (a later ingestion of the same content elsewhere in the org just misses the cache); every Agent 2 planning job, cluster, report, plan, plan item, phase approval and override for the project; the uploaded archives of `upload` jobs in the `agent1-uploads` bucket; each job's `agent1-snapshots` source tarball, if it has one; every Agent 3 execution job of the project with its `unit_executions` rows; and each execution job's `agent3-output` objects (everything under `{org_id}/{execution_job_id}/`) (all storage removals best effort — a failure is logged and doesn't fail the request).
+Permanently deletes a project and everything derived from it: every ingestion job and its `extracted_entities`, `entity_edges`, `knowledge_summaries`, `filtered_files`, `secret_findings`, `source_chunks` and `source_chunk_entities`; the `summary_cache` rows pointing at those summaries (a later ingestion of the same content elsewhere in the org just misses the cache); every Agent 2 planning job, cluster, report, plan, plan item, phase approval and override for the project; the uploaded archives of `upload` jobs in the `agent1-uploads` bucket; each job's `agent1-snapshots` source tarball, if it has one; every Agent 3 execution job of the project with its `unit_executions` rows; and each execution job's `agent3-output` objects (everything under `{org_id}/{execution_job_id}/`) (all storage removals best effort — a failure is logged and doesn't fail the request).
 
 `409` while an ingestion, planning **or execution** job of the project is `queued`/`running`. Agent 3's rows go first: `unit_executions` reference the plan's clusters and `execution_jobs` reference its plans, neither of which cascades (`design_agent3.md` §2, §13).
 
@@ -382,6 +443,26 @@ Verified against a live Laravel repo (`hospital_test`, `tasks.md` §15's own dry
 
 **`raw_facts["end_line"]` (added 2026-09-25 — Agent 3 prerequisite, `design_agent3.md` §13):** every `function`/`class` entity from `PhpExtractor`, and every hook-occurrence/CPT/meta record from `WordPressExtractor`, now carries `end_line` alongside the existing `line` (`getEndLine()` in `backend/php/extract.php`/`wp_extract.php`, wherever the underlying AST node is still in scope) — Agent 3 needs the full source span of an entity to translate it, not just its start line. Since `content_hash` (§2) hashes the whole `raw_facts` dict, this changed every entity's hash once; the first re-ingestion of an already-ingested project after this change misses `summary_cache` and re-summarizes everything, same effect as the 2026-09-24 `calls` field addition (tasks.md Phase 6).
 
+## 5a. Graphify extraction and source evidence (merged from Galvanise, 2026-09-28)
+
+Agent 1 had two gaps that a parallel build ("Galvanise") had already solved: it parsed only PHP, and it kept only structural facts and LLM paraphrases of the code — so a summary could only be checked against what the extractor chose to record, search depended on summary quality, and Agent 3 had to dig the source out of a tarball. The merge keeps Agent 1's data model, queue, RLS and pipeline and adds Galvanise's extraction, evidence and Q&A pieces behind them.
+
+**`GraphifyExtractor`** (`worker/graphify/`) is a fourth `Extractor`. PHP stays with `PhpExtractor` (nikic's namespace/`use` resolution is more precise than Graphify's name-based resolution) and the WordPress/Laravel extractors (hook/route wiring no generic parser sees), so `.php` files are never sent to Graphify and nothing is extracted twice. Every other file whose extension the image advertises as a working *code* parser (Python, JS/TS, Go, Rust, Java, C/C++, C#, Ruby, Kotlin, Swift, ... — 113 extensions / 53 families in Graphify 0.9.68, each smoke-parsed when the image is built) is analysed:
+
+- **Isolation.** One disposable container per job, from the `document-analyzer-graphify` image (`backend/graphify_runner/`, built from a curated context by `uv run document-analyzer-build-graphify-image`; Graphify never enters the API/worker environment). Only the selected regular files are copied in (symlinks refused), mounted read-only with a read-only control mount and job-scoped output/scratch mounts; `--network none`, read-only root, `--cap-drop ALL`, no-new-privileges, non-root uid, memory/CPU/pids limits, a timeout, and an explicit environment (never the host's, never a credential). The container is removed by name and the job directory deleted whatever happens. Galvanise's workers had internet access; here AST parsing needs none, so it's off, matching Agent 3's sandbox. `AGENT1_GRAPHIFY_RUNTIME=runsc` selects gVisor.
+- **Engine: Colima by default** (2026-09-28). Every `docker` call (runs, image inspect/build, cleanup) goes through `shared/container_engine.py`: `DOCKER_HOST` = the socket `colima status $COLIMA_PROFILE --json` reports, `DOCKER_CONTEXT` dropped, and an engine whose `docker info` name isn't `colima`/`colima-<profile>` is refused — so Docker Desktop is never used, even if the machine's current context points at it. The per-job copy is staged under `CONTAINER_WORKDIR/graphify` (default `~/.cache/document-analyzer/graphify`), which is checked to be a directory Colima shares with its VM (`$HOME`, `/tmp/colima`, or `COLIMA_EXTRA_MOUNTS`); a path elsewhere would mount empty. A stopped Colima is "unavailable" for the `auto`/`required` modes below. `uv run document-analyzer-doctor` verifies all of this with a real mount round trip.
+- **Switchable engine (2026-09-28, later that day).** `CONTAINER_ENGINE=colima|docker` picks the engine, defaulting to `docker` on Windows (no Colima there) and `colima` everywhere else. `colima` is everything described here. `docker` uses whatever engine the `docker` CLI already points at (its current context, `DOCKER_CONTEXT` or `DOCKER_HOST`), e.g. Docker Desktop on Windows/WSL 2: `verify_engine` only requires `docker info` to answer, and the shared-path check is skipped because Docker Desktop shares host drives (staging under `CONTAINER_WORKDIR` still happens and is harmless). The choice is explicit: an engine that is down is `unavailable`, never swapped for the other one. Images live per engine, so after switching run both `build-*-image` commands once. `container_engine.image_present` retries a missed short image name under its qualified name (the Docker Desktop containerd lookup bug, `design_agent3.md` §7) for Graphify, Agent 3 and the doctor alike. `uv run document-analyzer-doctor` prints the active engine. Verified on Colima both directly and through the `docker` path (`DOCKER_HOST` at Colima's socket): doctor all OK and the 8 live sandbox smoke tests pass.
+- **Validation.** The output (protocol v1: `nodes.jsonl`, `edges.jsonl`, `coverage.json`, `manifest.json`) is untrusted and is validated before anything is mapped: only the expected regular files, size and sha256 per the manifest, manifest identity = the scheduled request, strict JSON, per-record schema, unique IDs, every edge endpoint present.
+- **Mapping.** Graphify nodes of kind `function`/`method`/`class` become `function`/`class` entities with `raw_facts` `{extractor: "graphify", language, kind, line, end_line?, calls | methods + extends, class?}`. `calls` → `calls`, `inherits`/`extends`/`implements` → `inherits`, `imports`/`imports_from` → `include` when both ends are entities; class → method and containment are folded into `raw_facts` (as `PhpExtractor` does). Every other relation (file-level imports, `uses`, `rationale_for`, ...) is dropped **and counted** in `extraction_coverage.graphify.mapping`. Each edge keeps its provenance (§2).
+- **Coverage.** Per-file status (`extracted`, `partial` = syntax errors, `declined`, `unsupported`, `parser_unavailable`, `parse_failed`, `empty`) and per-language counts land in `ingestion_jobs.extraction_coverage`, with files the PHP extractors own, files with no code extractor, and oversized files (`AGENT1_GRAPHIFY_MAX_FILE_BYTES`) accounted for separately.
+- **Modes** (`AGENT1_GRAPHIFY`): `auto` (default) runs when the configured engine and the image are present and otherwise records `status: unavailable` and continues with PHP only; `required` fails the job instead; `off` never runs. Once the container has actually run, a failure (timeout, OOM, invalid output) always fails the job — only a missing prerequisite is tolerated. "No analysable files" is a coverage status, not a failure.
+
+**Source evidence** (`worker/evidence.py`) runs right after extraction, on the post-boilerplate repo still on disk, over every file of a language extraction touched. Chunking (Galvanise's strategy): an entity's range is *verified* when the extractor reported `end_line` (nikic always does) or, for Python, when `ast.parse` finds that def/class starting on that line — parsing only; outermost verified ranges up to 150 lines become `entity_range` chunks, everything else is covered by 60-line windows with 10 lines of overlap; lines over 2,000 characters are cut with a marker. Every chunk and excerpt is secret-redacted in place (`secret_scan.py::redact_text`: the token patterns plus credential-named assignments) before it's stored or sent anywhere. Bounds: `AGENT1_EVIDENCE_MAX_FILE_BYTES` (1 MB), `AGENT1_EVIDENCE_MAX_CHUNKS` (50,000; the report says when it's hit).
+
+Each entity also gets an **excerpt** (its verified range, else a 60-line window from its start line, capped at 8,000 characters, flagged `complete_definition: false` when it may be cut short). The excerpt is added to the entity's facts payload as `source_excerpt`, so the summarizer *and the grounding check* see the real code, not just the extractor's facts; both prompts treat it as untrusted repository text. Its hash is folded into `content_hash`, so a body change that leaves `raw_facts` identical still misses `summary_cache` (the first re-ingestion after this change re-summarizes everything once, same as the `calls`/`end_line` additions). The chunks are embedded with the pinned local model, so code search no longer inherits summary errors, and nothing here goes to Azure OpenAI except the entity's own excerpt inside its summary call.
+
+What was deliberately **not** merged from Galvanise: its single-user SQLite queue, NiceGUI UI, snapshot publication/retirement and Colima-profile management (Agent 1's pgmq queue, job rows, React app and RLS already cover those roles), and its Hugging Face-hosted embeddings (the pinned local MiniLM keeps code off third-party services).
+
 ## 6. Frontend integration points
 
 The existing React app (`frontend/`) needs, at minimum:
@@ -390,5 +471,6 @@ The existing React app (`frontend/`) needs, at minimum:
 2. A job status view that polls `GET /api/agent1/jobs/{job_id}` until `done`/`failed`.
 3. A results view calling `GET /api/agent1/jobs/{job_id}/summary` and `.../entities` for the knowledge base browser.
 4. A project detail view (`ProjectDetailPage`, `frontend/src/main.jsx`, tasks.md Phase 5) calling `GET /api/agent1/projects/{project_id}` for job history and `POST /api/agent1/projects/{project_id}/reingest` for the re-ingest action — the reachable home for `.../reingest` that `ProjectsList`'s rows link to by `project_id` (design.md §4's own "should generally query by project_id, not a bare job_id" guidance).
+5. On a `done` job: an extraction-coverage panel (`ExtractionCoverage`) calling `GET .../coverage`, and an "Ask the codebase" panel (`AskCodebase`) calling `POST .../ask`, with clickable `E#`/`R#` citations that show the exact excerpt (2026-09-28, §5a).
 
 See `tasks.md` for the concrete, checkable steps — each backend milestone has a paired frontend milestone so the two stay in sync as you build.

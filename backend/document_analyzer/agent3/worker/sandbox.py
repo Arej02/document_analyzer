@@ -1,7 +1,8 @@
 """Sandboxed pytest runner — design_agent3.md §7, specs_agent3.md NFR2.
 
-Runs pytest over a workspace folder inside the `galvanise-agent3-runner` image
-with no network, a read-only root, no capabilities, a non-root user,
+Runs pytest over a workspace folder inside the `galvanise-agent3-runner` image, on the
+configured container engine (shared/container_engine.py: a pinned Colima profile, or the
+ambient Docker engine with CONTAINER_ENGINE=docker), with no network, a read-only root, no capabilities, a non-root user,
 memory/CPU/pids limits and a wall-clock timeout, then parses the JUnit XML.
 
 The code under test is generated from untrusted repos, so everything coming
@@ -16,7 +17,9 @@ same process as pytest and could fake its own results (design_agent3.md §7,
 import json
 import os
 import secrets
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -24,6 +27,9 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Literal
+
+from document_analyzer.shared import container_engine
+from document_analyzer.shared.container_engine import ContainerEngineUnavailable, qualified_image_name  # noqa: F401 — re-exported
 
 DEFAULT_RUNNER_IMAGE = "galvanise-agent3-runner:0.1"
 
@@ -45,7 +51,8 @@ Status = Literal["completed", "timed_out", "killed"]
 
 
 class SandboxUnavailableError(RuntimeError):
-    """Docker missing, daemon down, image missing, or gVisor required but absent.
+    """The configured engine unavailable (Colima not running or not Colima, Docker not
+    answering), docker CLI missing, image missing, or gVisor required but absent.
 
     An infrastructure error (the worker fails the job), never a unit verdict.
     """
@@ -179,11 +186,41 @@ def parse_junit(xml: str) -> list[TestCaseResult]:
     return results
 
 
+def _engine_env() -> dict[str, str]:
+    """The docker CLI's environment for the configured engine (shared/container_engine.py)."""
+    try:
+        return container_engine.docker_env()
+    except ContainerEngineUnavailable as exc:
+        raise SandboxUnavailableError(str(exc)) from exc
+
+
 def run_pytest(workspace: Path, params: SandboxParams) -> SandboxResult:
-    """Run pytest over `workspace` (mounted read-only at /work) inside the sandbox."""
+    """Run pytest over `workspace` (mounted read-only at /work) inside the sandbox.
+
+    The workspace is copied into a fresh directory under the engine's shared work dir
+    (container_engine.shared_workdir) and that copy is mounted, since Colima only shares
+    $HOME (and /tmp/colima) with its VM — a workspace in the system temp dir would
+    otherwise arrive empty. (Docker Desktop shares host drives; the copy is harmless there.) The copy is deleted afterwards whatever happens."""
     workspace = Path(workspace).resolve()
     if not workspace.is_dir():
         raise ValueError(f"workspace is not a directory: {workspace}")
+    env = _engine_env()
+    try:
+        staging_root = container_engine.shared_workdir("agent3")
+    except ContainerEngineUnavailable as exc:
+        raise SandboxUnavailableError(str(exc)) from exc
+    if staging_root.resolve() == workspace or workspace in staging_root.resolve().parents:
+        raise ValueError(f"workspace {workspace} contains the sandbox staging dir {staging_root}")
+    staged = Path(tempfile.mkdtemp(prefix="agent3-ws-", dir=staging_root))
+    try:
+        mounted = staged / "work"
+        shutil.copytree(workspace, mounted, symlinks=True)  # never follow a host symlink
+        return _run_mounted(mounted, params, env)
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)
+
+
+def _run_mounted(workspace: Path, params: SandboxParams, env: dict[str, str]) -> SandboxResult:
     _make_world_readable(workspace)
 
     container_name = f"agent3-{uuid.uuid4().hex}"
@@ -192,7 +229,9 @@ def run_pytest(workspace: Path, params: SandboxParams) -> SandboxResult:
 
     start = time.monotonic()
     try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
+        )
     except OSError as exc:  # FileNotFoundError: no docker binary
         raise SandboxUnavailableError(f"could not run docker: {exc}") from exc
 
@@ -257,8 +296,11 @@ def docker_runtimes() -> set[str]:
 
 
 def check_sandbox_available(params: SandboxParams, require_gvisor: bool = False) -> None:
-    """Raise SandboxUnavailableError unless the daemon, the runner image and (if needed) gVisor are there."""
-    _docker_checked(["docker", "version", "--format", "{{.Server.Version}}"], "docker daemon is not reachable")
+    """Raise SandboxUnavailableError unless the configured engine, the runner image and (if needed) gVisor are there."""
+    try:
+        container_engine.verify_engine()
+    except ContainerEngineUnavailable as exc:
+        raise SandboxUnavailableError(str(exc)) from exc
     _check_image_present(params.image)
     wanted = "runsc" if require_gvisor else params.runtime
     if wanted and wanted not in docker_runtimes():
@@ -267,30 +309,15 @@ def check_sandbox_available(params: SandboxParams, require_gvisor: bool = False)
         raise SandboxUnavailableError("AGENT3_REQUIRE_GVISOR is set but AGENT3_SANDBOX_RUNTIME is not 'runsc'")
 
 
-def qualified_image_name(image: str) -> str:
-    """The fully qualified form Docker stores a short name under:
-    `galvanise-agent3-runner:0.1` -> `docker.io/library/galvanise-agent3-runner:0.1`.
-    Names that already carry a registry (a first component with `.` or `:`, or
-    `localhost`) are returned unchanged."""
-    first, _, rest = image.partition("/")
-    if rest and ("." in first or ":" in first or first == "localhost"):
-        return image
-    return f"docker.io/{image}" if rest else f"docker.io/library/{image}"
-
-
 def _check_image_present(image: str) -> None:
-    # Docker Desktop 29.6.1 with the containerd image store intermittently answers
-    # "No such image" to `docker image inspect <short name>` for an image that exists
-    # (and that `docker run` resolves fine); the fully qualified name always resolves.
-    # So a miss on the short name is retried under the qualified one before failing.
-    missing = f"runner image {image!r} not found (build it: docker build -t {image} backend/agent3_runner)"
+    # container_engine.image_present retries a missed short name under its qualified one
+    # (Docker Desktop's containerd image store, design_agent3.md §7).
     try:
-        _docker_checked(["docker", "image", "inspect", "--format", "{{.Id}}", image], missing)
-    except SandboxUnavailableError:
-        qualified = qualified_image_name(image)
-        if qualified == image:
-            raise
-        _docker_checked(["docker", "image", "inspect", "--format", "{{.Id}}", qualified], missing)
+        present = container_engine.image_present(image)
+    except ContainerEngineUnavailable as exc:
+        raise SandboxUnavailableError(str(exc)) from exc
+    if not present:
+        raise SandboxUnavailableError(f"runner image {image!r} not found (build it: uv run document-analyzer-build-agent3-image)")
 
 
 class _CappedReader:
@@ -332,14 +359,15 @@ def _make_world_readable(workspace: Path) -> None:
 
 def _docker_quiet(cmd: list[str]) -> None:
     try:
-        subprocess.run(cmd, capture_output=True, timeout=_KILL_GRACE_SECONDS)
-    except (OSError, subprocess.TimeoutExpired):
+        subprocess.run(cmd, capture_output=True, timeout=_KILL_GRACE_SECONDS, env=container_engine.docker_env())
+    except (OSError, subprocess.TimeoutExpired, ContainerEngineUnavailable):
         pass
 
 
 def _docker_checked(cmd: list[str], message: str) -> str:
+    env = _engine_env()
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=_KILL_GRACE_SECONDS)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=_KILL_GRACE_SECONDS, env=env)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SandboxUnavailableError(f"{message}: {exc}") from exc
     if result.returncode != 0:

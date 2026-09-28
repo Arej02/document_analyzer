@@ -1,29 +1,45 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { supabase, isSupabaseConfigured } from './supabaseClient'
+import { loadSupabase } from './supabaseClient'
 
 // design.md §1a: the Supabase client SDK holds the session; every request to
 // the FastAPI backend attaches its access_token as a Bearer header. This
 // context is the one place that session is read from, so components never
-// touch supabase.auth directly.
+// touch supabase.auth directly (SignIn takes the client from here too).
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  const [session, setSession] = useState(undefined) // undefined = still loading
+  // undefined = still loading; the client itself is built from GET /api/config.
+  const [supabase, setSupabase] = useState(undefined)
+  const [configError, setConfigError] = useState(null)
+  const [session, setSession] = useState(undefined)
 
   useEffect(() => {
-    if (!isSupabaseConfigured) return
-    supabase.auth.getSession().then(({ data }) => setSession(data.session))
+    let cancelled = false
+    let subscription = null
 
-    const { data: subscription } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession)
+    loadSupabase().then(({ supabase: client, error }) => {
+      if (cancelled) return
+      setSupabase(client)
+      setConfigError(error)
+      if (!client) return
+      client.auth.getSession().then(({ data }) => {
+        if (!cancelled) setSession(data.session)
+      })
+      subscription = client.auth.onAuthStateChange((_event, newSession) => setSession(newSession)).data.subscription
     })
-    return () => subscription.subscription.unsubscribe()
+
+    return () => {
+      cancelled = true
+      subscription?.unsubscribe()
+    }
   }, [])
 
   const value = {
+    supabase,
     session,
-    loading: isSupabaseConfigured && session === undefined,
-    configured: isSupabaseConfigured,
+    loading: supabase === undefined || (supabase !== null && session === undefined),
+    configured: supabase !== null,
+    configError,
     signOut: () => supabase?.auth.signOut(),
   }
 

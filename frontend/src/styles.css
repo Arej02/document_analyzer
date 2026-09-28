@@ -311,3 +311,20 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--emphasis); outl
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
 .primary-button .button-spinner { border-color: currentColor; border-top-color: transparent; }
+
+/* Extraction coverage + "Ask the codebase" (design.md §4 coverage / ask endpoints) */
+.coverage-report { margin-top: 10px; }
+.coverage-note { margin: 4px 0 0; color: var(--muted-foreground); font-size: 13px; }
+.coverage-details { margin-top: 6px; font-size: 13px; color: var(--muted-foreground); }
+.coverage-details summary { cursor: pointer; }
+.coverage-details ul { margin: 6px 0 0; padding-left: 18px; }
+.ask-form { display: flex; gap: 8px; max-width: 980px; }
+.ask-form input { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(var(--neutral-rgb),.22); background: transparent; color: var(--text); font: inherit; }
+.ask-form button { padding: 8px 16px; border-radius: 8px; border: 1px solid rgba(var(--neutral-rgb),.22); background: transparent; color: var(--text); cursor: pointer; }
+.ask-form button:disabled { opacity: .5; cursor: default; }
+.ask-answer { max-width: 980px; margin-top: 14px; font-size: 14px; }
+.ask-claims { margin: 6px 0 12px; padding-left: 18px; }
+.ask-sources { font-size: 13px; color: var(--muted-foreground); }
+.citation-chip { margin: 0 2px; padding: 0 6px; border-radius: 6px; border: 1px solid rgba(var(--neutral-rgb),.3); background: transparent; color: var(--text); font-size: 12px; cursor: pointer; }
+.ask-excerpt { margin: 10px 0; font-size: 12px; }
+.ask-excerpt pre, pre.ask-excerpt { overflow-x: auto; padding: 10px; border-radius: 8px; background: rgba(var(--neutral-rgb),.06); white-space: pre; }
