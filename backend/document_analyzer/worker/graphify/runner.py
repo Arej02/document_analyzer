@@ -1,7 +1,7 @@
 """One disposable, hardened Graphify container per job — ported from Galvanise's
-runner/container.py, driven through the `docker` CLI client against Colima's engine
-(shared/container_engine.py: an explicit Colima socket, never Docker Desktop or the
-ambient context), the same way Agent 3's sandbox is (agent3/worker/sandbox.py).
+runner/container.py, driven through the `docker` CLI client against the configured engine
+(shared/container_engine.py: a pinned Colima socket, or the ambient Docker engine with
+CONTAINER_ENGINE=docker), the same way Agent 3's sandbox is (agent3/worker/sandbox.py).
 
 The repo is untrusted input (CLAUDE.md), so the container gets: a copy of only the
 selected regular files (symlinks are never followed), read-only source and control
@@ -37,7 +37,7 @@ _KILLED_EXIT_CODE = 137
 
 
 class GraphifyUnavailableError(RuntimeError):
-    """Colima not running / not Colima, docker CLI missing, or the image not built."""
+    """The configured engine unavailable, docker CLI missing, or the image not built."""
 
 
 class GraphifyRunError(RuntimeError):
@@ -152,7 +152,11 @@ def check_available(params: GraphifyParams) -> None:
         container_engine.verify_engine()
     except ContainerEngineUnavailable as exc:
         raise GraphifyUnavailableError(str(exc)) from exc
-    if _docker(["image", "inspect", "--format", "{{.Id}}", params.image]).returncode != 0:
+    try:
+        present = container_engine.image_present(params.image)
+    except ContainerEngineUnavailable as exc:
+        raise GraphifyUnavailableError(str(exc)) from exc
+    if not present:
         raise GraphifyUnavailableError(
             f"graphify image {params.image!r} not found (build it: uv run document-analyzer-build-graphify-image)"
         )

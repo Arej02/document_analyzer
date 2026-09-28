@@ -1,8 +1,8 @@
 """Sandboxed pytest runner — design_agent3.md §7, specs_agent3.md NFR2.
 
 Runs pytest over a workspace folder inside the `galvanise-agent3-runner` image, on the
-Colima profile's Docker engine (shared/container_engine.py; never Docker Desktop),
-with no network, a read-only root, no capabilities, a non-root user,
+configured container engine (shared/container_engine.py: a pinned Colima profile, or the
+ambient Docker engine with CONTAINER_ENGINE=docker), with no network, a read-only root, no capabilities, a non-root user,
 memory/CPU/pids limits and a wall-clock timeout, then parses the JUnit XML.
 
 The code under test is generated from untrusted repos, so everything coming
@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import IO, Literal
 
 from document_analyzer.shared import container_engine
-from document_analyzer.shared.container_engine import ContainerEngineUnavailable
+from document_analyzer.shared.container_engine import ContainerEngineUnavailable, qualified_image_name  # noqa: F401 — re-exported
 
 DEFAULT_RUNNER_IMAGE = "galvanise-agent3-runner:0.1"
 
@@ -51,8 +51,8 @@ Status = Literal["completed", "timed_out", "killed"]
 
 
 class SandboxUnavailableError(RuntimeError):
-    """Colima not running (or not Colima), docker CLI missing, image missing, or gVisor
-    required but absent.
+    """The configured engine unavailable (Colima not running or not Colima, Docker not
+    answering), docker CLI missing, image missing, or gVisor required but absent.
 
     An infrastructure error (the worker fails the job), never a unit verdict.
     """
@@ -187,7 +187,7 @@ def parse_junit(xml: str) -> list[TestCaseResult]:
 
 
 def _engine_env() -> dict[str, str]:
-    """The docker CLI's environment, pinned to the Colima profile (shared/container_engine.py)."""
+    """The docker CLI's environment for the configured engine (shared/container_engine.py)."""
     try:
         return container_engine.docker_env()
     except ContainerEngineUnavailable as exc:
@@ -197,10 +197,10 @@ def _engine_env() -> dict[str, str]:
 def run_pytest(workspace: Path, params: SandboxParams) -> SandboxResult:
     """Run pytest over `workspace` (mounted read-only at /work) inside the sandbox.
 
-    The workspace is copied into a fresh directory under the Colima-shared work dir
+    The workspace is copied into a fresh directory under the engine's shared work dir
     (container_engine.shared_workdir) and that copy is mounted, since Colima only shares
     $HOME (and /tmp/colima) with its VM — a workspace in the system temp dir would
-    otherwise arrive empty. The copy is deleted afterwards whatever happens."""
+    otherwise arrive empty. (Docker Desktop shares host drives; the copy is harmless there.) The copy is deleted afterwards whatever happens."""
     workspace = Path(workspace).resolve()
     if not workspace.is_dir():
         raise ValueError(f"workspace is not a directory: {workspace}")
@@ -296,7 +296,7 @@ def docker_runtimes() -> set[str]:
 
 
 def check_sandbox_available(params: SandboxParams, require_gvisor: bool = False) -> None:
-    """Raise SandboxUnavailableError unless Colima's engine, the runner image and (if needed) gVisor are there."""
+    """Raise SandboxUnavailableError unless the configured engine, the runner image and (if needed) gVisor are there."""
     try:
         container_engine.verify_engine()
     except ContainerEngineUnavailable as exc:
@@ -309,31 +309,15 @@ def check_sandbox_available(params: SandboxParams, require_gvisor: bool = False)
         raise SandboxUnavailableError("AGENT3_REQUIRE_GVISOR is set but AGENT3_SANDBOX_RUNTIME is not 'runsc'")
 
 
-def qualified_image_name(image: str) -> str:
-    """The fully qualified form Docker stores a short name under:
-    `galvanise-agent3-runner:0.1` -> `docker.io/library/galvanise-agent3-runner:0.1`.
-    Names that already carry a registry (a first component with `.` or `:`, or
-    `localhost`) are returned unchanged."""
-    first, _, rest = image.partition("/")
-    if rest and ("." in first or ":" in first or first == "localhost"):
-        return image
-    return f"docker.io/{image}" if rest else f"docker.io/library/{image}"
-
-
 def _check_image_present(image: str) -> None:
-    # Observed on Docker Desktop 29.6.1 with the containerd image store (before the move to
-    # Colima; kept because it's harmless on any engine): it intermittently answered
-    # "No such image" to `docker image inspect <short name>` for an image that exists
-    # (and that `docker run` resolves fine); the fully qualified name always resolves.
-    # So a miss on the short name is retried under the qualified one before failing.
-    missing = f"runner image {image!r} not found (build it: uv run document-analyzer-build-agent3-image)"
+    # container_engine.image_present retries a missed short name under its qualified one
+    # (Docker Desktop's containerd image store, design_agent3.md §7).
     try:
-        _docker_checked(["docker", "image", "inspect", "--format", "{{.Id}}", image], missing)
-    except SandboxUnavailableError:
-        qualified = qualified_image_name(image)
-        if qualified == image:
-            raise
-        _docker_checked(["docker", "image", "inspect", "--format", "{{.Id}}", qualified], missing)
+        present = container_engine.image_present(image)
+    except ContainerEngineUnavailable as exc:
+        raise SandboxUnavailableError(str(exc)) from exc
+    if not present:
+        raise SandboxUnavailableError(f"runner image {image!r} not found (build it: uv run document-analyzer-build-agent3-image)")
 
 
 class _CappedReader:

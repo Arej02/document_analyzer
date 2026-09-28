@@ -1,11 +1,12 @@
-"""`uv run document-analyzer-doctor` — proves the container setup works on Colima.
+"""`uv run document-analyzer-doctor` — proves the container setup works on the configured engine.
 
 Every container in this system (Agent 1's Graphify extraction, Agent 3's pytest sandbox,
-both image builds) runs on one Colima profile's Docker engine, never Docker Desktop
-(shared/container_engine.py). This checks each prerequisite and prints OK / WARN / FAIL,
-including a real bind-mount round trip through a throwaway, network-less container, since
-"the path isn't shared with the Colima VM" is the failure that otherwise shows up only as
-an empty mount mid-job. Exits 1 if anything FAILs. Read-only apart from the probe files it
+both image builds) runs on the engine `CONTAINER_ENGINE` selects: a Colima profile
+(default on macOS/Linux) or the ambient Docker engine, e.g. Docker Desktop (default on
+Windows) — shared/container_engine.py. This prints which one is active, checks each
+prerequisite and prints OK / WARN / FAIL, including a real bind-mount round trip through a
+throwaway, network-less container, since "the path isn't shared with the Colima VM" is the
+failure that otherwise shows up only as an empty mount mid-job. Exits 1 if anything FAILs. Read-only apart from the probe files it
 writes and deletes under the shared work dirs.
 """
 
@@ -37,7 +38,7 @@ class _Report:
 
 
 def _image_present(image: str) -> bool:
-    return container_engine.docker(["image", "inspect", "--format", "{{.Id}}", image]).returncode == 0
+    return container_engine.image_present(image)
 
 
 def _mount_probe(kind: str, image: str) -> tuple[bool, str]:
@@ -61,7 +62,7 @@ def _mount_probe(kind: str, image: str) -> tuple[bool, str]:
         if proc.returncode != 0:
             return False, proc.stderr.strip()[-300:] or f"exit {proc.returncode}"
         if proc.stdout.strip() != token:
-            return False, f"{probe_dir} mounted empty or stale — is it shared with the Colima VM?"
+            return False, f"{probe_dir} mounted empty or stale — is it shared with the engine's VM?"
         return True, f"{root} is visible inside containers"
     finally:
         shutil.rmtree(probe_dir, ignore_errors=True)
@@ -69,38 +70,54 @@ def _mount_probe(kind: str, image: str) -> tuple[bool, str]:
 
 def run() -> int:
     report = _Report()
-    profile = container_engine.colima_profile()
-
-    report.line("OK" if shutil.which("colima") else "FAIL", "colima installed", shutil.which("colima") or "brew install colima")
-    report.line("OK" if shutil.which("docker") else "FAIL", "docker CLI client installed",
-                shutil.which("docker") or "brew install docker (the client only; Docker Desktop is not used)")
-
     try:
-        socket = container_engine.resolve_socket(profile)
-        report.line("OK", f"Colima profile '{profile}' running on the docker runtime", socket)
-        name = container_engine.verify_engine()
-        report.line("OK", "engine is Colima", f"docker info reports '{name}'; the ambient docker context is ignored")
+        kind = container_engine.engine_kind()
     except ContainerEngineUnavailable as exc:
-        report.line("FAIL", f"Colima profile '{profile}'", str(exc))
+        report.line("FAIL", "CONTAINER_ENGINE", str(exc))
         return 1
+    print(f"engine: {container_engine.describe()} (set CONTAINER_ENGINE=colima|docker to switch)\n")
+
+    if kind == "colima":
+        profile = container_engine.colima_profile()
+        report.line("OK" if shutil.which("colima") else "FAIL", "colima installed", shutil.which("colima") or "brew install colima")
+        report.line("OK" if shutil.which("docker") else "FAIL", "docker CLI client installed",
+                    shutil.which("docker") or "brew install docker (the client only; Docker Desktop is not needed)")
+        try:
+            socket = container_engine.resolve_socket(profile)
+            report.line("OK", f"Colima profile '{profile}' running on the docker runtime", socket)
+            name = container_engine.verify_engine()
+            report.line("OK", "engine is Colima", f"docker info reports '{name}'; the ambient docker context is ignored")
+        except ContainerEngineUnavailable as exc:
+            report.line("FAIL", f"Colima profile '{profile}'", str(exc))
+            return 1
+    else:
+        report.line("OK" if shutil.which("docker") else "FAIL", "docker CLI installed",
+                    shutil.which("docker") or "install Docker Desktop (or another Docker engine)")
+        try:
+            name = container_engine.verify_engine()
+            report.line("OK", "docker engine reachable", f"docker info reports '{name}' (the current docker context)")
+        except ContainerEngineUnavailable as exc:
+            report.line("FAIL", "docker engine", str(exc))
+            return 1
 
     images = {"graphify": GraphifyParams.from_env().image, "agent3": SandboxParams.from_env().image}
     present = {}
-    for kind, image in images.items():
-        present[kind] = _image_present(image)
-        command = "document-analyzer-build-graphify-image" if kind == "graphify" else "document-analyzer-build-agent3-image"
-        report.line("OK" if present[kind] else "FAIL", f"{kind} image {image}", "" if present[kind] else f"uv run {command}")
+    for work, image in images.items():
+        present[work] = _image_present(image)
+        command = "document-analyzer-build-graphify-image" if work == "graphify" else "document-analyzer-build-agent3-image"
+        report.line("OK" if present[work] else "FAIL", f"{work} image {image}",
+                    "" if present[work] else f"uv run {command} (images are per engine: build once on each)")
 
     probe_image = next((images[k] for k in ("agent3", "graphify") if present[k]), None)
-    for kind in ("graphify", "agent3"):
+    for work in ("graphify", "agent3"):
         if probe_image is None:
-            report.line("WARN", f"{kind} work dir mount", "skipped: no image to probe with")
+            report.line("WARN", f"{work} work dir mount", "skipped: no image to probe with")
             continue
         try:
-            ok, detail = _mount_probe(kind, probe_image)
+            ok, detail = _mount_probe(work, probe_image)
         except ContainerEngineUnavailable as exc:
             ok, detail = False, str(exc)
-        report.line("OK" if ok else "FAIL", f"{kind} work dir is shared with the Colima VM", detail)
+        report.line("OK" if ok else "FAIL", f"{work} work dir is visible inside containers", detail)
 
     info = container_engine.docker(["info", "--format", "{{json .Runtimes}}"])
     try:
@@ -110,7 +127,7 @@ def run() -> int:
     if "runsc" in runtimes:
         report.line("OK", "gVisor (runsc) registered")
     else:
-        report.line("WARN", "gVisor (runsc) not registered in the Colima VM",
+        report.line("WARN", "gVisor (runsc) not registered with the engine",
                     "fine for development; production needs it (design_agent3.md §7)")
 
     print("\nall checks passed" if not report.failed else "\nsome checks FAILED")

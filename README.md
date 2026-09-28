@@ -24,7 +24,9 @@ docs/               specs, design, tasks
 - Node.js and npm
 - A [Supabase](https://supabase.com) project
 - `git`
-- [Colima](https://github.com/abiosoft/colima) and the `docker` CLI: `brew install colima docker` (Docker Desktop is not used)
+- A container engine, one of:
+  - **macOS/Linux (default):** [Colima](https://github.com/abiosoft/colima) and the `docker` CLI: `brew install colima docker`
+  - **Windows, or anyone who prefers Docker:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (WSL 2 backend). On native Windows this is picked automatically; elsewhere, including inside WSL, set `CONTAINER_ENGINE=docker` in `.env`
 - PHP + Composer, then `composer install` in `backend/php/`
 
 ## Setup
@@ -56,12 +58,15 @@ docs/               specs, design, tasks
 
 4. **Containers:**
 
+   Start your engine (`colima start --runtime docker --cpus 4 --memory 8`, or open Docker Desktop), then:
+
    ```
-   colima start --runtime docker --cpus 4 --memory 8
    uv run document-analyzer-build-graphify-image
    uv run document-analyzer-build-agent3-image
    uv run document-analyzer-doctor
    ```
+
+   The doctor prints which engine is active. To switch, set `CONTAINER_ENGINE=colima` or `CONTAINER_ENGINE=docker` in `.env` and rebuild both images once (images live per engine). Native Windows is untested beyond the containers; running the backend inside WSL 2 is the safer path.
 
 5. **Auth:** in Supabase → Authentication → Sign In / Providers → Email, turn off **Confirm email**. Then just sign up in the app; each account gets its own org automatically. To share an org with a teammate: `uv run document-analyzer-add-org-member <their-email> <your-org-id>` (`--list` shows org ids).
 

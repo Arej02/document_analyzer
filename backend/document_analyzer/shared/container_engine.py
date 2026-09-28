@@ -1,21 +1,28 @@
-"""The one container engine this system uses: a Colima profile's Docker runtime.
+"""The container engine every container in this system runs on, chosen by
+`CONTAINER_ENGINE` (design.md §5a "Engine").
 
 Shared by Agent 1 (Graphify extraction, worker/graphify/) and Agent 3 (the pytest
-sandbox, agent3/worker/sandbox.py), and by the image builders. Ported from Galvanise's
-runner/engine.py, driven through the `docker` CLI client instead of the Docker SDK.
+sandbox, agent3/worker/sandbox.py), and by the image builders and the doctor. Ported from
+Galvanise's runner/engine.py, driven through the `docker` CLI client instead of the Docker
+SDK. Nothing else shells out to `docker` or needs to know which engine is in use.
 
-Docker Desktop is never used. The ambient CLI context is never consulted either: every
-`docker` invocation gets `DOCKER_HOST` set to the socket `colima status <profile>` reports
-(and `DOCKER_CONTEXT` removed), and `verify_engine` refuses an engine that doesn't name
-itself `colima` / `colima-<profile>`. So `docker context use desktop-linux` on this
-machine can't silently move containers to Docker Desktop. That environment is only the
-CLI's own: `docker run` never forwards it into a container, and both sandboxes pass
-nothing but explicit `--env` values.
+- `colima` (default on macOS/Linux): a Colima profile's Docker runtime. The ambient CLI
+  context is never consulted: every `docker` invocation gets `DOCKER_HOST` set to the
+  socket `colima status <profile>` reports (and `DOCKER_CONTEXT` removed), and
+  `verify_engine` refuses an engine that doesn't name itself `colima` / `colima-<profile>`.
+  So `docker context use desktop-linux` can't silently move containers to Docker Desktop.
+  Bind mounts only work for host paths Colima shares with its VM — by default `$HOME` and
+  `/tmp/colima` — so anything mounted into a container is staged under `shared_workdir()`
+  first; a path elsewhere (e.g. `/var/folders/...` on macOS) would arrive empty.
+- `docker` (default on Windows, where Colima doesn't exist): whatever engine the `docker`
+  CLI already points at (its current context, `DOCKER_CONTEXT` or `DOCKER_HOST`), e.g.
+  Docker Desktop. `verify_engine` only requires it to answer; Docker Desktop shares host
+  drives, so there is no shared-path check.
 
-Bind mounts only work for host paths Colima shares with its VM — by default `$HOME` and
-`/tmp/colima` — so anything mounted into a container is staged under `shared_workdir()`
-first; a path elsewhere (e.g. the system temp dir, `/var/folders/...` on macOS) would
-arrive in the container empty.
+The engine is always the one configured: an unavailable engine is reported as such, never
+swapped for the other one. Either way the environment is only the CLI's own: `docker run`
+never forwards it into a container, and both sandboxes pass nothing but explicit `--env`
+values.
 """
 
 import json
@@ -27,12 +34,24 @@ from functools import lru_cache
 from pathlib import Path
 
 DEFAULT_PROFILE = "default"
+ENGINES = ("colima", "docker")
 _DEFAULT_SHARED_ROOTS = ("~", "/tmp/colima")
 
 
 class ContainerEngineUnavailable(RuntimeError):
-    """Colima or the docker CLI is missing, the profile isn't running, or the socket
-    doesn't lead to that Colima profile's engine."""
+    """The configured engine can't be used: an unknown `CONTAINER_ENGINE`, the docker CLI
+    or Colima missing, the Colima profile not running (or its socket leading elsewhere), or
+    the docker engine not answering."""
+
+
+def engine_kind() -> str:
+    """`CONTAINER_ENGINE`, defaulting to `docker` on Windows and `colima` elsewhere."""
+    value = (os.environ.get("CONTAINER_ENGINE") or "").strip().lower()
+    if not value:
+        return "docker" if sys.platform == "win32" else "colima"
+    if value not in ENGINES:
+        raise ContainerEngineUnavailable(f"CONTAINER_ENGINE={value!r} is not one of {', '.join(ENGINES)}")
+    return value
 
 
 def colima_profile() -> str:
@@ -76,16 +95,20 @@ def resolve_socket(profile: str | None = None) -> str:
 
 
 def docker_env() -> dict[str, str]:
-    """Environment for the `docker` CLI process: pinned to Colima, whatever the context."""
+    """Environment for the `docker` CLI process: pinned to the Colima profile whatever the
+    context, or (docker engine) the ambient environment unchanged."""
+    if engine_kind() == "docker":
+        return dict(os.environ)
     env = {k: v for k, v in os.environ.items() if k != "DOCKER_CONTEXT"}
     env["DOCKER_HOST"] = resolve_socket(colima_profile())
     return env
 
 
 def docker(args: list[str], timeout: float = 60, **kwargs) -> subprocess.CompletedProcess:
-    """`docker <args>` against the Colima engine, text mode, never raising on exit code."""
+    """`docker <args>` against the configured engine, text mode, never raising on exit code."""
     if shutil.which("docker") is None:
-        raise ContainerEngineUnavailable("docker CLI client is not installed (brew install docker)")
+        hint = "install Docker Desktop" if engine_kind() == "docker" else "brew install docker"
+        raise ContainerEngineUnavailable(f"docker CLI client is not installed ({hint})")
     try:
         return subprocess.run(
             ["docker", *args],
@@ -114,10 +137,51 @@ def _verified(profile: str, socket: str) -> str:
     return name
 
 
+def _docker_engine_name() -> str:
+    """Not cached: with the ambient context, the engine may be started (or switched) later."""
+    proc = docker(["info", "--format", "{{.Name}}"], timeout=30)
+    if proc.returncode != 0:
+        raise ContainerEngineUnavailable(
+            f"the docker engine is not reachable (is Docker Desktop running?): {proc.stderr.strip()[-300:]}"
+        )
+    return proc.stdout.strip() or "docker"
+
+
 def verify_engine() -> str:
-    """Confirms the socket leads to this Colima profile's engine; returns its name."""
+    """Confirms the configured engine answers (and, for Colima, that the socket leads to
+    this profile's VM); returns the name `docker info` reports."""
+    if engine_kind() == "docker":
+        return _docker_engine_name()
     profile = colima_profile()
     return _verified(profile, resolve_socket(profile))
+
+
+def describe() -> str:
+    """Which engine is configured, for logs: `colima (profile 'default')` or `docker`."""
+    kind = engine_kind()
+    return f"colima (profile '{colima_profile()}')" if kind == "colima" else kind
+
+
+def qualified_image_name(image: str) -> str:
+    """The fully qualified form Docker stores a short name under:
+    `galvanise-agent3-runner:0.1` -> `docker.io/library/galvanise-agent3-runner:0.1`.
+    Names that already carry a registry (a first component with `.` or `:`, or
+    `localhost`) are returned unchanged."""
+    first, _, rest = image.partition("/")
+    if rest and ("." in first or ":" in first or first == "localhost"):
+        return image
+    return f"docker.io/{image}" if rest else f"docker.io/library/{image}"
+
+
+def image_present(image: str) -> bool:
+    """Whether the engine has `image`. Docker Desktop 29.6.1 with the containerd image store
+    intermittently answers "No such image" to `docker image inspect <short name>` for an
+    image that exists (design_agent3.md §7); the fully qualified name always resolves, so a
+    miss on the short name is retried under it. Harmless on Colima."""
+    if docker(["image", "inspect", "--format", "{{.Id}}", image]).returncode == 0:
+        return True
+    qualified = qualified_image_name(image)
+    return qualified != image and docker(["image", "inspect", "--format", "{{.Id}}", qualified]).returncode == 0
 
 
 def shared_roots() -> list[Path]:
@@ -126,8 +190,11 @@ def shared_roots() -> list[Path]:
 
 
 def assert_shared(path: Path) -> Path:
-    """Refuses a host path Colima doesn't share with its VM (it would mount empty)."""
+    """Refuses a host path Colima doesn't share with its VM (it would mount empty). The
+    docker engine (Docker Desktop) shares host drives, so any path is accepted there."""
     resolved = Path(path).expanduser().resolve()
+    if engine_kind() == "docker":
+        return resolved
     for root in shared_roots():
         if resolved == root or root in resolved.parents:
             return resolved
@@ -149,8 +216,8 @@ def shared_workdir(kind: str) -> Path:
 
 def build_image(image: str, context: bytes, label: str) -> int:
     """`docker build` from an in-memory tar context (so only the files the caller chose
-    reach the daemon), into the Colima engine only. Build output streams to the terminal."""
+    reach the daemon), into the configured engine only. Build output streams to the terminal."""
     engine = verify_engine()
-    print(f"building {image} on {engine} (Colima profile '{colima_profile()}')", file=sys.stderr)
+    print(f"building {image} on {engine} ({describe()})", file=sys.stderr)
     cmd = ["docker", "build", "--tag", image, "--label", label, "-"]
     return subprocess.run(cmd, input=context, check=False, env=docker_env()).returncode

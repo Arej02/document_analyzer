@@ -33,7 +33,7 @@ flowchart LR
         W3["Agent 3: Execute<br/>document-analyzer-executor"]
     end
 
-    subgraph Colima["Colima VM (never Docker Desktop)"]
+    subgraph Colima["Container engine: Colima (default) or Docker (CONTAINER_ENGINE)"]
         GF["Graphify container<br/>(document-analyzer-graphify)"]
         SX["Agent 3 sandbox<br/>(galvanise-agent3-runner, gVisor in prod)"]
     end
@@ -101,7 +101,7 @@ Colours: blue is the `extracting` stage, orange is `summarizing`, green is `grou
 
 Graphify's tree-sitter parsers read hostile input, so they run in a disposable container rather than in the worker. Nothing from the repository is ever executed. Mode is set with `AGENT1_GRAPHIFY`:
 
-- `auto` (default): skip and record `unavailable` if Colima or the image is missing.
+- `auto` (default): skip and record `unavailable` if the container engine or the image is missing.
 - `required`: fail the job instead.
 - `off`: never run.
 
@@ -119,8 +119,8 @@ sequenceDiagram
     W->>W: select_files(): non-.php files whose<br/>extension has a working parser
     W->>R: run_extraction(selected files)
     R->>R: copy files (no symlinks) into<br/>CONTAINER_WORKDIR/graphify/<job>
-    R->>CE: docker run (pinned COLIMA_PROFILE socket)
-    CE->>CE: refuse any engine that isn't Colima
+    R->>CE: docker run (configured engine)
+    CE->>CE: Colima: pinned socket, name check<br/>docker: ambient engine must answer
     CE->>C: --network none, read-only root,<br/>cap-drop ALL, non-root, limits, timeout
     C-->>R: nodes.jsonl, edges.jsonl,<br/>coverage.json, manifest.json
     R->>CE: remove container, delete job dir (always)
@@ -193,7 +193,7 @@ flowchart LR
         E2 --> E3["assemble"] --> E4["final_test"]
     end
 
-    SBX["Sandbox (Colima, gVisor in prod)<br/>no network, read-only root, limits"]
+    SBX["Sandbox (Colima or Docker, gVisor in prod)<br/>no network, read-only root, limits"]
     OUT[("unit_executions<br/>agent3-output bucket")]
 
     USER(["User: POST /api/agent2/projects/{id}/plans"]) --> P1
@@ -290,4 +290,4 @@ erDiagram
 - **Repository text is untrusted in every prompt.** It is fenced or marked untrusted for summaries, grounding, cluster reports and Q&A. Q&A answers must cite supplied evidence, and a bad citation is rejected rather than shown.
 - **Secrets are redacted.** Source chunks and excerpts go through `secret_scan.py::redact_text` before they're stored or sent anywhere. Findings go to `secret_findings`.
 - **Code stays local for embeddings.** Embeddings use the pinned local MiniLM model. The only code sent to Azure OpenAI is an entity's own excerpt (in its summary call) and the retrieved Q&A context.
-- **Containers run on Colima only.** Every container call goes through `shared/container_engine.py`. Run `uv run document-analyzer-doctor` to verify the setup.
+- **Containers run on one configured engine.** `CONTAINER_ENGINE=colima` (default) or `docker` (default on Windows); there is no fallback between them. Every container call goes through `shared/container_engine.py`. Run `uv run document-analyzer-doctor` to verify the setup.

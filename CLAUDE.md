@@ -68,8 +68,8 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 - Storage: Supabase Postgres (+ pgvector), Supabase Auth, Vault
 - LLM: Azure OpenAI (summaries, cluster reports); embeddings: local pinned `all-MiniLM-L6-v2`
 - Agent 2 graph work: `python-igraph` + `leidenalg` (clustering), `networkx` (SCC / topological sort)
-- Containers: **Colima only, never Docker Desktop.** Every container call goes through `shared/container_engine.py`, which pins the `COLIMA_PROFILE` socket (the ambient docker context is ignored), refuses an engine that isn't that Colima VM, and stages anything mounted under `CONTAINER_WORKDIR` (Colima shares only `$HOME` and `/tmp/colima`). Don't shell out to `docker` directly. `uv run document-analyzer-doctor` checks the setup
-- Agent 3 sandbox: `docker` CLI client against Colima (`agent3/worker/sandbox.py`), gVisor `runsc` in production, runner image `galvanise-agent3-runner` (`backend/agent3_runner/`, `uv run document-analyzer-build-agent3-image`)
+- Containers: **`CONTAINER_ENGINE=colima|docker`, Colima by default (docker by default on Windows).** Every container call goes through `shared/container_engine.py`. With `colima` it pins the `COLIMA_PROFILE` socket (the ambient docker context is ignored), refuses an engine that isn't that Colima VM, and stages anything mounted under `CONTAINER_WORKDIR` (Colima shares only `$HOME` and `/tmp/colima`). With `docker` it uses the ambient Docker engine (e.g. Docker Desktop). It never falls back from one engine to the other. Don't shell out to `docker` directly. `uv run document-analyzer-doctor` checks the setup
+- Agent 3 sandbox: `docker` CLI client against the configured engine (`agent3/worker/sandbox.py`), gVisor `runsc` in production, runner image `galvanise-agent3-runner` (`backend/agent3_runner/`, `uv run document-analyzer-build-agent3-image`)
 - Frontend: React (existing, in `frontend/`), React Flow for Agent 2's plan graph
 
 ## Working conventions

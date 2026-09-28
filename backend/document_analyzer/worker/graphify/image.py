@@ -1,8 +1,8 @@
 """Build the Graphify extraction image from a reviewed, minimal build context.
 
 Ported from Galvanise's runner/image.py, but driven through the `docker` CLI client like
-Agent 3's sandbox instead of the Docker SDK, and always into the Colima profile's engine
-(shared/container_engine.py), never Docker Desktop. The context holds exactly
+Agent 3's sandbox instead of the Docker SDK, and always into the configured engine
+(shared/container_engine.py: the Colima profile, or Docker with CONTAINER_ENGINE=docker). The context holds exactly
 the Dockerfile, the hash-locked requirements, and the stdlib-only graphify_worker
 package, so credentials, job data and the rest of the backend never reach the image.
 

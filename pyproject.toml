@@ -49,4 +49,4 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-markers = ["live_container: runs real containers on the Colima profile (skips when it isn't running)"]
+markers = ["live_container: runs real containers on the configured engine (skips when it isn't running)"]

@@ -17,7 +17,7 @@ This is a reference inventory of every technology/tool Agents 1, 2 and 3 depend 
 | `nikic/php-parser` | AST-level structural extraction for plain PHP, invoked as a subprocess (not a Python-native parser — keep the subprocess boundary) |
 | Custom WordPress extractor | Extracts hooks, CPTs (custom post types), and meta registrations — WordPress-specific, sits alongside the PHP parser behind a shared `Extractor` protocol |
 | Extractor protocol | Pluggable interface so a new language/framework extractor can be added later without touching the rest of the pipeline |
-| Graphify (`graphifyy==0.9.68`, tree-sitter based) | Every non-PHP code language (113 extensions / 53 families), merged from Galvanise 2026-09-28 (`design.md` §5a). Runs only inside the `document-analyzer-graphify` image (`backend/graphify_runner/`), one disposable network-less container per job on Colima (never Docker Desktop), driven by the `docker` CLI client via `shared/container_engine.py`; never installed in the API/worker environment. `.php` stays with nikic + the WordPress/Laravel extractors |
+| Graphify (`graphifyy==0.9.68`, tree-sitter based) | Every non-PHP code language (113 extensions / 53 families), merged from Galvanise 2026-09-28 (`design.md` §5a). Runs only inside the `document-analyzer-graphify` image (`backend/graphify_runner/`), one disposable network-less container per job on the configured engine (`CONTAINER_ENGINE`: Colima by default, Docker e.g. Docker Desktop on Windows), driven by the `docker` CLI client via `shared/container_engine.py`; never installed in the API/worker environment. `.php` stays with nikic + the WordPress/Laravel extractors |
 
 **Rule:** structural extraction is pure parsing — no LLM calls happen at this stage.
 
@@ -124,7 +124,7 @@ Agent 3 is the first agent that runs code. It runs only the Python it generated,
 
 | Tool | Role | Why |
 |---|---|---|
-| Colima (Docker runtime) + `docker` CLI client, via `subprocess` and `shared/container_engine.py` (pinned Colima socket, engine-name check; never Docker Desktop) | Runs each unit's pytest suite in a throwaway container: `--network none`, `--read-only` with a `noexec` tmpfs `/tmp`, `--cap-drop ALL`, `no-new-privileges`, uid 65534, memory/CPU/pids/nofile limits, and a wall-clock timeout enforced with `docker kill` (`agent3/worker/sandbox.py`) | Every restriction the spec requires is a standard `docker run` flag, and every flag is checked by a live smoke test (`tests/test_agent3_sandbox.py`). It's driven through the CLI the same way Agent 1 shells out to `git` and `php`, so there's no Docker SDK dependency. The worker never imports generated code in-process |
+| Colima (Docker runtime), or with `CONTAINER_ENGINE=docker` any Docker engine such as Docker Desktop, + `docker` CLI client, via `subprocess` and `shared/container_engine.py` (Colima: pinned socket, engine-name check; docker: the ambient context) | Runs each unit's pytest suite in a throwaway container: `--network none`, `--read-only` with a `noexec` tmpfs `/tmp`, `--cap-drop ALL`, `no-new-privileges`, uid 65534, memory/CPU/pids/nofile limits, and a wall-clock timeout enforced with `docker kill` (`agent3/worker/sandbox.py`) | Every restriction the spec requires is a standard `docker run` flag, and every flag is checked by a live smoke test (`tests/test_agent3_sandbox.py`). It's driven through the CLI the same way Agent 1 shells out to `git` and `php`, so there's no Docker SDK dependency. The worker never imports generated code in-process |
 | gVisor (`runsc`) | Container runtime that puts a user-space kernel between the generated code and the host kernel. Selected with `AGENT3_SANDBOX_RUNTIME=runsc`. `AGENT3_REQUIRE_GVISOR=true` makes the executor refuse to start without it | Namespaces alone share the host kernel, so a kernel bug is a container escape. gVisor closes that gap without the operational weight of a microVM (Firecracker). It's **required in production and unavailable on Docker Desktop** (Windows/WSL 2), so developer machines run `runc` with every other flag and log a warning. It has not been verified on a real host yet (`tasks_agent3.md` Phase 6) |
 | Stdlib `xml.etree.ElementTree` | Parses pytest's JUnit XML | No new dependency. The XML comes out of an untrusted container, so it's size-capped and refused if it declares a `DOCTYPE` or entities *before* parsing, which removes the entity-expansion attacks `defusedxml` exists for |
 
@@ -146,7 +146,7 @@ Built from `backend/agent3_runner/Dockerfile` on `python:3.14-slim` (Python 3.14
 The image's transitive dependencies aren't pinned yet (for example `starlette 1.7.0` and `pydantic_core 2.46.5` in the current build). A rebuild can pick up newer ones. The production digest pin (below) makes a given run reproducible, but locking them at build time too (a `pip freeze` constraints file) is open.
 
 **Where the image comes from** (`design_agent3.md` §7):
-- **Development:** a local build on Colima, `uv run document-analyzer-build-agent3-image`. A missing image stops the executor at startup, and the error prints that command.
+- **Development:** a local build on the configured engine (Colima or Docker), `uv run document-analyzer-build-agent3-image`. A missing image stops the executor at startup, and the error prints that command.
 - **Production:** a private registry (GHCR, ACR or Docker Hub; not chosen yet), with `AGENT3_RUNNER_IMAGE` set to the image's `@sha256:` digest rather than a tag. The deploy step pulls it, because the sandbox uses `--pull never`. Every image change gets a new version tag and digest. This is a deferred task in `tasks_agent3.md` Phase 6.
 
 ## Queue / worker / storage
@@ -154,7 +154,7 @@ The image's transitive dependencies aren't pinned yet (for example `starlette 1.
 | Tool | Role |
 |---|---|
 | pgmq queue `agent3_execution_jobs` | Agent 3's own queue, never shared. The message is `{execution_job_id, org_id}`, and the visibility timeout is 3600 s (`AGENT3_QUEUE_VISIBILITY_TIMEOUT_SECONDS`), longer than Agents 1 and 2 because jobs run longer |
-| `uv run document-analyzer-executor` | Agent 3's own long-lived worker. At startup it checks for the Colima profile's engine, the runner image and (when required) gVisor. There's no embedding check, because Agent 3 doesn't embed |
+| `uv run document-analyzer-executor` | Agent 3's own long-lived worker. At startup it checks for the configured engine, the runner image and (when required) gVisor. There's no embedding check, because Agent 3 doesn't embed |
 | Supabase Storage bucket `agent3-output` | Private. Holds generated code, tests, logs and JUnit XML for every attempt, plus the assembled project zip. Users can only read their own org's folder, only the worker writes, and downloads go through 5-minute signed URLs |
 | `SUPABASE_DB_URL` = Session pooler | pgmq is reached over a direct Postgres connection. The pooler string works on IPv4-only networks, while the direct `db.<ref>.supabase.co` host is IPv6-only |
 
@@ -162,7 +162,7 @@ The image's transitive dependencies aren't pinned yet (for example `starlette 1.
 
 - Trigger: user-initiated `POST /api/agent3/plans/{plan_id}/executions`, on approved, non-stale plans only.
 - Verification: deterministic contract tests plus LLM behaviour tests, run only on generated Python and only in the sandbox. There's no legacy PHP execution in the MVP.
-- Isolation: containers on Colima's Docker runtime with the flags above everywhere, plus gVisor in production (registered inside the Colima VM or on a Linux host). Not Firecracker: gVisor gives kernel isolation with plain `docker run`.
+- Isolation: containers on the configured engine (Colima's Docker runtime or Docker Desktop) with the flags above everywhere, plus gVisor in production (registered inside the Colima VM or on a Linux host). Not Firecracker: gVisor gives kernel isolation with plain `docker run`.
 - Output: the `agent3-output` bucket and a zip download. No GitHub PRs.
 - Starting defaults (tune on the first real WordPress plan): 3 attempts per unit, a 120 s sandbox timeout, 1024 MB of memory, 1 CPU, 256 pids.
 

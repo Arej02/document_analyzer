@@ -1,8 +1,9 @@
-"""Build Agent 3's runner image (`backend/agent3_runner/`) into Colima's engine.
+"""Build Agent 3's runner image (`backend/agent3_runner/`) into the configured engine.
 
-`uv run document-analyzer-build-agent3-image`. Same Colima pinning as the Graphify image
-builder (worker/graphify/image.py): the socket comes from `colima status`, and an engine
-that isn't the Colima profile's is refused. The context is exactly the Dockerfile and
+`uv run document-analyzer-build-agent3-image`. Same engine selection as the Graphify image
+builder (worker/graphify/image.py, shared/container_engine.py): with Colima the socket comes
+from `colima status` and an engine that isn't the profile's is refused; with
+CONTAINER_ENGINE=docker it goes to the ambient Docker engine. The context is exactly the Dockerfile and
 requirements.txt, sent as a tar on stdin.
 """
 

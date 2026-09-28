@@ -1,5 +1,6 @@
-"""shared/container_engine.py — every container runs on the Colima profile's engine,
-never Docker Desktop or whatever the ambient docker context points at."""
+"""shared/container_engine.py — every container runs on the configured engine: the Colima
+profile's (never whatever the ambient docker context points at), or, with
+CONTAINER_ENGINE=docker, the ambient Docker engine. Never a silent switch between them."""
 
 import json
 import subprocess
@@ -16,6 +17,7 @@ def _fresh(monkeypatch):
     ce.resolve_socket.cache_clear()
     ce._verified.cache_clear()
     monkeypatch.delenv("COLIMA_PROFILE", raising=False)
+    monkeypatch.setenv("CONTAINER_ENGINE", "colima")  # host-OS independent; docker-mode tests override
     monkeypatch.setattr(ce.shutil, "which", lambda name: f"/opt/homebrew/bin/{name}")
     yield
     ce.resolve_socket.cache_clear()
@@ -119,3 +121,91 @@ def test_shared_workdir_defaults_under_home_and_honours_container_workdir(monkey
     monkeypatch.setenv("CONTAINER_WORKDIR", "/var/folders/elsewhere")
     with pytest.raises(ContainerEngineUnavailable):
         ce.shared_workdir("graphify")
+
+
+# --- engine selection ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("platform", "expected"), [("win32", "docker"), ("darwin", "colima"), ("linux", "colima")])
+def test_engine_defaults_to_docker_on_windows_only(monkeypatch, platform, expected):
+    monkeypatch.delenv("CONTAINER_ENGINE")
+    monkeypatch.setattr(ce.sys, "platform", platform)
+    assert ce.engine_kind() == expected
+
+
+@pytest.mark.parametrize("value", ["docker", " Docker ", "colima"])
+def test_engine_setting_is_case_and_space_insensitive(monkeypatch, value):
+    monkeypatch.setenv("CONTAINER_ENGINE", value)
+    assert ce.engine_kind() == value.strip().lower()
+
+
+def test_unknown_engine_is_refused(monkeypatch):
+    monkeypatch.setenv("CONTAINER_ENGINE", "podman")
+    with pytest.raises(ContainerEngineUnavailable, match="colima, docker"):
+        ce.engine_kind()
+
+
+# --- docker engine (e.g. Docker Desktop on Windows) ------------------------------------
+
+
+def test_docker_engine_uses_the_ambient_environment_and_never_colima(monkeypatch):
+    monkeypatch.setenv("CONTAINER_ENGINE", "docker")
+    monkeypatch.setenv("DOCKER_CONTEXT", "desktop-linux")
+    monkeypatch.setenv("DOCKER_HOST", "npipe:////./pipe/docker_engine")
+    monkeypatch.setattr(ce.shutil, "which", lambda name: None if name == "colima" else f"C:/bin/{name}")
+    calls = _fake(monkeypatch, engine_name="docker-desktop")
+
+    env = ce.docker_env()
+    assert env["DOCKER_CONTEXT"] == "desktop-linux" and env["DOCKER_HOST"] == "npipe:////./pipe/docker_engine"
+    assert ce.verify_engine() == "docker-desktop"
+    assert not [c for c in calls if c[0][1] == "status"]  # colima never consulted
+
+
+def test_docker_engine_not_answering_is_unavailable_and_retried(monkeypatch):
+    monkeypatch.setenv("CONTAINER_ENGINE", "docker")
+
+    def down(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, "", "Cannot connect to the Docker daemon")
+
+    monkeypatch.setattr(ce.subprocess, "run", down)
+    with pytest.raises(ContainerEngineUnavailable, match="Docker Desktop running"):
+        ce.verify_engine()
+    _fake(monkeypatch, engine_name="docker-desktop")
+    assert ce.verify_engine() == "docker-desktop"  # started later: picked up
+
+
+def test_docker_engine_accepts_any_mount_path(monkeypatch):
+    monkeypatch.setenv("CONTAINER_ENGINE", "docker")
+    monkeypatch.delenv("COLIMA_EXTRA_MOUNTS", raising=False)
+    assert ce.assert_shared(Path("/var/folders/ab/T/tmpjob")) == Path("/var/folders/ab/T/tmpjob").resolve()
+
+
+def test_describe_names_the_engine(monkeypatch):
+    monkeypatch.setenv("COLIMA_PROFILE", "work")
+    assert ce.describe() == "colima (profile 'work')"
+    monkeypatch.setenv("CONTAINER_ENGINE", "docker")
+    assert ce.describe() == "docker"
+
+
+# --- image lookup ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("short_ok", "qualified_ok", "expected", "inspected"), [
+    (True, False, True, ["runner:1"]),
+    (False, True, True, ["runner:1", "docker.io/library/runner:1"]),
+    (False, False, False, ["runner:1", "docker.io/library/runner:1"]),
+])
+def test_image_present_retries_a_short_name_under_its_qualified_name(
+    monkeypatch, short_ok, qualified_ok, expected, inspected
+):
+    monkeypatch.setenv("CONTAINER_ENGINE", "docker")
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd[-1])
+        ok = short_ok if cmd[-1] == "runner:1" else qualified_ok
+        return subprocess.CompletedProcess(cmd, 0 if ok else 1, "", "")
+
+    monkeypatch.setattr(ce.subprocess, "run", fake_run)
+    assert ce.image_present("runner:1") is expected
+    assert seen == inspected
