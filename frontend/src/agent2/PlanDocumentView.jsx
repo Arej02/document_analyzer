@@ -41,7 +41,9 @@ import { useSchemaEntities } from './useSchemaEntities.js'
 import { useUnitGraph } from './useUnitGraph.js'
 import './agent2.css'
 
-export default function PlanDocumentView({ plan, planId, selectedUnitId, phaseId, onSelectUnit, slots }) {
+// `intro` (the page title, status and runs) heads the document column, so the rail starts level with it;
+// `outro` (next steps) closes it, so it spans the same width.
+export default function PlanDocumentView({ plan, planId, selectedUnitId, phaseId, onSelectUnit, slots, intro = null, outro = null }) {
   const repo = useRepoOverview(plan.source_job_id)
   const schema = useSchemaEntities(plan.source_job_id)
   const unitGraph = useUnitGraph(planId, 'unit')
@@ -161,10 +163,13 @@ export default function PlanDocumentView({ plan, planId, selectedUnitId, phaseId
         rail={<Rail plan={plan} />}
         glance={<Rail plan={plan} />}
         header={(
+          <>
+          {intro}
           <div className="a2-toolbar">
             <button type="button" className="a2-chip-btn" onClick={collapse.toggleAll}>{collapse.allCollapsed ? 'Expand all' : 'Collapse all'}</button>
             <button type="button" className="a2-chip-btn" onClick={exportMarkdown}><Copy size={14} className="ui-icon" aria-hidden="true" /> Copy as Markdown</button>
           </div>
+          </>
         )}
       >
         {selectedUnitId ? slots.unitDetail : null}
@@ -173,6 +178,7 @@ export default function PlanDocumentView({ plan, planId, selectedUnitId, phaseId
             {bodies[s.id]}
           </Section>
         ))}
+        {outro}
       </PlanDocument>
       <Toast message={copyMessage} />
     </>

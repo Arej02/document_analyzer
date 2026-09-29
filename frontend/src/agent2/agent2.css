@@ -173,7 +173,8 @@ button.a2-toc-chev:hover { color: var(--text); background: rgba(var(--neutral-rg
 .a2-cycle { line-height: 1.8; }
 
 /* Plan status banner (PlanStatusBanner.jsx) */
-.a2-banner { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3) var(--space-4); margin-bottom: var(--space-4); border: 1px solid var(--border); border-left-width: 3px; border-radius: var(--radius-lg); background: var(--card); }
+.a2-banner { display: flex; align-items: flex-start; gap: var(--space-2); padding: var(--space-2) var(--space-3); margin-bottom: var(--space-4); font-size: var(--fs-sm); line-height: 1.4; border: 1px solid var(--border); border-left-width: 3px; border-radius: var(--radius); background: var(--card); }
+.a2-banner .ui-icon { flex: none; margin-top: 2px; }
 .a2-banner p { margin: 0; }
 .a2-banner-title { font-weight: 600; }
 .a2-banner-extra { font-weight: 400; color: var(--muted-foreground); }
@@ -235,3 +236,16 @@ button.a2-toc-chev:hover { color: var(--text); background: rgba(var(--neutral-rg
 .sm-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-4); font-size: var(--fs-sm); }
 .sm-detail ul { margin: 4px 0 0; padding-left: 1.1em; }
 .sm-detail p { margin: 4px 0 0; }
+
+/* The page header heads the document column: its top lines up with the rail's. */
+.a2-doc > .hero { padding-top: 0; }
+
+/* Back to project: a quiet text link, not a pill; the page title is what should stand out. */
+.a2-back { display: inline-flex; align-items: center; gap: var(--space-1); margin: 0 0 var(--space-3) calc(-1 * var(--space-2)); padding: var(--space-1) var(--space-2); font: inherit; font-size: var(--fs-sm); font-weight: 500; color: var(--muted-foreground); background: none; border: 0; border-radius: var(--radius); cursor: pointer; transition: color var(--dur, .15s) ease, background var(--dur, .15s) ease; }
+.a2-back:hover { color: var(--text); background: rgba(var(--neutral-rgb), .05); }
+.a2-back .ui-icon { transition: transform var(--dur, .15s) ease; }
+.a2-back:hover .ui-icon { transform: translateX(-2px); }
+.a2-back:focus-visible { outline: 2px solid var(--accent-ui); outline-offset: 2px; }
+/* On the plan page the next-steps box holds only the actions (the back link sits below it), so they start at the left. */
+.a2-doc .next-step-actions { margin-left: 0; }
+.a2-doc .next-step + .a2-back { margin: var(--space-3) 0 0 calc(-1 * var(--space-2)); }

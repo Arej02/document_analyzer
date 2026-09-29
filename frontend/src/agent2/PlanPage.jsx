@@ -2,6 +2,7 @@
 // Behaviour is unchanged: Submit for approval (`SubmitPlanAction`) and Generate code (`GenerateCodeAction`)
 // are the same code. `App` in main.jsx still owns the URL (`?plan=`, `&unit=`, `&phase_id=`) and passes
 // handlers in.
+import { ArrowLeft } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ReactFlow, Background, Handle, MarkerType, Position } from '@xyflow/react'
 import { useApiFetch, useAuth } from '../AuthProvider'
@@ -911,60 +912,65 @@ export default function PlanPage({
       : undefined,
   }
 
+  // The page header. With a plan it heads the document column (level with the rail); without one it stands alone.
+  const hero = (
+    <section className="hero project-detail" aria-label="Migration plan">
+      <button
+        type="button"
+        className="a2-back"
+        onClick={() => (plan ? onBackToProject(plan.project_id) : onBackToForm())}
+      >
+        <ArrowLeft size={14} className="ui-icon" aria-hidden="true" /> {plan ? 'Back to project' : 'Back to repositories'}
+      </button>
+      {plan && (
+        <>
+          <p className="eyebrow">MIGRATION PLAN</p>
+          <h1 className="project-detail-title">Version {plan.version}</h1>
+          {plan.parent_plan_id && (
+            // An override made this version from an earlier one (design_agent2.md §9.2); the
+            // project page's Plans list has every version.
+            <p className="plan-version-note">
+              Version {plan.version} (from {plan.parent_version ?? '?'})
+              {' · '}
+              <button type="button" className="project-link" onClick={() => onOpenPlan(plan.parent_plan_id)}>
+                Open version {plan.parent_version ?? 'it was made from'}
+              </button>
+              {' · '}
+              <button type="button" className="project-link" onClick={() => onBackToProject(plan.project_id)}>
+                All versions
+              </button>
+            </p>
+          )}
+          <div className="summary-badges plan-header-badges">
+            <span className={`plan-status plan-status-${plan.status}`}>{plan.status.replace('_', ' ')}</span>
+            <span className={`plan-flag${plan.open_facade_flags > 0 ? ' plan-flag-warn' : ''}`}>
+              {plan.open_facade_flags} open facade {plan.open_facade_flags === 1 ? 'flag' : 'flags'}
+            </span>
+            {/* Clustering-quality metrics (design_agent2.md §2/§13) — null for a plan
+                whose planning job predates these fields. single_unit_phases > 1 is the
+                forward-looking detector for the 46-single-unit-phase degeneracy §13
+                documents, which used to only be caught by a manual dry-run inspection. */}
+            {plan.modularity != null && (
+              <span className="plan-flag" title="Leiden modularity of the final unit-level clustering">
+                modularity {plan.modularity.toFixed(2)}
+              </span>
+            )}
+            {plan.phase_size_stats && plan.phase_size_stats.single_unit_phases > 1 && (
+              <span className="plan-flag plan-flag-warn" title="Phases with only one unit each often mean the phase graph was too sparse to cluster meaningfully">
+                {plan.phase_size_stats.single_unit_phases} single-unit phases
+              </span>
+            )}
+          </div>
+          <PlanStatusBanner access={access} extra={approvedExtra} />
+        </>
+      )}
+    </section>
+  )
+
   return (
     <main className="page-shell">
 
-      <section className="hero project-detail" aria-label="Migration plan">
-        <button
-          type="button"
-          className="nav-btn"
-          onClick={() => (plan ? onBackToProject(plan.project_id) : onBackToForm())}
-        >
-          <span aria-hidden="true">←</span> {plan ? 'Back to project' : 'Back to repositories'}
-        </button>
-        {plan && (
-          <>
-            <p className="eyebrow">MIGRATION PLAN</p>
-            <h1 className="project-detail-title">Version {plan.version}</h1>
-            {plan.parent_plan_id && (
-              // An override made this version from an earlier one (design_agent2.md §9.2); the
-              // project page's Plans list has every version.
-              <p className="plan-version-note">
-                Version {plan.version} (from {plan.parent_version ?? '?'})
-                {' · '}
-                <button type="button" className="project-link" onClick={() => onOpenPlan(plan.parent_plan_id)}>
-                  Open version {plan.parent_version ?? 'it was made from'}
-                </button>
-                {' · '}
-                <button type="button" className="project-link" onClick={() => onBackToProject(plan.project_id)}>
-                  All versions
-                </button>
-              </p>
-            )}
-            <div className="summary-badges plan-header-badges">
-              <span className={`plan-status plan-status-${plan.status}`}>{plan.status.replace('_', ' ')}</span>
-              <span className={`plan-flag${plan.open_facade_flags > 0 ? ' plan-flag-warn' : ''}`}>
-                {plan.open_facade_flags} open facade {plan.open_facade_flags === 1 ? 'flag' : 'flags'}
-              </span>
-              {/* Clustering-quality metrics (design_agent2.md §2/§13) — null for a plan
-                  whose planning job predates these fields. single_unit_phases > 1 is the
-                  forward-looking detector for the 46-single-unit-phase degeneracy §13
-                  documents, which used to only be caught by a manual dry-run inspection. */}
-              {plan.modularity != null && (
-                <span className="plan-flag" title="Leiden modularity of the final unit-level clustering">
-                  modularity {plan.modularity.toFixed(2)}
-                </span>
-              )}
-              {plan.phase_size_stats && plan.phase_size_stats.single_unit_phases > 1 && (
-                <span className="plan-flag plan-flag-warn" title="Phases with only one unit each often mean the phase graph was too sparse to cluster meaningfully">
-                  {plan.phase_size_stats.single_unit_phases} single-unit phases
-                </span>
-              )}
-            </div>
-            <PlanStatusBanner access={access} extra={approvedExtra} />
-          </>
-        )}
-      </section>
+      {!plan && hero}
       {!plan && !error && <PlanSkeleton />}
       {error && (
         <PlanFailed
@@ -978,10 +984,6 @@ export default function PlanPage({
           )}
         />
       )}
-      {plan && (plan.status === 'approved' || plan.is_stale) && (
-        // An approved plan that later went stale keeps its earlier runs (design_agent3.md §13).
-        <ExecutionRunsList planId={planId} onOpenExecution={onOpenExecution} />
-      )}
       {plan && (
         <PlanDocumentView
           plan={plan}
@@ -990,19 +992,30 @@ export default function PlanPage({
           phaseId={phaseId}
           onSelectUnit={onSelectUnit}
           slots={slots}
+          intro={(
+            <>
+              {hero}
+              {(plan.status === 'approved' || plan.is_stale) && (
+                // An approved plan that later went stale keeps its earlier runs (design_agent3.md §13).
+                <ExecutionRunsList planId={planId} onOpenExecution={onOpenExecution} />
+              )}
+            </>
+          )}
+          outro={(
+            // Next steps sit after the document, so the review happens before the button that ends it.
+            <>
+              <section className="next-step" aria-label="Next steps">
+                <div className="next-step-actions">
+                  {plan.status === 'draft' && <SubmitPlanAction planId={planId} onSubmitted={refreshPlan} />}
+                  <GenerateCodeAction plan={plan} onExecutionCreated={onExecutionCreated} />
+                </div>
+              </section>
+              <button type="button" className="a2-back" onClick={() => onBackToProject(plan.project_id)}>
+                <ArrowLeft size={14} className="ui-icon" aria-hidden="true" /> Back to project
+              </button>
+            </>
+          )}
         />
-      )}
-      {plan && (
-        // Next steps sit after the document, so the review happens before the button that ends it.
-        <section className="next-step" aria-label="Next steps">
-          <button type="button" className="nav-btn" onClick={() => onBackToProject(plan.project_id)}>
-            <span aria-hidden="true">←</span> Back to project
-          </button>
-          <div className="next-step-actions">
-            {plan.status === 'draft' && <SubmitPlanAction planId={planId} onSubmitted={refreshPlan} />}
-            <GenerateCodeAction plan={plan} onExecutionCreated={onExecutionCreated} />
-          </div>
-        </section>
       )}
     </main>
   )
