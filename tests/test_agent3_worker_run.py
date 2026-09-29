@@ -10,8 +10,9 @@ import logging
 
 import pytest
 
+from document_analyzer.agent3.worker import assemble as assemble_module
 from document_analyzer.agent3.worker import run as run_module
-from document_analyzer.agent3.worker.sandbox import SandboxUnavailableError
+from document_analyzer.agent3.worker.sandbox import SandboxResult, SandboxUnavailableError
 from document_analyzer.agent3.worker.status import (
     mark_execution_done,
     mark_execution_failed,
@@ -19,7 +20,17 @@ from document_analyzer.agent3.worker.status import (
     mark_execution_stage,
 )
 
+from agent3_fixtures import ORG, seed_plan
 from fakes import FakeClient
+
+PARAMS = {
+    "model_deployment": "gpt-test",
+    "max_attempts": 3,
+    "max_context_chars": 60_000,
+    "sandbox_timeout_seconds": 120,
+    "sandbox_memory_mb": 1024,
+    "runner_image": "galvanise-agent3-runner:0.1",
+}
 
 STAGES = ("prepare", "units", "assemble", "final_test")
 
@@ -124,16 +135,41 @@ def test_exception_without_message_still_gets_a_readable_error(monkeypatch, clie
     assert row["error"] == "KeyError"
 
 
-def test_stub_stages_fail_the_job_instead_of_marking_it_done(client):
-    """Until Phases 2-4 exist, a real job must fail readably, never end `done` with nothing generated."""
-    _seed_execution_job(client)
+def test_empty_plan_still_completes_the_full_pipeline(monkeypatch, client):
+    """All four stages are real as of Phase 4 — nothing left to stub. An approved
+    plan with zero migration_plan_items rows (an edge case, not an error:
+    run_prepare_stage doesn't reject it) still runs prepare -> units (nothing to
+    do) -> assemble (template only) -> final_test (only the template's own smoke
+    tests run) and reaches `done`, proving no stage silently requires at least one
+    unit. `sandbox.run_pytest` is monkeypatched so this needs no Docker."""
+    job, plan, _project = seed_plan(client)
+    client.table("execution_jobs").insert(
+        {
+            "id": "ej-1",
+            "org_id": ORG,
+            "project_id": "project-1",
+            "plan_id": plan["id"],
+            "source_job_id": job["id"],
+            "status": "queued",
+            "progress_stage": None,
+            "params": PARAMS,
+        }
+    ).execute()
+    monkeypatch.setattr(
+        assemble_module,
+        "run_pytest",
+        lambda workspace, params: SandboxResult(
+            status="completed", exit_code=0, tests=[], output_tail="", junit_xml="", duration_s=0.01
+        ),
+    )
 
-    run_module.process_execution_job("ej-1", "org-1")
+    run_module.process_execution_job("ej-1", ORG)
 
     [row] = client.table("execution_jobs").rows
-    assert row["status"] == "failed"
-    assert row["progress_stage"] == "prepare"
-    assert "not implemented" in row["error"]
+    assert row["status"] == "done"
+    assert row["progress_stage"] is None
+    assert row["output_zip_path"] == f"{ORG}/ej-1/project.zip"
+    assert row["counts"] == {"total": 0, "done": 0, "passed": 0, "failed_verification": 0, "error": 0, "built_on_failed_dependency": 0}
 
 
 def test_other_orgs_job_is_never_touched(monkeypatch, client):

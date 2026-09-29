@@ -189,6 +189,15 @@ class FakeStorageBucket:
             raise Exception(f"object not found: {path}")
         return self._objects[path]
 
+    def create_signed_url(self, path, expires_in, options=None):
+        """Same shape as storage3's real `create_signed_url` (both `signedURL`/
+        `signedUrl` keys), a fake URL that encodes the path and TTL so a test can
+        assert on them without a real signing round trip."""
+        if path not in self._objects:
+            raise Exception(f"object not found: {path}")
+        url = f"https://fake-storage.test/{path}?expires_in={expires_in}"
+        return {"signedURL": url, "signedUrl": url}
+
     def list(self, path="", options=None):
         """Like Supabase Storage: the entries directly under `path` (one level), where a
         sub-folder is an entry with `id` None. Honours `limit`/`offset`."""

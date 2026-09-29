@@ -45,8 +45,10 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "sqlalchemy==2.1.0",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]
 markers = ["live_container: runs real containers on the configured engine (skips when it isn't running)"]

@@ -11,18 +11,19 @@ reasoning as Agents 1 and 2.
 
 Run via `uv run document-analyzer-executor` (see pyproject.toml).
 
-Each stage will live in its own module (context.py, generate.py, tests_gen.py,
+Each stage lives in its own module (context.py, generate.py, tests_gen.py,
 sandbox.py, assemble.py). The in-memory results one stage hands the next travel
-in a per-job `ExecutionState`. The stages are stubs until Phases 2-4
-(tasks_agent3.md); a stub raises, so a job can never be marked `done` without
-having generated anything.
+in a per-job `ExecutionState`. All four stages are real as of tasks_agent3.md
+Phase 4.
 """
 
 import asyncio
 import logging
+import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -30,7 +31,10 @@ load_dotenv()  # must run before any env-reading import below (design.md §3 bug
 
 from supabase import Client
 
+from document_analyzer.agent3.worker.assemble import run_assemble_stage, run_final_test_stage
+from document_analyzer.agent3.worker.prepare import run_prepare_stage
 from document_analyzer.agent3.worker.sandbox import SandboxParams, check_sandbox_available, require_gvisor_from_env
+from document_analyzer.agent3.worker.units import run_units_stage
 from document_analyzer.agent3.worker.status import (
     mark_execution_done,
     mark_execution_failed,
@@ -55,37 +59,75 @@ class ExecutionState:
     `PlanningState` pattern). Filled in by the stages as they're built."""
 
     plan: dict | None = None
-    # migration_plan_items rows in (phase_order, unit_order) order (§3).
+    # migration_plan_items rows in (phase_order, unit_order) order, each with a
+    # "member_entity_ids" list, a "report_source_cluster_ids" list (§4 step 1: the
+    # units whose cluster_reports stand in for this item) and a "unit_slug" (§8)
+    # attached by stage `prepare`.
     items: list[dict] = field(default_factory=list)
+    # canonical entity id -> extracted_entities / knowledge_summaries row, for every
+    # member of every item (§3 step 3).
+    entities: dict[str, dict] = field(default_factory=dict)
+    summaries: dict[str, dict] = field(default_factory=dict)
+    # cluster_id -> cluster_reports row, for every id any item's report_source_cluster_ids
+    # names (§4 step 1).
+    cluster_reports: dict[str, dict] = field(default_factory=dict)
+    # cluster_id -> {kind, label}, for every id any item's own cluster_id or
+    # report_source_cluster_ids names (§8 unit_slug derivation, unit_slug.py).
+    clusters: dict[str, dict] = field(default_factory=dict)
+    # Unpacked, read-only source snapshot (§3 step 4). Removed by process_execution_job
+    # once the job finishes, whatever the outcome.
+    snapshot_dir: Path | None = None
     # cluster_id -> symbol map of every unit finished so far, for its dependents (§4).
+    # Pre-populated from already-terminal units on a resumed (redelivered) job (§3 step 5).
     symbol_maps: dict[str, dict] = field(default_factory=dict)
+    # cluster_ids already at a terminal verdict before this run started; stage `units`
+    # (Phase 3) skips them (§3 step 5).
+    terminal_unit_ids: set[str] = field(default_factory=set)
+    # cluster_id -> that unit's last-attempt files (real or a generate_stub_unit
+    # stand-in), for a dependent's workspace (§4 step 4, units.py). Built up during
+    # THIS run only — unlike symbol_maps, resume does not currently repopulate this
+    # from storage for units finished in an earlier run; a dependent of one of those
+    # would need units.py to fetch its files from storage instead (tasks_agent3.md
+    # Phase 6 "Redelivery" owns full resumption correctness, not this task).
+    unit_files: dict[str, list] = field(default_factory=dict)
+    # cluster_id -> that unit's last-attempt test files (contract + behaviour, §6),
+    # set alongside unit_files at the same two sites (passed, failed_verification —
+    # never for an error/stub unit, which has no tests to have run). Added for stage
+    # `assemble` (§5), so it can rebuild each unit's tests/units/{slug}/... without
+    # regenerating them (contract tests are deterministic, but behaviour tests are an
+    # LLM call and must stay pinned to what actually ran).
+    unit_test_files: dict[str, list] = field(default_factory=dict)
+    # cluster_ids whose unit_files is a generate_stub_unit stand-in, not real
+    # generated code — a unit depending on one of these gets flagged
+    # built_on_failed_dependency (specs FR7).
+    stubbed_units: set[str] = field(default_factory=set)
+    # The whole assembled project tree (stage `assemble`, §5), consumed by stage
+    # `final_test`. Removed by process_execution_job in a finally, same as
+    # snapshot_dir, whichever stage the job ends at.
+    project_dir: Path | None = None
 
 
 StageFn = Callable[[Client, dict, ExecutionState], None]
 
 
-def _not_implemented(stage: str) -> None:
-    raise NotImplementedError(f"stage '{stage}' is not implemented yet (tasks_agent3.md)")
-
-
 def stage_prepare(client: Client, execution_job: dict, state: ExecutionState) -> None:
-    """design_agent3.md §3. Stub until tasks_agent3.md Phase 2."""
-    _not_implemented("prepare")
+    """design_agent3.md §3."""
+    run_prepare_stage(client, execution_job, state)
 
 
 def stage_units(client: Client, execution_job: dict, state: ExecutionState) -> None:
-    """design_agent3.md §4. Stub until tasks_agent3.md Phase 3."""
-    _not_implemented("units")
+    """design_agent3.md §4."""
+    run_units_stage(client, execution_job, state)
 
 
 def stage_assemble(client: Client, execution_job: dict, state: ExecutionState) -> None:
-    """design_agent3.md §5. Stub until tasks_agent3.md Phase 4."""
-    _not_implemented("assemble")
+    """design_agent3.md §5."""
+    run_assemble_stage(client, execution_job, state)
 
 
 def stage_final_test(client: Client, execution_job: dict, state: ExecutionState) -> None:
-    """design_agent3.md §5. Stub until tasks_agent3.md Phase 4."""
-    _not_implemented("final_test")
+    """design_agent3.md §5."""
+    run_final_test_stage(client, execution_job, state)
 
 
 def _stages() -> list[tuple[str, StageFn]]:
@@ -115,6 +157,7 @@ def process_execution_job(execution_job_id: str, org_id: str) -> None:
     """Runs one execution job's stages to completion (or a handled failure). Never raises:
     any stage error is written to `execution_jobs.error` and the job is marked `failed`."""
     client = get_service_role_client()
+    state: ExecutionState | None = None
 
     try:
         execution_job = _fetch_execution_job(client, execution_job_id, org_id)
@@ -136,6 +179,13 @@ def process_execution_job(execution_job_id: str, org_id: str) -> None:
     except Exception as exc:  # noqa: BLE001 — one bad job must never kill the loop
         logger.exception("execution job %s failed", execution_job_id)
         mark_execution_failed(client, execution_job_id, org_id, str(exc) or type(exc).__name__)
+    finally:
+        # The unpacked source snapshot (stage `prepare`) and the assembled project
+        # tree (stage `assemble`) must not outlive the job, whatever stage it ended at.
+        if state is not None and state.snapshot_dir is not None:
+            shutil.rmtree(state.snapshot_dir, ignore_errors=True)
+        if state is not None and state.project_dir is not None:
+            shutil.rmtree(state.project_dir, ignore_errors=True)
 
 
 def run_once() -> bool:

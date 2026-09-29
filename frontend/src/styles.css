@@ -168,6 +168,12 @@ h1 em { display: inline-block; padding: 3px 0 10px; color: var(--ring); font-sty
 .plan-status-approved { color: var(--emphasis); background: rgba(160,161,207,.14); }
 .plan-status-rejected { color: var(--danger); background: rgba(255,92,77,.16); }
 .plan-status-stale { color: var(--muted-foreground); background: rgba(182,189,206,.12); }
+/* Agent 3 unit verdicts (unit_execution_status, design_agent3.md §2) reuse the same
+   .plan-status pill shape as plan/approval statuses. */
+.plan-status-passed { color: var(--emphasis); background: rgba(160,161,207,.14); }
+.plan-status-failed_verification { color: var(--warning); background: rgba(255,207,122,.14); }
+.plan-status-error { color: var(--danger); background: rgba(255,92,77,.16); }
+.plan-status-pending, .plan-status-running { color: var(--muted-foreground); background: rgba(182,189,206,.12); }
 .plan-header-badges { align-items: center; margin-top: 10px; }
 .plan-flag { display: inline-block; padding: 3px 9px; border-radius: 20px; font: 700 10px/1.2 'Geist Mono', monospace; text-transform: uppercase; letter-spacing: .5px; white-space: nowrap; color: var(--muted-foreground); background: rgba(142,163,201,.12); }
 .plan-flag-warn { color: var(--warning); background: rgba(255,207,122,.14); }
@@ -332,6 +338,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--emphasis); outl
 .ask-claims { margin: 6px 0 12px; padding-left: 18px; }
 .ask-sources { font-size: 13px; color: var(--muted-foreground); }
 .citation-chip { margin: 0 2px; padding: 0 6px; border-radius: 6px; border: 1px solid rgba(var(--neutral-rgb),.3); background: transparent; color: var(--text); font-size: 12px; cursor: pointer; }
+.citation-chip-active { color: var(--button-text); background: var(--button); border-color: transparent; }
 .ask-excerpt { margin: 10px 0; font-size: 12px; }
 .ask-excerpt pre, pre.ask-excerpt { overflow-x: auto; padding: 10px; border-radius: 8px; background: rgba(var(--neutral-rgb),.06); white-space: pre; }
 
@@ -346,3 +353,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--emphasis); outl
 .next-step-actions { display: grid; gap: 16px; flex: 1 1 340px; max-width: 520px; margin-left: auto; }
 .next-step .reingest-action { margin: 0; padding-top: 0; border-top: 0; max-width: none; }
 .next-step .reingest-action + .reingest-action { padding-top: 16px; border-top: 1px solid var(--border); }
+/* ExecutionUnitPage (tasks_agent3.md Phase 5 "Unit detail"): legacy source next to
+   generated code, each its own FilePickerPane (built from the citation-chip/ask-excerpt
+   pattern above). */
+.execution-file-panes { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1100px; margin: 18px 0; }
+.execution-file-pane h4 { margin: 0 0 8px; }
+@media (max-width: 860px) { .execution-file-panes { grid-template-columns: 1fr; } }

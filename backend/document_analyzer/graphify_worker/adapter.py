@@ -15,7 +15,6 @@ import io
 import json
 import os
 import re
-import resource
 import sys
 import time
 from collections.abc import Callable
@@ -25,6 +24,11 @@ from typing import Any
 
 from . import protocol as p
 from .capabilities import EXTRACTORS, graphify_version
+
+try:
+    import resource
+except ImportError:  # Windows: this adapter only actually runs inside the Linux worker container
+    resource = None
 
 NODE_CANONICAL_FIELDS = frozenset({"id", "label", "file_type", "source_file", "source_location"})
 EDGE_CANONICAL_FIELDS = frozenset(
@@ -554,7 +558,7 @@ def analyse(
         p.EDGES_FILE: out.write_text(p.EDGES_FILE, edge_lines),
         p.COVERAGE_FILE: out.write_text(p.COVERAGE_FILE, p.canonical_dumps(coverage)),
     }
-    usage = resource.getrusage(resource.RUSAGE_SELF)
+    peak_rss_kib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss if resource is not None else 0
     manifest = {
         "schema_version": p.OUTPUT_SCHEMA_VERSION,
         "job_id": request.job_id,
@@ -576,7 +580,7 @@ def analyse(
         "measurements": {
             "parse_seconds": round(parse_seconds, 3),
             "total_seconds": round(time.time() - started_wall, 3),
-            "peak_rss_kib": usage.ru_maxrss,
+            "peak_rss_kib": peak_rss_kib,
         },
         "started_at": started_wall,
         "finished_at": time.time(),

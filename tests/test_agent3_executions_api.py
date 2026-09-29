@@ -13,6 +13,7 @@ from document_analyzer.app import create_app
 from document_analyzer.auth import AuthContext, get_auth_context
 from document_analyzer.supabase_client import insert_scoped
 
+from agent3_fixtures import make_tarball
 from fakes import FakeClient
 
 ORG = "org-123"
@@ -448,3 +449,450 @@ def test_list_executions_hides_other_orgs_runs_on_the_same_plan_id(client, fake_
     _seed_execution(fake_client, org_id="org-other", plan_id=plan["id"])
 
     assert client.get(f"/api/agent3/plans/{plan['id']}/executions").json() == {"executions": []}
+
+
+# --------------------------------------------------------------------------- #
+# GET /executions/{execution_job_id}/units (design_agent3.md §9, tasks_agent3.md
+# Phase 5). Labels follow design_agent2.md §11's merged-item stand-in rules.
+# --------------------------------------------------------------------------- #
+
+
+def _seed_units_plan(fake_client, *, org_id=ORG, merged_into=None):
+    """A plan with a planning_job (graph_stats.merged_into for merged_scc tests),
+    ready for _seed_unit/_seed_cluster below."""
+    project = insert_scoped(fake_client, "projects", org_id, {"source_type": "github", "source_ref": "https://x/y"}).data[0]
+    job = insert_scoped(
+        fake_client, "ingestion_jobs", org_id, {"project_id": project["id"], "status": "done", "source_snapshot_path": SNAPSHOT}
+    ).data[0]
+    planning_job = insert_scoped(
+        fake_client, "planning_jobs", org_id, {"project_id": project["id"], "graph_stats": {"merged_into": merged_into or {}}}
+    ).data[0]
+    plan = insert_scoped(
+        fake_client,
+        "migration_plans",
+        org_id,
+        {"project_id": project["id"], "source_job_id": job["id"], "planning_job_id": planning_job["id"], "status": "approved", "version": 1},
+    ).data[0]
+    return plan
+
+
+def _seed_cluster(fake_client, cluster_id, *, org_id=ORG, label=None, kind="unit"):
+    insert_scoped(fake_client, "clusters", org_id, {"id": cluster_id, "kind": kind, "label": label})
+
+
+def _seed_unit(
+    fake_client,
+    plan,
+    execution_job_id,
+    *,
+    org_id=ORG,
+    cluster_id,
+    phase_cluster_id="phase-0",
+    phase_order=0,
+    unit_order=0,
+    status="passed",
+    attempts=1,
+    flags=(),
+    test_summary=None,
+    merged_cluster_ids=(),
+    symbol_map=None,
+    last_error=None,
+    storage_prefix=None,
+):
+    insert_scoped(
+        fake_client,
+        "migration_plan_items",
+        org_id,
+        {
+            "plan_id": plan["id"],
+            "cluster_id": cluster_id,
+            "phase_cluster_id": phase_cluster_id,
+            "phase_order": phase_order,
+            "unit_order": unit_order,
+            "test_contract": {"merged_cluster_ids": list(merged_cluster_ids)} if merged_cluster_ids else {},
+        },
+    )
+    insert_scoped(
+        fake_client,
+        "unit_executions",
+        org_id,
+        {
+            "execution_job_id": execution_job_id,
+            "cluster_id": cluster_id,
+            "phase_cluster_id": phase_cluster_id,
+            "phase_order": phase_order,
+            "unit_order": unit_order,
+            "status": status,
+            "attempts": attempts,
+            "flags": list(flags),
+            "test_summary": test_summary,
+            "symbol_map": symbol_map,
+            "last_error": last_error,
+            "storage_prefix": storage_prefix,
+        },
+    )
+
+
+def test_get_execution_units_missing_auth_returns_401():
+    assert TestClient(create_app()).get("/api/agent3/executions/any/units").status_code == 401
+
+
+def test_get_execution_units_404_for_missing_execution(client):
+    assert client.get("/api/agent3/executions/nope/units").status_code == 404
+
+
+def test_get_execution_units_404_for_other_org_execution(client, fake_client):
+    plan = _seed_units_plan(fake_client, org_id="org-other")
+    job = insert_scoped(
+        fake_client, "execution_jobs", "org-other", {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}}
+    ).data[0]
+    _seed_unit(fake_client, plan, job["id"], org_id="org-other", cluster_id="unit-a")
+
+    assert client.get(f"/api/agent3/executions/{job['id']}/units").status_code == 404
+
+
+def test_get_execution_units_grouped_by_phase_and_ordered(client, fake_client):
+    plan = _seed_units_plan(fake_client)
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG, {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}}
+    ).data[0]
+    _seed_cluster(fake_client, "phase-0", label="Checkout", kind="phase")
+    _seed_cluster(fake_client, "phase-1", label="Billing", kind="phase")
+    _seed_cluster(fake_client, "unit-a", label="Cart")
+    _seed_cluster(fake_client, "unit-b", label="Orders")
+    _seed_cluster(fake_client, "unit-c", label="Invoices")
+    _seed_unit(fake_client, plan, job["id"], cluster_id="unit-b", phase_cluster_id="phase-0", phase_order=0, unit_order=1)
+    _seed_unit(fake_client, plan, job["id"], cluster_id="unit-a", phase_cluster_id="phase-0", phase_order=0, unit_order=0)
+    _seed_unit(fake_client, plan, job["id"], cluster_id="unit-c", phase_cluster_id="phase-1", phase_order=1, unit_order=0)
+
+    response = client.get(f"/api/agent3/executions/{job['id']}/units")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [p["phase_cluster_id"] for p in body["phases"]] == ["phase-0", "phase-1"]
+    assert body["phases"][0]["label"] == "Checkout"
+    assert [u["cluster_id"] for u in body["phases"][0]["units"]] == ["unit-a", "unit-b"]  # unit_order, not insertion order
+    assert body["phases"][1]["units"][0] == {
+        "cluster_id": "unit-c",
+        "unit_order": 0,
+        "label": "Invoices",
+        "status": "passed",
+        "attempts": 1,
+        "flags": [],
+        "test_summary": None,
+    }
+
+
+def test_get_execution_units_flags_attempts_and_test_summary_pass_through(client, fake_client):
+    plan = _seed_units_plan(fake_client)
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG, {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}}
+    ).data[0]
+    _seed_cluster(fake_client, "phase-0", label=None, kind="phase")
+    _seed_cluster(fake_client, "unit-a", label="Cart")
+    summary = {"contract": {"passed": 3, "failed": 0}, "behaviour": {"passed": 1, "failed": 1}, "duration_s": 0.4}
+    _seed_unit(
+        fake_client, plan, job["id"], cluster_id="unit-a",
+        status="failed_verification", attempts=3, flags=["unverified_inputs"], test_summary=summary,
+    )
+
+    [unit] = client.get(f"/api/agent3/executions/{job['id']}/units").json()["phases"][0]["units"]
+    assert unit["status"] == "failed_verification"
+    assert unit["attempts"] == 3
+    assert unit["flags"] == ["unverified_inputs"]
+    assert unit["test_summary"] == summary
+
+
+def test_get_execution_units_empty(client, fake_client):
+    plan = _seed_units_plan(fake_client)
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG, {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "queued", "params": {}}
+    ).data[0]
+
+    assert client.get(f"/api/agent3/executions/{job['id']}/units").json() == {"phases": []}
+
+
+def test_get_execution_units_unmerged_unit_uses_its_own_label(client, fake_client):
+    plan = _seed_units_plan(fake_client)
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG, {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}}
+    ).data[0]
+    _seed_cluster(fake_client, "phase-0", label=None, kind="phase")
+    _seed_cluster(fake_client, "unit-a", label="Cart")
+    _seed_unit(fake_client, plan, job["id"], cluster_id="unit-a")
+
+    [unit] = client.get(f"/api/agent3/executions/{job['id']}/units").json()["phases"][0]["units"]
+    assert unit["label"] == "Cart"
+
+
+def test_get_execution_units_merged_scc_prefers_its_own_label(client, fake_client):
+    plan = _seed_units_plan(fake_client, merged_into={"unit-a": "merged-x", "unit-b": "merged-x"})
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG, {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}}
+    ).data[0]
+    _seed_cluster(fake_client, "phase-0", label=None, kind="phase")
+    _seed_cluster(fake_client, "merged-x", label="Checkout cycle", kind="merged_scc")
+    _seed_cluster(fake_client, "unit-a", label="Cart")
+    _seed_cluster(fake_client, "unit-b", label="Orders")
+    _seed_unit(fake_client, plan, job["id"], cluster_id="merged-x")
+
+    [unit] = client.get(f"/api/agent3/executions/{job['id']}/units").json()["phases"][0]["units"]
+    assert unit["label"] == "Checkout cycle"
+
+
+def test_get_execution_units_merged_scc_without_its_own_label_joins_sources(client, fake_client):
+    plan = _seed_units_plan(fake_client, merged_into={"unit-a": "merged-x", "unit-b": "merged-x"})
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG, {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}}
+    ).data[0]
+    _seed_cluster(fake_client, "phase-0", label=None, kind="phase")
+    _seed_cluster(fake_client, "merged-x", label=None, kind="merged_scc")
+    _seed_cluster(fake_client, "unit-a", label="Cart")
+    _seed_cluster(fake_client, "unit-b", label="Orders")
+    _seed_unit(fake_client, plan, job["id"], cluster_id="merged-x")
+
+    [unit] = client.get(f"/api/agent3/executions/{job['id']}/units").json()["phases"][0]["units"]
+    assert unit["label"] == "Cart + Orders"  # sorted and joined
+
+
+def test_get_execution_units_override_merge_always_joins_even_with_its_own_label(client, fake_client):
+    """An override-merged item keeps the lowest unit id (design_agent2.md §9.2), so
+    its own cluster row's label (if any — normally null for a synthetic row) alone
+    would hide the rest; the rule always joins for this kind, unlike merged_scc."""
+    plan = _seed_units_plan(fake_client)
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG, {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}}
+    ).data[0]
+    _seed_cluster(fake_client, "phase-0", label=None, kind="phase")
+    _seed_cluster(fake_client, "unit-a", label="should be ignored", kind="unit")
+    _seed_cluster(fake_client, "unit-b", label="Cart")
+    _seed_cluster(fake_client, "unit-c", label="Orders")
+    _seed_unit(fake_client, plan, job["id"], cluster_id="unit-a", merged_cluster_ids=["unit-b", "unit-c"])
+
+    [unit] = client.get(f"/api/agent3/executions/{job['id']}/units").json()["phases"][0]["units"]
+    assert unit["label"] == "Cart + Orders"
+
+
+# --------------------------------------------------------------------------- #
+# GET /executions/{execution_job_id}/units/{cluster_id} (design_agent3.md §9,
+# tasks_agent3.md Phase 5 "Unit detail").
+# --------------------------------------------------------------------------- #
+
+
+def _seed_entity(fake_client, *, org_id=ORG, job_id, entity_id, cluster_id, name="calc_total", raw_facts=None, canonical_entity_id=None):
+    insert_scoped(
+        fake_client, "extracted_entities", org_id,
+        {"id": entity_id, "job_id": job_id, "entity_type": "function", "name": name, "file_path": "x.php", "raw_facts": raw_facts or {}},
+    )
+    insert_scoped(
+        fake_client, "cluster_members", org_id,
+        {"cluster_id": cluster_id, "entity_id": entity_id, "canonical_entity_id": canonical_entity_id or entity_id},
+    )
+
+
+def test_get_execution_unit_missing_auth_returns_401():
+    assert TestClient(create_app()).get("/api/agent3/executions/any/units/any").status_code == 401
+
+
+def test_get_execution_unit_404_for_missing_execution(client):
+    assert client.get("/api/agent3/executions/nope/units/unit-a").status_code == 404
+
+
+def test_get_execution_unit_404_for_other_org_execution(client, fake_client):
+    plan = _seed_units_plan(fake_client, org_id="org-other")
+    job = insert_scoped(
+        fake_client, "execution_jobs", "org-other",
+        {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}},
+    ).data[0]
+    _seed_unit(fake_client, plan, job["id"], org_id="org-other", cluster_id="unit-a")
+
+    assert client.get(f"/api/agent3/executions/{job['id']}/units/unit-a").status_code == 404
+
+
+def test_get_execution_unit_404_for_a_cluster_not_in_this_job(client, fake_client):
+    plan = _seed_units_plan(fake_client)
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG,
+        {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}},
+    ).data[0]
+    _seed_unit(fake_client, plan, job["id"], cluster_id="unit-a")
+
+    assert client.get(f"/api/agent3/executions/{job['id']}/units/unit-never-ran").status_code == 404
+
+
+def test_get_execution_unit_status_fields_pass_through(client, fake_client):
+    plan = _seed_units_plan(fake_client)
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG,
+        {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}},
+    ).data[0]
+    symbol_map = {"e-calc": {"python_module": "app.units.x.module", "python_name": "calc_total", "kind": "function"}}
+    _seed_unit(
+        fake_client, plan, job["id"], cluster_id="unit-a",
+        status="failed_verification", attempts=3, flags=["unverified_inputs"],
+        test_summary={"contract": {"passed": 1, "failed": 1}, "behaviour": {"passed": 0, "failed": 0}, "duration_s": 0.2},
+        symbol_map=symbol_map, last_error="2 test(s) still failing after every attempt",
+    )
+
+    body = client.get(f"/api/agent3/executions/{job['id']}/units/unit-a").json()
+
+    assert body["cluster_id"] == "unit-a"
+    assert body["status"] == "failed_verification"
+    assert body["attempts"] == 3
+    assert body["flags"] == ["unverified_inputs"]
+    assert body["last_error"] == "2 test(s) still failing after every attempt"
+    assert body["symbol_map"] == symbol_map
+    assert body["test_summary"]["contract"] == {"passed": 1, "failed": 1}
+    assert body["legacy"] == []  # no member entities seeded
+    assert body["files"] == []
+    assert body["tests"] == []
+    assert body["log"] is None
+
+
+def test_get_execution_unit_legacy_source_sliced_from_the_snapshot(client, fake_client):
+    plan = _seed_units_plan(fake_client)
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG,
+        {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}},
+    ).data[0]
+    _seed_unit(fake_client, plan, job["id"], cluster_id="unit-a")
+    _seed_entity(
+        fake_client, job_id=plan["source_job_id"], entity_id="e-calc", cluster_id="unit-a", name="calc_total",
+        raw_facts={"line": 2, "end_line": 4},
+    )
+    php_source = "<?php\nfunction calc_total($order) {\n    return $order->total;\n}\n"
+    fake_client.storage.from_("agent1-snapshots").upload(SNAPSHOT, make_tarball({"x.php": php_source.encode()}))
+
+    body = client.get(f"/api/agent3/executions/{job['id']}/units/unit-a").json()
+
+    assert len(body["legacy"]) == 1
+    [member] = body["legacy"]
+    assert member == {
+        "entity_id": "e-calc",
+        "name": "calc_total",
+        "file_path": "x.php",
+        "line": 2,
+        "end_line": 4,
+        "source": "function calc_total($order) {\n    return $order->total;\n}",
+    }
+
+
+def test_get_execution_unit_legacy_member_with_no_line_has_no_source(client, fake_client):
+    plan = _seed_units_plan(fake_client)
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG,
+        {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}},
+    ).data[0]
+    _seed_unit(fake_client, plan, job["id"], cluster_id="unit-a")
+    _seed_entity(fake_client, job_id=plan["source_job_id"], entity_id="e-hook", cluster_id="unit-a", name="init_hook", raw_facts={})
+    fake_client.storage.from_("agent1-snapshots").upload(SNAPSHOT, make_tarball({"x.php": b"<?php\n"}))
+
+    [member] = client.get(f"/api/agent3/executions/{job['id']}/units/unit-a").json()["legacy"]
+    assert member == {"entity_id": "e-hook", "name": "init_hook", "file_path": "x.php", "line": None, "end_line": None, "source": None}
+
+
+def test_get_execution_unit_override_merge_pulls_members_from_every_merged_cluster(client, fake_client):
+    plan = _seed_units_plan(fake_client)
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG,
+        {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}},
+    ).data[0]
+    _seed_unit(fake_client, plan, job["id"], cluster_id="unit-a", merged_cluster_ids=["unit-b", "unit-c"])
+    _seed_entity(fake_client, job_id=plan["source_job_id"], entity_id="e-1", cluster_id="unit-b", name="fn_b")
+    _seed_entity(fake_client, job_id=plan["source_job_id"], entity_id="e-2", cluster_id="unit-c", name="fn_c")
+    fake_client.storage.from_("agent1-snapshots").upload(SNAPSHOT, make_tarball({"x.php": b"<?php\n"}))
+
+    names = {m["name"] for m in client.get(f"/api/agent3/executions/{job['id']}/units/unit-a").json()["legacy"]}
+    assert names == {"fn_b", "fn_c"}
+
+
+def test_get_execution_unit_files_tests_and_log_from_the_last_attempt(client, fake_client):
+    plan = _seed_units_plan(fake_client)
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG,
+        {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}},
+    ).data[0]
+    prefix = f"{ORG}/{job['id']}/units/unit-a/"
+    _seed_unit(fake_client, plan, job["id"], cluster_id="unit-a", attempts=2, storage_prefix=prefix)
+    bucket = fake_client.storage.from_("agent3-output")
+    # attempt_1 (an earlier, superseded attempt) must not leak into the response.
+    bucket.upload(f"{prefix}attempt_1/code/app/units/unit_a/__init__.py", b"# old attempt", None)
+    bucket.upload(f"{prefix}attempt_2/code/app/units/unit_a/__init__.py", b"import importlib\n", None)
+    bucket.upload(f"{prefix}attempt_2/code/app/units/unit_a/module.py", b"def calc_total(order):\n    return order\n", None)
+    bucket.upload(f"{prefix}attempt_2/tests/units/unit_a/test_contract.py", b"def test_x():\n    assert True\n", None)
+    bucket.upload(f"{prefix}attempt_2/log.txt", b"1 passed", None)
+    bucket.upload(f"{prefix}attempt_2/junit.xml", b"<xml/>", None)  # never surfaced in the response
+
+    body = client.get(f"/api/agent3/executions/{job['id']}/units/unit-a").json()
+
+    assert {f["path"] for f in body["files"]} == {"app/units/unit_a/__init__.py", "app/units/unit_a/module.py"}
+    assert {f["content"] for f in body["files"] if f["path"] == "app/units/unit_a/module.py"} == {"def calc_total(order):\n    return order\n"}
+    assert body["tests"] == [{"path": "tests/units/unit_a/test_contract.py", "content": "def test_x():\n    assert True\n"}]
+    assert body["log"] == "1 passed"
+
+
+def test_get_execution_unit_error_unit_with_no_storage_has_empty_files_tests_and_log(client, fake_client):
+    plan = _seed_units_plan(fake_client)
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG,
+        {"project_id": "p1", "plan_id": plan["id"], "source_job_id": "job-1", "status": "done", "params": {}},
+    ).data[0]
+    _seed_unit(fake_client, plan, job["id"], cluster_id="unit-a", status="error", attempts=3, flags=["stubbed"], storage_prefix=None)
+
+    body = client.get(f"/api/agent3/executions/{job['id']}/units/unit-a").json()
+
+    assert body["status"] == "error"
+    assert body["files"] == []
+    assert body["tests"] == []
+    assert body["log"] is None
+
+
+# --------------------------------------------------------------------------- #
+# GET /executions/{execution_job_id}/download (design_agent3.md §9,
+# tasks_agent3.md Phase 5 "Download").
+# --------------------------------------------------------------------------- #
+
+
+def test_get_execution_download_missing_auth_returns_401():
+    assert TestClient(create_app()).get("/api/agent3/executions/any/download").status_code == 401
+
+
+def test_get_execution_download_404_for_missing_execution(client):
+    assert client.get("/api/agent3/executions/nope/download").status_code == 404
+
+
+def test_get_execution_download_404_for_other_org_execution(client, fake_client):
+    job = insert_scoped(
+        fake_client, "execution_jobs", "org-other",
+        {"project_id": "p1", "plan_id": "plan-1", "source_job_id": "job-1", "status": "done", "params": {}, "output_zip_path": "org-other/x/project.zip"},
+    ).data[0]
+
+    assert client.get(f"/api/agent3/executions/{job['id']}/download").status_code == 404
+
+
+def test_get_execution_download_409_before_output_exists(client, fake_client):
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG,
+        {"project_id": "p1", "plan_id": "plan-1", "source_job_id": "job-1", "status": "running", "params": {}},
+    ).data[0]
+
+    response = client.get(f"/api/agent3/executions/{job['id']}/download")
+
+    assert response.status_code == 409
+    assert "no output" in response.json()["detail"]
+
+
+def test_get_execution_download_returns_a_signed_url(client, fake_client):
+    output_path = f"{ORG}/ej-1/project.zip"
+    job = insert_scoped(
+        fake_client, "execution_jobs", ORG,
+        {"project_id": "p1", "plan_id": "plan-1", "source_job_id": "job-1", "status": "done", "params": {}, "output_zip_path": output_path},
+    ).data[0]
+    fake_client.storage.from_("agent3-output").upload(output_path, b"PK\x03\x04fake-zip-bytes", None)
+
+    response = client.get(f"/api/agent3/executions/{job['id']}/download")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["expires_in"] == 300
+    assert output_path in body["url"]
