@@ -55,6 +55,7 @@ def mark_job_failed(client: Client, job_id: str, org_id: str, error: str) -> Non
         .update({"status": "failed", "error": error})
         .eq("id", job_id)
         .eq("org_id", org_id)
+        .in_("status", ["queued", "running"])  # never overwrite a cancelled job
         .execute()
     )
 

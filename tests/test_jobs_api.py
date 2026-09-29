@@ -36,6 +36,13 @@ def stored_tokens(monkeypatch):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def service_client(fake_client, monkeypatch):
+    """The queue position is computed with the service-role client; point it at the fake."""
+    monkeypatch.setattr(jobs_module, "get_service_role_client", lambda: fake_client)
+    return fake_client
+
+
 @pytest.fixture
 def client(fake_client):
     app = create_app()
@@ -205,6 +212,8 @@ def test_get_job_returns_status_progress_and_error(client, fake_client, enqueued
     assert response.status_code == 200
     assert response.json() == {
         "job_id": job_id,
+        "project_id": fake_client.table("ingestion_jobs").rows[0]["project_id"],
+        "queue_position": None,
         "status": "running",
         "progress_stage": "extracting",
         "error": None,
@@ -212,6 +221,18 @@ def test_get_job_returns_status_progress_and_error(client, fake_client, enqueued
         "unchanged_file_count": None,
         "removed_file_count": None,
     }
+
+
+def test_get_job_returns_its_project_id(client, fake_client, enqueued):
+    created = client.post(
+        "/api/agent1/jobs",
+        json={"source_type": "github", "repo_url": "https://github.com/org/repo"},
+    ).json()
+
+    body = client.get(f"/api/agent1/jobs/{created['job_id']}").json()
+
+    assert body["project_id"]
+    assert body["project_id"] == fake_client.table("projects").rows[0]["id"]
 
 
 def test_get_job_returns_diff_counts_once_the_worker_has_set_them(client, fake_client, enqueued):
@@ -529,3 +550,282 @@ def test_get_job_entity_detail_missing_auth_returns_401():
     response = unauthenticated.get("/api/agent1/jobs/some-id/entities/some-entity")
 
     assert response.status_code == 401
+
+
+# --- GET /jobs/{job_id}/events — live workflow run view (design.md §2, §4) --------
+
+
+def _event(fake_client, job_id, org_id="org-123", **overrides):
+    from document_analyzer.supabase_client import insert_scoped
+
+    row = {
+        "workflow_kind": "agent1_ingestion",
+        "workflow_id": job_id,
+        "event_type": "activity",
+        "stage": "fetch",
+        "message": "did something",
+        "data": {},
+        **overrides,
+    }
+    return insert_scoped(fake_client, "workflow_events", org_id, row).data[0]
+
+
+def test_get_job_events_returns_events_oldest_first_with_a_cursor(client, fake_client):
+    job = _job(fake_client)
+    e1 = _event(fake_client, job["id"], message="first")
+    e2 = _event(fake_client, job["id"], message="second")
+
+    response = client.get(f"/api/agent1/jobs/{job['id']}/events")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["job_id"] == job["id"]
+    assert body["status"] == "running"
+    assert [e["id"] for e in body["events"]] == [e1["id"], e2["id"]]
+    assert [e["message"] for e in body["events"]] == ["first", "second"]
+    assert body["next_cursor"] == e2["id"]
+    assert body["server_time"]
+
+
+def test_get_job_events_returns_the_full_event_shape(client, fake_client):
+    job = _job(fake_client)
+    event = _event(
+        fake_client,
+        job["id"],
+        event_type="output.created",
+        stage="snapshot",
+        message=None,
+        data={"output_id": "source_snapshot", "kind": "snapshot", "label": "Source snapshot", "status": "done"},
+    )
+
+    response = client.get(f"/api/agent1/jobs/{job['id']}/events")
+
+    [returned] = response.json()["events"]
+    assert returned == {
+        "id": event["id"],
+        "event_type": "output.created",
+        "stage": "snapshot",
+        "message": None,
+        "data": {"output_id": "source_snapshot", "kind": "snapshot", "label": "Source snapshot", "status": "done"},
+        "created_at": event["created_at"],
+    }
+
+
+def test_get_job_events_pages_by_cursor(client, fake_client):
+    job = _job(fake_client)
+    events = [_event(fake_client, job["id"], message=f"event {i}") for i in range(3)]
+
+    response = client.get(f"/api/agent1/jobs/{job['id']}/events", params={"after": events[0]["id"]})
+
+    body = response.json()
+    assert [e["id"] for e in body["events"]] == [events[1]["id"], events[2]["id"]]
+    assert body["next_cursor"] == events[2]["id"]
+
+
+def test_get_job_events_next_cursor_is_unchanged_when_there_is_nothing_new(client, fake_client):
+    """A client must always be able to pass next_cursor straight back as the next
+    call's `after`, even on an empty page — design.md §4."""
+    job = _job(fake_client)
+    event = _event(fake_client, job["id"])
+
+    response = client.get(f"/api/agent1/jobs/{job['id']}/events", params={"after": event["id"]})
+
+    body = response.json()
+    assert body["events"] == []
+    assert body["next_cursor"] == event["id"]
+
+
+def test_get_job_events_with_no_events_yet_returns_the_requested_after_as_cursor(client, fake_client):
+    job = _job(fake_client)
+
+    response = client.get(f"/api/agent1/jobs/{job['id']}/events", params={"after": 7})
+
+    body = response.json()
+    assert body["events"] == []
+    assert body["next_cursor"] == 7
+
+
+def test_get_job_events_respects_the_limit_cap(client, fake_client):
+    job = _job(fake_client)
+    events = [_event(fake_client, job["id"], message=f"event {i}") for i in range(5)]
+
+    response = client.get(f"/api/agent1/jobs/{job['id']}/events", params={"limit": 2})
+
+    body = response.json()
+    assert [e["id"] for e in body["events"]] == [events[0]["id"], events[1]["id"]]
+    assert body["next_cursor"] == events[1]["id"]
+
+
+def test_get_job_events_rejects_limit_over_the_max(client, fake_client):
+    job = _job(fake_client)
+
+    response = client.get(f"/api/agent1/jobs/{job['id']}/events", params={"limit": 501})
+
+    assert response.status_code == 422
+
+
+def test_get_job_events_rejects_a_negative_after(client, fake_client):
+    job = _job(fake_client)
+
+    response = client.get(f"/api/agent1/jobs/{job['id']}/events", params={"after": -1})
+
+    assert response.status_code == 422
+
+
+def test_get_job_events_does_not_require_job_to_be_done(client, fake_client):
+    job = _job(fake_client, status="queued")
+
+    response = client.get(f"/api/agent1/jobs/{job['id']}/events")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+
+
+def test_get_job_events_missing_job_returns_404(client):
+    response = client.get("/api/agent1/jobs/does-not-exist/events")
+
+    assert response.status_code == 404
+
+
+def test_get_job_events_does_not_leak_another_orgs_job(client, fake_client):
+    job = _job(fake_client, org_id="org-other")
+
+    response = client.get(f"/api/agent1/jobs/{job['id']}/events")
+
+    assert response.status_code == 404
+
+
+def test_get_job_events_does_not_leak_another_orgs_events(client, fake_client):
+    """Defense-in-depth on the events query itself (filtered by org_id, not just the
+    job lookup) — same pattern as every other worker/org-scoped read in this codebase,
+    even though workflow_events.workflow_id can't actually collide across orgs in
+    practice (it's always this org's own job id)."""
+    job = _job(fake_client)
+    _event(fake_client, job["id"], org_id="org-other")
+
+    response = client.get(f"/api/agent1/jobs/{job['id']}/events")
+
+    assert response.json()["events"] == []
+
+
+def test_get_job_events_missing_auth_returns_401():
+    app = create_app()
+    unauthenticated = TestClient(app)
+
+    response = unauthenticated.get("/api/agent1/jobs/some-id/events")
+
+    assert response.status_code == 401
+
+
+def _create_job(client):
+    return client.post(
+        "/api/agent1/jobs",
+        json={"source_type": "github", "repo_url": "https://github.com/org/repo"},
+    ).json()["job_id"]
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_cancel_job_stops_a_queued_or_running_job(client, fake_client, enqueued, service_client, status):
+    job_id = _create_job(client)
+    fake_client.table("ingestion_jobs").rows[0]["status"] = status
+
+    response = client.post(f"/api/agent1/jobs/{job_id}/cancel")
+
+    assert response.status_code == 200
+    assert response.json() == {"job_id": job_id, "status": "cancelled"}
+    assert fake_client.table("ingestion_jobs").rows[0]["status"] == "cancelled"
+    assert client.get(f"/api/agent1/jobs/{job_id}").json()["status"] == "cancelled"
+
+
+def test_cancel_job_is_idempotent(client, fake_client, enqueued, service_client):
+    job_id = _create_job(client)
+    client.post(f"/api/agent1/jobs/{job_id}/cancel")
+
+    again = client.post(f"/api/agent1/jobs/{job_id}/cancel")
+
+    assert again.status_code == 200
+    assert again.json()["status"] == "cancelled"
+
+
+@pytest.mark.parametrize("status", ["done", "failed"])
+def test_cancel_job_refuses_a_finished_job_and_leaves_it_alone(client, fake_client, enqueued, service_client, status):
+    job_id = _create_job(client)
+    fake_client.table("ingestion_jobs").rows[0]["status"] = status
+
+    response = client.post(f"/api/agent1/jobs/{job_id}/cancel")
+
+    assert response.status_code == 409
+    assert fake_client.table("ingestion_jobs").rows[0]["status"] == status
+
+
+def test_cancel_job_missing_returns_404(client, service_client):
+    assert client.post("/api/agent1/jobs/does-not-exist/cancel").status_code == 404
+
+
+def test_cancel_job_other_orgs_job_returns_404_and_is_untouched(client, fake_client, enqueued, service_client):
+    job_id = _create_job(client)
+    fake_client.table("ingestion_jobs").rows[0]["org_id"] = "other-org"
+
+    assert client.post(f"/api/agent1/jobs/{job_id}/cancel").status_code == 404
+    assert fake_client.table("ingestion_jobs").rows[0]["status"] == "queued"
+
+
+def test_cancel_job_missing_auth_returns_401():
+    response = TestClient(create_app()).post("/api/agent1/jobs/abc/cancel")
+    assert response.status_code == 401
+
+
+def _queued_job(client):
+    return _create_job(client)
+
+
+def test_a_queued_job_reports_how_many_jobs_are_ahead(client, fake_client, enqueued):
+    first = _queued_job(client)
+    second = _queued_job(client)
+    third = _queued_job(client)
+
+    assert client.get(f"/api/agent1/jobs/{first}").json()["queue_position"] == 0
+    assert client.get(f"/api/agent1/jobs/{second}").json()["queue_position"] == 1
+    assert client.get(f"/api/agent1/jobs/{third}").json()["queue_position"] == 2
+
+
+def test_running_jobs_count_as_ahead(client, fake_client, enqueued):
+    running = _queued_job(client)
+    waiting = _queued_job(client)
+    fake_client.table("ingestion_jobs").rows[0]["status"] = "running"
+
+    assert client.get(f"/api/agent1/jobs/{running}").json()["queue_position"] is None
+    assert client.get(f"/api/agent1/jobs/{waiting}").json()["queue_position"] == 1
+
+
+def test_the_position_counts_other_orgs_jobs_but_reveals_nothing_about_them(client, fake_client, enqueued):
+    mine = _queued_job(client)
+    fake_client.table("ingestion_jobs").insert(
+        {"id": "other-job", "org_id": "other-org", "source_type": "github", "source_ref": "x", "status": "queued", "created_at": 0}
+    ).execute()
+
+    body = client.get(f"/api/agent1/jobs/{mine}").json()
+
+    assert body["queue_position"] == 1
+    assert "other-job" not in str(body)
+
+
+def test_queue_position_is_null_unless_the_job_is_queued(client, fake_client, enqueued):
+    job_id = _queued_job(client)
+    for status in ("done", "failed", "cancelled"):
+        fake_client.table("ingestion_jobs").rows[0]["status"] = status
+        assert client.get(f"/api/agent1/jobs/{job_id}").json()["queue_position"] is None
+
+
+def test_a_failure_computing_the_position_does_not_fail_the_poll(client, fake_client, enqueued, monkeypatch):
+    job_id = _queued_job(client)
+
+    def boom():
+        raise RuntimeError("no service key")
+
+    monkeypatch.setattr(jobs_module, "get_service_role_client", boom)
+
+    response = client.get(f"/api/agent1/jobs/{job_id}")
+
+    assert response.status_code == 200
+    assert response.json()["queue_position"] is None

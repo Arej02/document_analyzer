@@ -29,6 +29,7 @@ AGENT2_TABLES = (
     "plan_overrides",
 )
 AGENT3_TABLES = ("execution_jobs", "unit_executions")
+WORKFLOW_EVENTS_TABLE = ("workflow_events",)
 
 
 @pytest.fixture
@@ -76,6 +77,7 @@ def _seed_project(client, org_id="org-123", source_type="github", source_ref="ht
     _insert(client, "secret_findings", org_id, {"job_id": job["id"], "entity_id": a["id"]})
     chunk = _insert(client, "source_chunks", org_id, {"job_id": job["id"], "file_path": "a.php", "content": "x"})
     _insert(client, "source_chunk_entities", org_id, {"job_id": job["id"], "chunk_id": chunk["id"], "entity_id": a["id"]})
+    _insert(client, "workflow_events", org_id, {"workflow_kind": "agent1_ingestion", "workflow_id": job["id"], "event_type": "activity"})
 
     planning_job = _insert(
         client, "planning_jobs", org_id, {"project_id": project["id"], "source_job_id": job["id"], "status": "done"}
@@ -90,6 +92,7 @@ def _seed_project(client, org_id="org-123", source_type="github", source_ref="ht
     _insert(client, "migration_plan_items", org_id, {"plan_id": plan["id"], "cluster_id": unit["id"]})
     _insert(client, "phase_approvals", org_id, {"plan_id": plan["id"], "phase_cluster_id": unit["id"]})
     _insert(client, "plan_overrides", org_id, {"plan_id": plan["id"], "kind": "pin"})
+    _insert(client, "workflow_events", org_id, {"workflow_kind": "agent2_planning", "workflow_id": planning_job["id"], "event_type": "activity"})
 
     execution_job = _insert(
         client,
@@ -98,6 +101,7 @@ def _seed_project(client, org_id="org-123", source_type="github", source_ref="ht
         {"project_id": project["id"], "plan_id": plan["id"], "source_job_id": job["id"], "status": "done"},
     )
     _insert(client, "unit_executions", org_id, {"execution_job_id": execution_job["id"], "cluster_id": unit["id"]})
+    _insert(client, "workflow_events", org_id, {"workflow_kind": "agent3_execution", "workflow_id": execution_job["id"], "event_type": "activity"})
     return project, job, planning_job
 
 
@@ -112,7 +116,7 @@ def test_delete_removes_the_project_and_everything_derived_from_it(api, fake_cli
 
     assert response.status_code == 204
     assert _rows(fake_client, "projects") == []
-    for table in AGENT1_TABLES + AGENT2_TABLES + AGENT3_TABLES + ("summary_cache",):
+    for table in AGENT1_TABLES + AGENT2_TABLES + AGENT3_TABLES + WORKFLOW_EVENTS_TABLE + ("summary_cache",):
         assert _rows(fake_client, table) == [], table
 
 
@@ -120,7 +124,10 @@ def test_delete_leaves_other_projects_and_other_orgs_untouched(api, fake_client)
     target, _, _ = _seed_project(fake_client)
     other, _, _ = _seed_project(fake_client, source_ref="https://github.com/org/other")
     foreign, _, _ = _seed_project(fake_client, org_id="org-999", source_ref="https://github.com/org/repo")
-    before = {t: len(_rows(fake_client, t)) for t in AGENT1_TABLES + AGENT2_TABLES + AGENT3_TABLES + ("summary_cache",)}
+    before = {
+        t: len(_rows(fake_client, t))
+        for t in AGENT1_TABLES + AGENT2_TABLES + AGENT3_TABLES + WORKFLOW_EVENTS_TABLE + ("summary_cache",)
+    }
 
     assert api.delete(f"/api/agent1/projects/{target['id']}").status_code == 204
 

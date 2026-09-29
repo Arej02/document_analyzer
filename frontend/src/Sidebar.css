@@ -1,0 +1,159 @@
+.app-shell { display: flex; align-items: flex-start; }
+
+.app-content { flex: 1 1 auto; min-width: 0; }
+
+.app-sidebar {
+  flex: 0 0 260px;
+  width: 260px;
+  box-sizing: border-box;
+  position: sticky;
+  top: 88px;
+  max-height: calc(100svh - 88px);
+  overflow-y: auto;
+  padding: 26px 14px 24px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.sidebar-heading {
+  margin: 0 0 8px 4px;
+  color: var(--muted-foreground);
+  font: 700 11px/1 'Geist Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+}
+
+.sidebar-error, .sidebar-loading { margin: 0 0 0 4px; padding: 2px 0; color: var(--muted-foreground); font-size: 12.5px; }
+.sidebar-error { color: var(--danger, #ff5c4d); }
+
+/* repository dropdown (RepositoryPicker) */
+.sidebar-picker { position: relative; margin-bottom: 14px; }
+.sidebar-picker-trigger {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: 9px; background: rgba(var(--neutral-rgb), .04);
+  color: var(--emphasis); text-align: left; transition: background .15s ease, border-color .15s ease;
+}
+.sidebar-picker-trigger:hover:not(:disabled) { background: rgba(var(--neutral-rgb), .08); border-color: rgba(var(--neutral-rgb), .28); }
+.sidebar-picker-trigger[aria-expanded="true"] { border-color: var(--ring); }
+.sidebar-picker-value { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.sidebar-picker-caption { color: var(--muted-foreground); font: 700 10px/1 'Geist Mono', monospace; text-transform: uppercase; letter-spacing: .6px; }
+.sidebar-picker-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.sidebar-picker-trigger .sidebar-chevron { flex: none; color: var(--muted-foreground); transform: rotate(90deg); }
+.sidebar-picker-trigger .sidebar-chevron-open { transform: rotate(-90deg); }
+.sidebar-picker-panel {
+  position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; right: 0; padding: 6px;
+  border: 1px solid var(--border); border-radius: 9px; background: var(--popover, var(--surface));
+  box-shadow: 0 12px 28px -12px rgb(0 0 0 / .45); max-height: 60svh; overflow-y: auto;
+}
+.sidebar-picker-list { list-style: none; margin: 0 0 6px; padding: 0 0 6px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 1px; }
+.sidebar-picker-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text); font-size: 13px; text-align: left;
+}
+.sidebar-picker-item:hover { background: rgba(var(--neutral-rgb), .08); }
+.sidebar-picker-item[aria-current="true"] { background: var(--accent-ui-soft); color: var(--emphasis); font-weight: 700; }
+.sidebar-picker-new { color: var(--emphasis); font-weight: 700; }
+.sidebar-new-analysis-icon { color: var(--ring); font-size: 15px; line-height: 1; }
+.sidebar-picker :focus-visible, .sidebar-more summary:focus-visible { outline: 2px solid var(--accent-ui); outline-offset: 2px; }
+.sidebar-chevron { display: inline-block; transition: transform .15s ease; font-size: 15px; }
+.sidebar-chevron-open { transform: rotate(90deg); }
+
+/* current repository's runs and plans, collapsed by default */
+.sidebar-more { margin-bottom: 4px; }
+.sidebar-more summary { cursor: pointer; padding: 4px; color: var(--muted-foreground); font: 700 11px/1.4 'Geist Mono', monospace; text-transform: uppercase; letter-spacing: .8px; }
+.sidebar-more[open] summary { margin-bottom: 8px; }
+.sidebar-more > .sidebar-subsection + .sidebar-subsection, .sidebar-more > .sidebar-view-project { margin-top: 10px; }
+.sidebar-more > .sidebar-view-project { display: block; }
+
+/* the open page's own outline goes here (plan sections) */
+.sidebar-outline:empty { display: none; }
+
+.sidebar-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: rgba(var(--neutral-rgb), .3); }
+.sidebar-dot-done { background: var(--ring); box-shadow: 0 0 6px rgba(160, 161, 207, .5); }
+.sidebar-dot-active { background: var(--warning); box-shadow: 0 0 6px rgba(255, 207, 122, .5); }
+.sidebar-dot-failed { background: #ff5c4d; box-shadow: 0 0 6px rgba(255, 92, 77, .45); }
+.sidebar-dot-idle { background: rgba(var(--neutral-rgb), .25); }
+
+.sidebar-subsection ul { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.sidebar-subheading { margin: 0; color: var(--muted-foreground); font: 700 10px/1 'Geist Mono', monospace; text-transform: uppercase; letter-spacing: .6px; }
+
+.sidebar-subitem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  text-align: left;
+}
+.sidebar-subitem:hover { background: rgba(var(--neutral-rgb), .06); color: var(--emphasis); }
+.sidebar-subitem-active { background: rgba(160, 161, 207, .14); color: var(--emphasis); font-weight: 700; }
+
+.sidebar-plan-status {
+  font: 700 9px/1 'Geist Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: rgba(142, 163, 201, .14);
+  white-space: nowrap;
+}
+.sidebar-plan-status-approved, .sidebar-plan-status-in_review { color: var(--emphasis); background: rgba(160, 161, 207, .14); }
+
+.sidebar-view-project {
+  align-self: flex-start;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ring);
+  font-size: 12px;
+  font-weight: 700;
+}
+.sidebar-view-project:hover { color: var(--emphasis); }
+
+.sidebar-mobile-toggle {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--emphasis);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sidebar-backdrop { display: none; }
+
+@media (max-width: 900px) {
+  .app-shell { display: block; }
+  .sidebar-mobile-toggle { display: inline-flex; }
+
+  .app-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100svh;
+    max-height: none;
+    z-index: 40;
+    transform: translateX(-100%);
+    transition: transform .2s ease;
+    box-shadow: 12px 0 32px -16px rgba(0, 0, 0, .35);
+  }
+  .app-sidebar.sidebar-open { transform: translateX(0); }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: rgba(0, 0, 0, .35);
+  }
+}

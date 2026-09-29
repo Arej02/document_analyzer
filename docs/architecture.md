@@ -97,6 +97,8 @@ flowchart TD
 
 Colours: blue is the `extracting` stage, orange is `summarizing`, green is `grounding`.
 
+Live progress is an event stream: each agent's worker appends its own rows to the shared `workflow_events` table, keyed by `(workflow_kind, workflow_id)`, and the frontend's run view polls them per job. No agent reads or writes another's events (`design.md` §2).
+
 ## 3. Graphify extraction (isolated, parse-only)
 
 Graphify's tree-sitter parsers read hostile input, so they run in a disposable container rather than in the worker. Nothing from the repository is ever executed. Mode is set with `AGENT1_GRAPHIFY`:

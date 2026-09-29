@@ -421,3 +421,22 @@ Agent 2 is read-only on Agent 1 tables. These are gaps it works around. Fixing t
 - **α (`AGENT2_EDGE_ALPHA`) had no effect.** The similarity term only reweights pairs that already have a structural edge (§3.5), so it can't connect a sparse graph. Results were identical at α = 0 and 0.5. If similarity should pull related-but-uncalled code together, it needs top-k similarity edges, which is a design change.
 - **`max_unit_size` = 25 was never binding** (largest unit: 12). A cap of 10 split one unit and changed nothing else.
 - **§9 defaults: no change yet.** A Laravel repo isn't representative of the WordPress target, and the real bottleneck is edge sparsity, not a parameter. Revisit after the first WordPress ingestion reaches `done` (`tasks_agent2.md` Phase 4).
+
+## 16. Plan document sections: data mapping and gap decisions
+
+Decided 2026-09-29 for the plan document redesign (`tasks_frontend.md` A2.1). Nothing here is built yet. The backend tasks are in `tasks_agent2.md` "Phase 7".
+
+**Findings that changed the plan** (checked against the code, not the spec):
+
+- **No extractor emits `dependency` entities.** `EntityType` (`worker/extract.py`) allows it, but the only dependency data Agent 1 has is the transient `dependencies` count in `stats.updated` (`worker/discovery.py`: distinct packages in composer.json / package.json / requirements.txt). There are no package names or versions in the database. The dependency inventory therefore has no source until Agent 1 persists one.
+- **`schema` entities are WordPress post types and meta keys only** (`wordpress_extractor.py`, `raw_facts.kind` = `post_type` / `meta`). They are not database tables, so "tables with row counts" has no source. Row counts don't exist at all (nothing reads a database).
+- **Risk is `low` / `medium` / `high`** (`risk_rollup._RISK_ORDER`). "critical" is dropped from the UI. The roll-up isn't extended.
+
+**Decisions**
+
+1. **Dependency inventory.** Agent 1 change first: persist declared packages as `dependency` entities (`name`, `raw_facts: {ecosystem, version_spec, manifest_path, dev}`), from the manifests `discovery.py` already reads. Agent 2 then shows them as facts: name, ecosystem, declared version, manifest. A **target equivalent** (e.g. Composer package → PyPI package) is inference: an LLM proposal stored on the plan (`plan_dependency_targets`: `plan_id`, `org_id`, `entity_id`, `target_name`, `rationale`, `grounding_status`), pinned to the plan like everything else, `unverified` unless grounded against the manifest line, and never used for ordering or risk. Until both exist the section shows the count only, from job stats.
+2. **Data layer and schema.** Shown from `schema` entities as they are: post types and meta keys, with file and line. No row counts, no "becomes" column. A "becomes" mapping (target model per post type) is out of scope until Agent 3's target architecture (`design_agent3.md`) defines target models. The section is titled for what it contains ("Post types and meta"), not "tables".
+3. **Open questions.** Only facade cycles (`facade_cycles`, `open_facade_flags`, acknowledgement) are real. Free-form decisions are **not** built: no table, no endpoint. Revisit only if reviewer notes (`tasks_frontend.md` A2.4) get a store.
+4. **Repository overview and dependency count** read Agent 1's existing endpoints directly (read-only, allowed): `GET /api/agent1/jobs/{source_job_id}` and the job's `stats.updated` events. No plan-scoped read model. The plan's `source_job_id` (§11) is the key.
+5. **Executive summary** composes phase and unit `summary_text` from `GET /plans/{plan_id}` plus Agent 1's job summary. Reports with `grounding_status = unverified` carry the badge.
+6. **Reviewer notes on a phase (decided 2026-09-29, `tasks_frontend.md` A2.4).** Already supported, no new table or endpoint: `phase_approvals.note` (§2) is written by `POST /plans/{plan_id}/phases/{phase_cluster_id}/approval` (§11) as part of the decision, and read back as `approval.note` on the plan overview. So a note is **saved, never a local draft, but only together with an approve or reject**. There is no note without a decision, and deciding again overwrites the previous note (one row per plan and phase, last write wins). A standalone comment thread per phase would need a new table (RLS, `org_id`, insert policy) and an endpoint. That is not built, and nothing in the frontend should pretend otherwise. The Markdown export includes a phase's note exactly as stored.

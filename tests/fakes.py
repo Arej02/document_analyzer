@@ -1,6 +1,6 @@
 """Fake Supabase client for testing request-handler code without a live project.
 
-Mimics only the chainable surface our code actually calls: table().select().eq().in_().order().limit().range().execute(),
+Mimics only the chainable surface our code actually calls: table().select().eq().gt().in_().order().limit().range().execute(),
 table().insert().execute(), table().update().eq().in_().execute(), table().delete().eq().in_().execute(), rpc().execute(), and storage.from_().upload()/.download().
 """
 
@@ -8,6 +8,10 @@ import itertools
 import uuid
 
 _row_sequence = itertools.count()
+# workflow_events is the one bigserial (not uuid) PK in the schema
+# (supabase/migrations/20260928030000_workflow_events.sql) — its cursor pagination
+# needs a real increasing int, not the uuid4 default every other table gets below.
+_workflow_event_id_sequence = itertools.count(1)
 
 
 class FakeResult:
@@ -21,7 +25,9 @@ class FakeQuery:
         self._filters: dict = {}
         self._order: tuple | None = None
         self._in: dict = {}
+        self._gt: dict = {}
         self._range: tuple | None = None
+        self._limit: int | None = None
 
     def select(self, *_args, **_kwargs):
         return self
@@ -34,11 +40,16 @@ class FakeQuery:
         self._in[key] = set(values)
         return self
 
+    def gt(self, key, value):
+        self._gt[key] = value
+        return self
+
     def order(self, column, desc=False):
         self._order = (column, desc)
         return self
 
-    def limit(self, _n):
+    def limit(self, n):
+        self._limit = n
         return self
 
     def range(self, start, end):
@@ -48,12 +59,15 @@ class FakeQuery:
     def execute(self):
         rows = [r for r in self._table.rows if all(r.get(k) == v for k, v in self._filters.items())]
         rows = [r for r in rows if all(r.get(k) in vs for k, vs in self._in.items())]
+        rows = [r for r in rows if all(r.get(k) is not None and r.get(k) > v for k, v in self._gt.items())]
         if self._order:
             column, desc = self._order
             rows = sorted(rows, key=lambda r: r.get(column), reverse=desc)
         if self._range:
             start, end = self._range
             rows = rows[start : end + 1]
+        elif self._limit is not None:
+            rows = rows[: self._limit]
         return FakeResult(rows)
 
 
@@ -66,7 +80,10 @@ class FakeInsert:
         inserted = []
         for row in self._rows:
             row = dict(row)
-            row.setdefault("id", str(uuid.uuid4()))
+            if self._table.name == "workflow_events":
+                row.setdefault("id", next(_workflow_event_id_sequence))  # bigserial, not uuid — see above
+            else:
+                row.setdefault("id", str(uuid.uuid4()))
             # A monotonic stand-in for created_at/updated_at so .order() has something to sort by.
             row.setdefault("created_at", next(_row_sequence))
             row.setdefault("updated_at", row["created_at"])
