@@ -396,7 +396,13 @@ def _run_one_unit(client: Client, execution_job: dict, state, item: dict, items_
             shutil.rmtree(workspace, ignore_errors=True)
 
         _upload_attempt(client, org_id, execution_job_id, cluster_id, attempt, own_files, test_files, sandbox_result)
-        last = {"generated": generated, "own_files": own_files, "sandbox": sandbox_result, "behaviour": behaviour_result}
+        last = {
+            "generated": generated,
+            "own_files": own_files,
+            "test_files": test_files,
+            "sandbox": sandbox_result,
+            "behaviour": behaviour_result,
+        }
 
         if _sandbox_succeeded(sandbox_result):
             update_unit_execution(
@@ -414,6 +420,7 @@ def _run_one_unit(client: Client, execution_job: dict, state, item: dict, items_
             )
             state.symbol_maps[cluster_id] = generated.symbol_map
             state.unit_files[cluster_id] = own_files
+            state.unit_test_files[cluster_id] = test_files
             return
 
         if attempt < max_attempts:
@@ -434,6 +441,7 @@ def _run_one_unit(client: Client, execution_job: dict, state, item: dict, items_
     )
     state.symbol_maps[cluster_id] = last["generated"].symbol_map
     state.unit_files[cluster_id] = last["own_files"]
+    state.unit_test_files[cluster_id] = last["test_files"]
 
 
 def run_units_stage(client: Client, execution_job: dict, state) -> None:

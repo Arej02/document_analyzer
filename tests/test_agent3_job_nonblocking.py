@@ -2,15 +2,14 @@
 `failed_verification` never block the job — design_agent3.md §4 "Failed
 dependencies", specs_agent3.md FR1/FR7.
 
-Run at the `process_execution_job` level (design_agent3.md §10), following
-`test_agent3_worker_run.py`'s `_patch_stages` pattern: `stage_assemble` and
-`stage_final_test` are monkeypatched to trivial no-ops — Phase 4 stand-ins,
-not real implementations, since assembling a project and running its full
-suite is out of this task's scope — while `stage_prepare` and `stage_units`
-run completely unmodified, against the real `agent2_cycle_repo` fixture
-pipeline (Agent 1's real PHP extractors + Agent 2's real worker, same as
-`test_agent2_pipeline_fixture.py`), a fake Agent 3 LLM client, and a
-monkeypatched `sandbox.run_pytest`.
+Run at the `process_execution_job` level (design_agent3.md §10): `stage_prepare`
+and `stage_units` run completely unmodified, against the real `agent2_cycle_repo`
+fixture pipeline (Agent 1's real PHP extractors + Agent 2's real worker, same as
+`test_agent2_pipeline_fixture.py`), a fake Agent 3 LLM client, and a monkeypatched
+`sandbox.run_pytest`. `stage_assemble`/`stage_final_test` are real too (Phase 4)
+— assembling every unit's last attempt (including the forced-`error` unit's stub)
+and running the whole suite once more is itself part of what this test checks:
+a job-level failure there would turn `done` into `failed`, which would be a bug.
 
 PHP-skip-guarded like that file: skipped on this machine (no `php` binary).
 """
@@ -24,11 +23,11 @@ from pathlib import Path
 import pytest
 
 from document_analyzer.agent2.worker import run as agent2_run
-from document_analyzer.agent3.router import _counts_by_job
+from document_analyzer.agent3.worker import assemble as assemble_module
 from document_analyzer.agent3.worker import run as agent3_run
 from document_analyzer.agent3.worker import units as units_module
 from document_analyzer.agent3.worker.sandbox import SandboxResult, TestCaseResult
-from document_analyzer.agent3.worker.status import TERMINAL_UNIT_STATUSES
+from document_analyzer.agent3.worker.status import TERMINAL_UNIT_STATUSES, counts_by_job
 from document_analyzer.worker.persist import persist_extraction_result
 from document_analyzer.worker.php_extractor import PhpExtractor
 from document_analyzer.worker.wordpress_extractor import WordPressExtractor
@@ -147,18 +146,40 @@ class FakeSandbox:
     """Identifies a workspace by its *own* unit's generated source (the last
     `importlib.import_module(...)` line in the per-unit `app/units/__init__.py`
     names this unit's slug), and fails only the one whose own code defines the
-    forced-failing marker function."""
+    forced-failing marker function.
+
+    Stage `final_test`'s whole-project workspace is distinguished from a
+    per-unit one by `README.md` (only `assemble.py` writes one) rather than by
+    counting `importlib.import_module(...)` lines — a per-unit workspace with
+    dependencies has more than one of those too (dependencies first, this
+    unit's own slug last, `units.py::_write_units_init`), so line-counting
+    would misidentify it."""
 
     def __init__(self):
         self.calls: list[str] = []
 
     def __call__(self, workspace, params) -> SandboxResult:
+        if (workspace / "README.md").exists():
+            return self._whole_project(workspace)
         init_text = (workspace / "app" / "units" / "__init__.py").read_text()
         own_slug = [line for line in init_text.splitlines() if "importlib.import_module" in line][-1].split("'")[1].rsplit(".", 1)[-1]
         own_module = workspace / "app" / "units" / own_slug / "module.py"
         own_code = own_module.read_text() if own_module.exists() else ""
         self.calls.append(own_slug)
         return _sandbox_result(failed=f"def {FAILING_MARKER}(" in own_code)
+
+    def _whole_project(self, workspace: Path) -> SandboxResult:
+        """The assembled tree still carries the failing unit's kept-but-still-failing
+        code (design_agent3.md §5: "stubs for error units", real code for everything
+        else), so the whole-suite run is expected to fail here too — recorded in
+        `final_test_summary`, never raised (§5's own "a failing final suite doesn't
+        fail the job" rule)."""
+        self.calls.append("__final__")
+        any_failing = any(
+            f"def {FAILING_MARKER}(" in module_path.read_text()
+            for module_path in (workspace / "app" / "units").glob("*/module.py")
+        )
+        return _sandbox_result(failed=any_failing)
 
 
 def _tar_fixture_repo(root: Path) -> bytes:
@@ -266,10 +287,7 @@ def test_error_and_failed_verification_units_never_block_the_job(monkeypatch):
     monkeypatch.setattr(agent3_run, "get_service_role_client", lambda: client)
     monkeypatch.setattr(units_module, "get_azure_openai_client", lambda: agent3_llm)
     monkeypatch.setattr(units_module, "run_pytest", fake_sandbox)
-    # Phase 4 stand-ins, not real implementations: assembling a project and running its
-    # full suite is out of scope for this check (tasks_agent3.md Phase 4).
-    monkeypatch.setattr(agent3_run, "stage_assemble", lambda c, execution_job, state: None)
-    monkeypatch.setattr(agent3_run, "stage_final_test", lambda c, execution_job, state: None)
+    monkeypatch.setattr(assemble_module, "run_pytest", fake_sandbox)
 
     agent3_run.process_execution_job("ej-1", ORG)
 
@@ -301,9 +319,9 @@ def test_error_and_failed_verification_units_never_block_the_job(monkeypatch):
     assert dependent_row["status"] in ("passed", "failed_verification")
     assert "built_on_failed_dependency" in dependent_row["flags"]
 
-    # unit_executions counts match router.py::_counts_by_job's own live computation —
+    # unit_executions counts match status.py::counts_by_job's own live computation —
     # the same shape/values the status and results endpoints would show a reviewer.
-    [counts] = _counts_by_job(client, ORG, ["ej-1"]).values()
+    [counts] = counts_by_job(client, ORG, ["ej-1"]).values()
     assert counts["total"] == len(rows)
     assert counts["done"] == len(rows)  # every unit is terminal
     assert counts["done"] == counts["passed"] + counts["failed_verification"] + counts["error"]
@@ -329,3 +347,12 @@ def test_error_and_failed_verification_units_never_block_the_job(monkeypatch):
     assert agent3_llm.calls  # at least one unit was generated
     non_error_units = sum(1 for r in rows.values() if r["status"] != "error")
     assert len(fake_sandbox.calls) >= non_error_units
+
+    # Stage assemble/final_test are real now (Phase 4): the job's own status stayed
+    # `done` (asserted above) even though the whole-suite run failed (the forced-
+    # failing unit's code is still in the assembled tree) — §5's "a failing final
+    # suite doesn't fail the job, it's reported" rule, not caught and hidden here.
+    assert "__final__" in fake_sandbox.calls
+    assert job_row["output_zip_path"] == f"{ORG}/ej-1/project.zip"
+    assert job_row["final_test_summary"]["failed"] >= 1
+    assert job_row["counts"] == counts
