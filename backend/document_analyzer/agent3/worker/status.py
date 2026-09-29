@@ -16,6 +16,11 @@ FIRST_STAGE = "prepare"
 # the router's live counts and the worker's resume logic (design_agent3.md §3).
 TERMINAL_UNIT_STATUSES = ("passed", "failed_verification", "error")
 
+# PostgREST caps a response at 1000 rows; unit_executions rows are paged past it
+# (same pattern as router.py / prepare.py), and job ids are chunked for `in_`.
+_PAGE_SIZE = 1000
+_IN_CHUNK = 200
+
 
 def mark_execution_running(client: Client, execution_job_id: str, org_id: str) -> None:
     """queued -> running, progress_stage -> prepare (the first stage)."""
@@ -92,3 +97,57 @@ def update_unit_execution(client: Client, execution_job_id: str, org_id: str, cl
         .eq("org_id", org_id)
         .execute()
     )
+
+
+def set_execution_output(
+    client: Client, execution_job_id: str, org_id: str, *, output_zip_path: str, counts: dict, final_test_summary: dict
+) -> None:
+    """Stage `final_test` (design_agent3.md §5), the last write before the stage loop's
+    own unconditional `mark_execution_done(...)` sets `status`/`progress_stage`. Same
+    `(id, org_id)` filter as every other execution_jobs write here."""
+    (
+        client.table("execution_jobs")
+        .update({"output_zip_path": output_zip_path, "counts": counts, "final_test_summary": final_test_summary})
+        .eq("id", execution_job_id)
+        .eq("org_id", org_id)
+        .execute()
+    )
+
+
+def _empty_counts() -> dict:
+    return {"total": 0, "done": 0, "passed": 0, "failed_verification": 0, "error": 0, "built_on_failed_dependency": 0}
+
+
+def counts_by_job(client: Client, org_id: str, execution_job_ids: list[str]) -> dict[str, dict]:
+    """Live unit counts per execution job (design_agent3.md §2, §9), read in batches
+    rather than one query per job. Moved here from `agent3/router.py` (2026-09-28):
+    both the router's live status poll and stage `final_test`'s persisted `counts`
+    need the same computation, and this module (not the router) is the shared home,
+    since the worker must never import from the router (CLAUDE.md agent-boundary rule
+    applies within an agent's own router/worker split too — wrong direction either way)."""
+    counts = {job_id: _empty_counts() for job_id in execution_job_ids}
+    for i in range(0, len(execution_job_ids), _IN_CHUNK):
+        chunk = execution_job_ids[i : i + _IN_CHUNK]
+        start = 0
+        while True:
+            page = (
+                client.table("unit_executions")
+                .select("id, execution_job_id, status, flags")
+                .eq("org_id", org_id)
+                .in_("execution_job_id", chunk)
+                .order("id")
+                .range(start, start + _PAGE_SIZE - 1)
+                .execute()
+            ).data
+            for unit in page:
+                job_counts = counts[unit["execution_job_id"]]
+                job_counts["total"] += 1
+                if unit["status"] in TERMINAL_UNIT_STATUSES:
+                    job_counts["done"] += 1
+                    job_counts[unit["status"]] += 1
+                if "built_on_failed_dependency" in (unit.get("flags") or []):
+                    job_counts["built_on_failed_dependency"] += 1
+            if len(page) < _PAGE_SIZE:
+                break
+            start += _PAGE_SIZE
+    return counts

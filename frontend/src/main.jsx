@@ -2470,9 +2470,14 @@ function PlanPage({
 // (design_agent3.md §9), polled until the job is done or failed. `counts` is computed
 // live from the job's unit rows, so "units done" moves while stage `units` runs.
 // `done` means every unit reached a verdict, not that every unit passed (specs FR1).
-function ExecutionStatusPage({ executionJobId, onBackToPlan, onBackToForm }) {
+function ExecutionStatusPage({ executionJobId, selectedUnitId, onSelectUnit, onCloseUnit, onBackToPlan, onBackToForm }) {
   const [job, setJob] = useState(null)
   const [error, setError] = useState(null)
+  // Not URL-synced: the "View results" button (tasks_agent3.md Phase 5, deferred
+  // from Phase 1) toggles between this page's own status view and ExecutionResultsPage,
+  // both still under the single ?execution=<id> page (frontend conventions, §12).
+  // A deep link straight to a unit (?execution=&unit=) starts on results, not status.
+  const [view, setView] = useState(selectedUnitId ? 'results' : 'status')
   const apiFetch = useApiFetch()
 
   useEffect(() => {
@@ -2502,6 +2507,20 @@ function ExecutionStatusPage({ executionJobId, onBackToPlan, onBackToForm }) {
     poll()
     return () => { cancelled = true; clearTimeout(timeoutId) }
   }, [executionJobId])
+
+  if (view === 'results' && job) {
+    return (
+      <ExecutionResultsPage
+        executionJobId={executionJobId}
+        job={job}
+        selectedUnitId={selectedUnitId}
+        onSelectUnit={onSelectUnit}
+        onCloseUnit={onCloseUnit}
+        onBack={() => { onCloseUnit(); setView('status') }}
+        onBackToPlan={() => onBackToPlan(job.plan_id)}
+      />
+    )
+  }
 
   const counts = job?.counts
   const failed = job?.status === 'failed'
@@ -2568,7 +2587,318 @@ function ExecutionStatusPage({ executionJobId, onBackToPlan, onBackToForm }) {
         {(failed || done) && (
           <PrimaryButton label="Back to plan" type="button" onClick={() => onBackToPlan(job.plan_id)} style={{ marginTop: 8 }} />
         )}
+        {done && (
+          <PrimaryButton label="View results" type="button" onClick={() => setView('results')} style={{ marginTop: 8, marginLeft: 8 }} />
+        )}
         {error && <PrimaryButton label="Back" type="button" onClick={onBackToForm} style={{ marginTop: 8 }} />}
+      </section>
+    </main>
+  )
+}
+
+// tasks_agent3.md Phase 5 "Results" — GET /api/agent3/executions/{id}/units
+// (design_agent3.md §9). Reached from ExecutionStatusPage's "View results" button
+// on `done`, still under the same ?execution=<id> page (no separate URL param —
+// frontend conventions, §12). `selectedUnitId` (`&unit=`, tasks_agent3.md Phase 5
+// "Unit detail") swaps the whole page for ExecutionUnitPage rather than showing it
+// inline, unlike PlanUnitDetail — legacy-vs-generated source panes need the width.
+function ExecutionResultsPage({ executionJobId, job, selectedUnitId, onSelectUnit, onCloseUnit, onBack, onBackToPlan }) {
+  const [data, setData] = useState(null)
+  const [error, setError] = useState(null)
+  const apiFetch = useApiFetch()
+
+  useEffect(() => {
+    let cancelled = false
+    setData(null)
+    setError(null)
+    ;(async () => {
+      try {
+        const response = await apiFetch(`/api/agent3/executions/${executionJobId}/units`)
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(formatJobErrorMessage(response.status, body))
+        }
+        const body = await response.json()
+        if (!cancelled) setData(body)
+      } catch (err) {
+        if (!cancelled) setError(err.message)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [executionJobId])
+
+  if (selectedUnitId) {
+    return <ExecutionUnitPage executionJobId={executionJobId} clusterId={selectedUnitId} onClose={onCloseUnit} />
+  }
+
+  return (
+    <main className="page-shell">
+      <section className="hero" aria-label="Code generation results">
+        <button type="button" className="token-toggle back-link" onClick={onBack}>
+          <span>‹</span> Back to status
+        </button>
+        <p className="eyebrow">CODE GENERATION RESULTS</p>
+        <h1>Execution <code>{executionJobId}</code> results</h1>
+        {job?.final_test_summary && (
+          <p className="reingest-hint">
+            Final test run: {job.final_test_summary.passed} passed, {job.final_test_summary.failed} failed
+            {job.final_test_summary.errors ? `, ${job.final_test_summary.errors} errors` : ''}.
+          </p>
+        )}
+        {error && <p className="error">{error}</p>}
+        {!error && !data && <p className="summary-loading">Loading results…</p>}
+        {data && data.phases.length === 0 && <p className="summary-loading">This execution has no units.</p>}
+        {data && data.phases.length > 0 && (
+          <ol className="plan-phases">
+            {data.phases.map((phase) => (
+              <li key={phase.phase_cluster_id} className="plan-phase">
+                <div className="plan-phase-header">
+                  <span className="plan-phase-title">
+                    Phase {phase.phase_order}{phase.label ? ` · ${phase.label}` : ''}
+                  </span>
+                  <span className="plan-phase-count">
+                    {phase.units.length} {phase.units.length === 1 ? 'unit' : 'units'}
+                  </span>
+                </div>
+                <div className="plan-phase-body">
+                  <ol className="plan-units">
+                    {phase.units.map((unit) => (
+                      <ExecutionUnitRow key={unit.cluster_id} unit={unit} onSelect={onSelectUnit} />
+                    ))}
+                  </ol>
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+        <PrimaryButton label="Back to plan" type="button" onClick={onBackToPlan} style={{ marginTop: 8 }} />
+        <DownloadProjectButton executionJobId={executionJobId} hasOutput={Boolean(job?.has_output)} />
+      </section>
+    </main>
+  )
+}
+
+// tasks_agent3.md Phase 5 "Download" — GET /api/agent3/executions/{id}/download
+// (design_agent3.md §9): a 5-minute signed URL, `409` until the output exists.
+// Disabled with a reason until `job.has_output`, same convention as
+// GenerateCodeAction's `generateCodeBlocker` hint.
+function DownloadProjectButton({ executionJobId, hasOutput }) {
+  const [error, setError] = useState(null)
+  const [downloading, setDownloading] = useState(false)
+  const apiFetch = useApiFetch()
+
+  const download = async () => {
+    setError(null)
+    setDownloading(true)
+    try {
+      const response = await apiFetch(`/api/agent3/executions/${executionJobId}/download`)
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(formatJobErrorMessage(response.status, body))
+      }
+      const data = await response.json()
+      window.location.href = data.url
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      {!hasOutput && <p className="reingest-hint">Download is available once this execution finishes.</p>}
+      <PrimaryButton
+        label="Download project (.zip)"
+        type="button"
+        disabled={!hasOutput}
+        loading={downloading}
+        onClick={download}
+      />
+      {error && <p className="error" role="alert">{error}</p>}
+    </div>
+  )
+}
+
+// Agent 3 unit flags (unit_executions.flags, design_agent3.md §2): unverified_inputs,
+// built_on_failed_dependency, stubbed — all caveats on how trustworthy the verdict is,
+// unlike Agent 2's foundation/merged flags, so all three render as a warn-style pill.
+function ExecutionUnitRow({ unit, onSelect }) {
+  const contract = unit.test_summary?.contract
+  const behaviour = unit.test_summary?.behaviour
+  return (
+    <li className="plan-unit-row">
+      <button type="button" className="plan-unit" onClick={() => onSelect(unit.cluster_id)}>
+        <span className="plan-unit-order">{unit.unit_order}</span>
+        <span className="plan-unit-label">{unit.label || <em>Unlabeled unit</em>}</span>
+        <span className="plan-unit-meta">
+          <span className={`plan-status plan-status-${unit.status}`}>{unit.status.replace(/_/g, ' ')}</span>
+          {unit.flags.map((flag) => (
+            <span key={flag} className="plan-flag plan-flag-warn">{flag.replace(/_/g, ' ')}</span>
+          ))}
+          <span className="plan-unit-size">{unit.attempts} {unit.attempts === 1 ? 'attempt' : 'attempts'}</span>
+          {contract && (
+            <span className={`plan-flag${contract.failed > 0 ? ' plan-flag-warn' : ''}`}>
+              contract {contract.passed}/{contract.passed + contract.failed}
+            </span>
+          )}
+          {behaviour && behaviour.generated === false && (
+            <span className="plan-flag plan-flag-warn">behaviour not generated</span>
+          )}
+          {behaviour && behaviour.generated !== false && (
+            <span className={`plan-flag${behaviour.failed > 0 ? ' plan-flag-warn' : ''}`}>
+              behaviour {behaviour.passed}/{behaviour.passed + behaviour.failed}
+            </span>
+          )}
+        </span>
+      </button>
+    </li>
+  )
+}
+
+// A row of chip buttons (one per file/member) that picks which one's content shows
+// below — the same click-to-select-then-render pattern as the "Ask the codebase"
+// citation chips, reused here for both the legacy and generated source panes.
+function FilePickerPane({ title, items, emptyMessage }) {
+  const [selectedKey, setSelectedKey] = useState(items[0]?.key ?? null)
+  useEffect(() => { setSelectedKey(items[0]?.key ?? null) }, [items])
+  const selected = items.find((item) => item.key === selectedKey)
+
+  return (
+    <div className="execution-file-pane">
+      <h4>{title}</h4>
+      {items.length === 0 ? (
+        <p className="entity-table-empty">{emptyMessage}</p>
+      ) : (
+        <>
+          <div className="summary-badges">
+            {items.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                className={`citation-chip${item.key === selectedKey ? ' citation-chip-active' : ''}`}
+                onClick={() => setSelectedKey(item.key)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          {selected && (
+            <figure className="ask-excerpt">
+              {selected.meta && <figcaption>{selected.meta}</figcaption>}
+              <pre>{selected.content ?? 'No source available for this member.'}</pre>
+            </figure>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// tasks_agent3.md Phase 5 "Unit detail" — GET /api/agent3/executions/{id}/units/{cluster_id}
+// (design_agent3.md §9). Reached via ExecutionResultsPage's now-clickable unit rows
+// (?execution=&unit=, mirroring PlanPage's ?unit= sub-param mechanism, §12).
+function ExecutionUnitPage({ executionJobId, clusterId, onClose }) {
+  const [unit, setUnit] = useState(null)
+  const [error, setError] = useState(null)
+  const apiFetch = useApiFetch()
+
+  useEffect(() => {
+    let cancelled = false
+    setUnit(null)
+    setError(null)
+    apiFetch(`/api/agent3/executions/${executionJobId}/units/${clusterId}`)
+      .then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(formatJobErrorMessage(response.status, body))
+        }
+        return response.json()
+      })
+      .then((data) => { if (!cancelled) setUnit(data) })
+      .catch((err) => { if (!cancelled) setError(err.message) })
+    return () => { cancelled = true }
+  }, [executionJobId, clusterId])
+
+  const legacyItems = (unit?.legacy || []).map((member) => ({
+    key: member.entity_id,
+    label: member.name,
+    meta: `${member.file_path}${member.line ? ` lines ${member.line}–${member.end_line}` : ''}`,
+    content: member.source,
+  }))
+  const fileItems = (unit?.files || []).map((file) => ({ key: file.path, label: file.path, meta: file.path, content: file.content }))
+  const symbolEntries = Object.entries(unit?.symbol_map || {})
+
+  return (
+    <main className="page-shell">
+      <section className="hero" aria-label="Unit detail">
+        <button type="button" className="token-toggle back-link" onClick={onClose}>
+          <span>‹</span> Back to results
+        </button>
+        <p className="eyebrow">UNIT</p>
+        <h1><code>{clusterId}</code></h1>
+        {error && <p className="error">{error}</p>}
+        {!error && !unit && <p className="summary-loading">Loading unit…</p>}
+        {unit && (
+          <>
+            <div className="summary-badges">
+              <span className={`plan-status plan-status-${unit.status}`}>{unit.status.replace(/_/g, ' ')}</span>
+              <span className="plan-unit-size">{unit.attempts} {unit.attempts === 1 ? 'attempt' : 'attempts'}</span>
+              {unit.flags.map((flag) => (
+                <span key={flag} className="plan-flag plan-flag-warn">{flag.replace(/_/g, ' ')}</span>
+              ))}
+            </div>
+            {unit.last_error && <p className="error">{unit.last_error}</p>}
+
+            <div className="execution-file-panes">
+              <FilePickerPane title="Legacy source" items={legacyItems} emptyMessage="This unit has no member source to show." />
+              <FilePickerPane title="Generated code" items={fileItems} emptyMessage="No generated code was uploaded for this unit." />
+            </div>
+
+            <h4>Tests</h4>
+            {(unit.tests || []).length === 0 ? (
+              <p className="entity-table-empty">No test files were uploaded for this unit.</p>
+            ) : (
+              unit.tests.map((test) => (
+                <figure key={test.path} className="ask-excerpt">
+                  <figcaption><code>{test.path}</code></figcaption>
+                  <pre>{test.content}</pre>
+                </figure>
+              ))
+            )}
+
+            <h4>Log</h4>
+            {unit.log ? (
+              <details className="coverage-details">
+                <summary>Sandbox output</summary>
+                <pre>{unit.log}</pre>
+              </details>
+            ) : (
+              <p className="entity-table-empty">No log was recorded for this unit.</p>
+            )}
+
+            <h4>Symbol map</h4>
+            {symbolEntries.length === 0 ? (
+              <p className="entity-table-empty">No symbol map was recorded for this unit.</p>
+            ) : (
+              <div className="plan-table-scroll">
+                <table className="entity-table">
+                  <thead><tr><th>Entity</th><th>Module</th><th>Name</th><th>Kind</th></tr></thead>
+                  <tbody>
+                    {symbolEntries.map(([entityId, symbol]) => (
+                      <tr key={entityId}>
+                        <td className="entity-file-path">{entityId}</td>
+                        <td><code>{symbol.python_module}</code></td>
+                        <td><code>{symbol.python_name}</code></td>
+                        <td>{symbol.kind}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
       </section>
     </main>
   )
@@ -2576,8 +2906,10 @@ function ExecutionStatusPage({ executionJobId, onBackToPlan, onBackToForm }) {
 
 // Query params that select a page (no router — see tasks_agent2.md conventions).
 const PAGE_PARAMS = ['job', 'project', 'planning_job', 'plan', 'execution']
-// Params that refine the ?plan= page; every other navigation clears them.
-const PLAN_SUB_PARAMS = ['unit', 'phase_id']
+// Params that refine a page: `unit`/`phase_id` alongside `?plan=` (tasks_agent2.md),
+// and `unit` alongside `?execution=` too (tasks_agent3.md §12: "?execution=<id>
+// (optionally &unit=<cluster_id>)") — every other navigation clears them.
+const SUB_PARAMS = ['unit', 'phase_id']
 
 function App() {
   const [url, setUrl] = useState('')
@@ -2592,32 +2924,35 @@ function App() {
     const params = new URLSearchParams(window.location.search)
     const param = PAGE_PARAMS.find((name) => params.get(name))
     if (!param) return null
-    return param === 'plan'
-      ? { param, id: params.get(param), unit: params.get('unit'), phaseId: params.get('phase_id') }
-      : { param, id: params.get(param) }
+    if (param === 'plan') return { param, id: params.get(param), unit: params.get('unit'), phaseId: params.get('phase_id') }
+    if (param === 'execution') return { param, id: params.get(param), unit: params.get('unit') }
+    return { param, id: params.get(param) }
   })
   const apiFetch = useApiFetch()
 
   const navigateToPage = (param, id) => {
     const url = new URL(window.location.href)
     PAGE_PARAMS.forEach((name) => url.searchParams.delete(name))
-    PLAN_SUB_PARAMS.forEach((name) => url.searchParams.delete(name)) // only meaningful alongside ?plan=
+    SUB_PARAMS.forEach((name) => url.searchParams.delete(name)) // only meaningful alongside ?plan=/?execution=
     if (param) url.searchParams.set(param, id)
     window.history.pushState({}, '', url)
     setPage(param ? { param, id } : null)
   }
-  // `&unit=` and `&phase_id=` sit alongside `?plan=` rather than replacing it
-  // (tasks_agent2.md conventions). A null value removes the param.
-  const setPlanParam = (param, key, value) => {
+  // `&unit=` and `&phase_id=` sit alongside `?plan=`/`?execution=` rather than
+  // replacing the page (tasks_agent2.md/tasks_agent3.md conventions). A null value
+  // removes the param.
+  const setSubParam = (param, key, value) => {
     const url = new URL(window.location.href)
     if (value) url.searchParams.set(param, value)
     else url.searchParams.delete(param)
     window.history.pushState({}, '', url)
     setPage((current) => ({ ...current, [key]: value }))
   }
-  const selectPlanUnit = (clusterId) => setPlanParam('unit', 'unit', clusterId)
-  const closePlanUnit = () => setPlanParam('unit', 'unit', null)
-  const selectPlanPhase = (phaseId) => setPlanParam('phase_id', 'phaseId', phaseId)
+  const selectPlanUnit = (clusterId) => setSubParam('unit', 'unit', clusterId)
+  const closePlanUnit = () => setSubParam('unit', 'unit', null)
+  const selectPlanPhase = (phaseId) => setSubParam('phase_id', 'phaseId', phaseId)
+  const selectExecutionUnit = (clusterId) => setSubParam('unit', 'unit', clusterId)
+  const closeExecutionUnit = () => setSubParam('unit', 'unit', null)
   const navigateToJobStatus = (jobId) => navigateToPage('job', jobId)
   const navigateToProject = (projectId) => navigateToPage('project', projectId)
   const navigateToPlanningJob = (planningJobId) => navigateToPage('planning_job', planningJobId)
@@ -2704,7 +3039,16 @@ function App() {
   }
 
   if (page?.param === 'execution') {
-    return <ExecutionStatusPage executionJobId={page.id} onBackToPlan={navigateToPlan} onBackToForm={backToForm} />
+    return (
+      <ExecutionStatusPage
+        executionJobId={page.id}
+        selectedUnitId={page.unit}
+        onSelectUnit={selectExecutionUnit}
+        onCloseUnit={closeExecutionUnit}
+        onBackToPlan={navigateToPlan}
+        onBackToForm={backToForm}
+      />
+    )
   }
 
   if (page?.param === 'project') {

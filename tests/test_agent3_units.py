@@ -18,10 +18,8 @@ Three groups:
    running one real unit through the actual sandbox.
 """
 
-import io
 import json
 import shutil
-import tarfile
 
 import pytest
 
@@ -31,6 +29,8 @@ from document_analyzer.agent3.worker.run import ExecutionState
 from document_analyzer.agent3.worker.sandbox import SandboxParams, SandboxResult, TestCaseResult
 from document_analyzer.supabase_client import insert_scoped
 
+from agent3_fixtures import make_tarball as _make_tarball
+from agent3_fixtures import seed_plan as _seed_plan
 from fakes import FakeClient
 
 ORG = "org-1"
@@ -446,33 +446,6 @@ def test_resume_skips_already_terminal_units(monkeypatch, client, two_unit_state
 # never touches it — same realistic-synthetic-rows pattern as
 # test_agent3_prepare.py, not the php-driven Agent 1/2 pipeline)
 # --------------------------------------------------------------------------- #
-
-
-def _make_tarball(files: dict[str, bytes]) -> bytes:
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as archive:
-        for name, content in files.items():
-            info = tarfile.TarInfo(name=name)
-            info.size = len(content)
-            archive.addfile(info, io.BytesIO(content))
-    return buf.getvalue()
-
-
-def _seed_plan(client) -> tuple[dict, dict, dict]:
-    project = insert_scoped(client, "projects", ORG, {"source_type": "github", "source_ref": "https://x/y"}).data[0]
-    job = insert_scoped(
-        client, "ingestion_jobs", ORG, {"project_id": project["id"], "status": "done", "source_snapshot_path": f"{ORG}/job/source.tar.gz"}
-    ).data[0]
-    project["latest_job_id"] = job["id"]
-    planning_job = insert_scoped(client, "planning_jobs", ORG, {"project_id": project["id"]}).data[0]
-    plan = insert_scoped(
-        client,
-        "migration_plans",
-        ORG,
-        {"project_id": project["id"], "source_job_id": job["id"], "planning_job_id": planning_job["id"], "status": "approved", "version": 1},
-    ).data[0]
-    client.storage.from_("agent1-snapshots").upload(job["source_snapshot_path"], _make_tarball({"x.php": b"<?php\n"}))
-    return job, plan, project
 
 
 def _seed_plan_unit(client, plan, job, *, cluster_id, phase_order, unit_order, entity_id, name, test_contract) -> None:

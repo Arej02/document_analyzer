@@ -11,11 +11,10 @@ reasoning as Agents 1 and 2.
 
 Run via `uv run document-analyzer-executor` (see pyproject.toml).
 
-Each stage will live in its own module (context.py, generate.py, tests_gen.py,
+Each stage lives in its own module (context.py, generate.py, tests_gen.py,
 sandbox.py, assemble.py). The in-memory results one stage hands the next travel
-in a per-job `ExecutionState`. The stages are stubs until Phases 2-4
-(tasks_agent3.md); a stub raises, so a job can never be marked `done` without
-having generated anything.
+in a per-job `ExecutionState`. All four stages are real as of tasks_agent3.md
+Phase 4.
 """
 
 import asyncio
@@ -32,6 +31,7 @@ load_dotenv()  # must run before any env-reading import below (design.md §3 bug
 
 from supabase import Client
 
+from document_analyzer.agent3.worker.assemble import run_assemble_stage, run_final_test_stage
 from document_analyzer.agent3.worker.prepare import run_prepare_stage
 from document_analyzer.agent3.worker.sandbox import SandboxParams, check_sandbox_available, require_gvisor_from_env
 from document_analyzer.agent3.worker.units import run_units_stage
@@ -90,17 +90,24 @@ class ExecutionState:
     # would need units.py to fetch its files from storage instead (tasks_agent3.md
     # Phase 6 "Redelivery" owns full resumption correctness, not this task).
     unit_files: dict[str, list] = field(default_factory=dict)
+    # cluster_id -> that unit's last-attempt test files (contract + behaviour, §6),
+    # set alongside unit_files at the same two sites (passed, failed_verification —
+    # never for an error/stub unit, which has no tests to have run). Added for stage
+    # `assemble` (§5), so it can rebuild each unit's tests/units/{slug}/... without
+    # regenerating them (contract tests are deterministic, but behaviour tests are an
+    # LLM call and must stay pinned to what actually ran).
+    unit_test_files: dict[str, list] = field(default_factory=dict)
     # cluster_ids whose unit_files is a generate_stub_unit stand-in, not real
     # generated code — a unit depending on one of these gets flagged
     # built_on_failed_dependency (specs FR7).
     stubbed_units: set[str] = field(default_factory=set)
+    # The whole assembled project tree (stage `assemble`, §5), consumed by stage
+    # `final_test`. Removed by process_execution_job in a finally, same as
+    # snapshot_dir, whichever stage the job ends at.
+    project_dir: Path | None = None
 
 
 StageFn = Callable[[Client, dict, ExecutionState], None]
-
-
-def _not_implemented(stage: str) -> None:
-    raise NotImplementedError(f"stage '{stage}' is not implemented yet (tasks_agent3.md)")
 
 
 def stage_prepare(client: Client, execution_job: dict, state: ExecutionState) -> None:
@@ -114,13 +121,13 @@ def stage_units(client: Client, execution_job: dict, state: ExecutionState) -> N
 
 
 def stage_assemble(client: Client, execution_job: dict, state: ExecutionState) -> None:
-    """design_agent3.md §5. Stub until tasks_agent3.md Phase 4."""
-    _not_implemented("assemble")
+    """design_agent3.md §5."""
+    run_assemble_stage(client, execution_job, state)
 
 
 def stage_final_test(client: Client, execution_job: dict, state: ExecutionState) -> None:
-    """design_agent3.md §5. Stub until tasks_agent3.md Phase 4."""
-    _not_implemented("final_test")
+    """design_agent3.md §5."""
+    run_final_test_stage(client, execution_job, state)
 
 
 def _stages() -> list[tuple[str, StageFn]]:
@@ -173,10 +180,12 @@ def process_execution_job(execution_job_id: str, org_id: str) -> None:
         logger.exception("execution job %s failed", execution_job_id)
         mark_execution_failed(client, execution_job_id, org_id, str(exc) or type(exc).__name__)
     finally:
-        # The unpacked source snapshot (stage `prepare`) must not outlive the job,
-        # whatever stage it ended at.
+        # The unpacked source snapshot (stage `prepare`) and the assembled project
+        # tree (stage `assemble`) must not outlive the job, whatever stage it ended at.
         if state is not None and state.snapshot_dir is not None:
             shutil.rmtree(state.snapshot_dir, ignore_errors=True)
+        if state is not None and state.project_dir is not None:
+            shutil.rmtree(state.project_dir, ignore_errors=True)
 
 
 def run_once() -> bool:
