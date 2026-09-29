@@ -10,6 +10,8 @@ Three Gang of Four patterns support this implementation:
 
 `ThemeProvider` supplies the store; `useTheme` is the component API. Initialization applies tokens before React renders. The sun/moon ThemeToggle button (and D hotkey outside editable fields) is available on every route, including authentication, and switches directly between dark and light. Dark is the default to match the reference. Explicit preferences persist under `galvanise.theme`; Previously saved System preferences follow operating-system changes until the toggle selects an explicit theme. Storage events synchronize tabs.
 
-To extend a theme, add the same semantic token to both theme definitions and consume it with `var(--token-name)` in CSS or graph styles. Keep logo pigment colors fixed. Changes to visual.html are deliberate design input, not automatically parsed executable configuration.
+To extend a theme, add the same semantic token to both theme definitions and consume it with `var(--token-name)` in CSS or graph styles. Keep logo pigment colors fixed.
+
+The redesign tokens (from the locked playground config in `docs/tasks_frontend.md`) are `accent-ui` / `accent-ui-foreground` (lavender UI accent and the text on it), `success`, `surface-sunken` (alias of `sidebar`), and `radius-sm` / `radius-lg` (next to the existing `radius`, 10px). Pills and other text on tinted fills must stay at 4.5:1 or better, so mix the accent with `text` rather than using it raw. Spacing, type and motion scales live in `styles.css`, not here. Changes to visual.html are deliberate design input, not automatically parsed executable configuration.
 
 Verify with `node --test frontend/src/theme/themeStore.test.js` from the repository root and `npm run build --prefix frontend`.

@@ -3,6 +3,7 @@ worker's extraction step (run.py `_run_extractors`)."""
 
 from pathlib import Path
 
+from document_analyzer.shared.workflow_events import WorkflowEventEmitter
 from document_analyzer.worker import embed as embed_module
 from document_analyzer.worker import run as run_module
 from document_analyzer.worker.evidence import build_evidence, persist_evidence
@@ -188,8 +189,9 @@ def test_run_extractors_persists_entities_evidence_and_coverage(tmp_path, monkey
     )
     monkeypatch.setattr(run_module, "_extractors", lambda job_id: (_StubExtractor(php), _StubExtractor(graphify)))
     monkeypatch.setattr(embed_module, "embed_texts", _fake_embed_many)
+    emitter = WorkflowEventEmitter(client, "agent1_ingestion", "job-1", "org-1")
 
-    excerpts = run_module._run_extractors(_repo(tmp_path), client, "job-1", "org-1")
+    excerpts = run_module._run_extractors(_repo(tmp_path), client, "job-1", "org-1", emitter)
 
     entities = {r["name"]: r for r in client.table("extracted_entities").rows}
     assert set(excerpts) == {entities["connect"]["id"], entities["helper"]["id"]}
@@ -198,3 +200,40 @@ def test_run_extractors_persists_entities_evidence_and_coverage(tmp_path, monkey
     [job] = client.table("ingestion_jobs").rows
     assert job["extraction_coverage"]["graphify"] == {"status": "ran", "files_requested": 1}
     assert job["extraction_coverage"]["evidence"]["chunks"] == len(client.table("source_chunks").rows)
+
+
+def test_run_extractors_emits_the_expected_workflow_events(tmp_path, monkeypatch):
+    """Live workflow run view (design.md §2, tasks.md) — _run_extractors is the one
+    place that opens both the `extract` and `evidence` stages and emits their events;
+    the rest of process_job's instrumentation is covered orchestration-level in
+    test_worker_run.py."""
+    client = FakeClient(org_id="org-1")
+    client.table("ingestion_jobs").insert({"id": "job-1", "org_id": "org-1", "status": "running"}).execute()
+    php = ExtractionResult(entities=[_entity("connect", "connect", "db.php", line=2, end_line=5)])
+    graphify = ExtractionResult(
+        entities=[_entity("e1", "helper", "pkg/util.py", line=4, extractor="graphify")],
+        coverage={"graphify": {"status": "ran", "files_requested": 1}},
+    )
+    monkeypatch.setattr(run_module, "_extractors", lambda job_id: (_StubExtractor(php), _StubExtractor(graphify)))
+    monkeypatch.setattr(embed_module, "embed_texts", _fake_embed_many)
+    emitter = WorkflowEventEmitter(client, "agent1_ingestion", "job-1", "org-1")
+
+    run_module._run_extractors(_repo(tmp_path), client, "job-1", "org-1", emitter)
+    emitter.flush()
+
+    events = client.table("workflow_events").rows
+    stage_starts = [e["stage"] for e in events if e["event_type"] == "stage.started"]
+    assert stage_starts == ["extract", "evidence"]
+    assert [e["stage"] for e in events if e["event_type"] == "stage.completed"] == ["extract"]
+
+    activity_messages = [e["message"] for e in events if e["event_type"] == "activity"]
+    assert "_StubExtractor: 1 entities, 0 edges" in activity_messages
+    assert activity_messages.count("_StubExtractor: 1 entities, 0 edges") == 2  # one per stub extractor
+
+    [stats_event] = [e for e in events if e["event_type"] == "stats.updated"]
+    assert stats_event["data"] == {"evidence_chunks": len(client.table("source_chunks").rows)}
+
+    [output_event] = [e for e in events if e["event_type"] == "output.created"]
+    assert output_event["data"]["output_id"] == "extraction_coverage"
+    assert output_event["data"]["kind"] == "coverage"
+    assert output_event["data"]["status"] == "done"

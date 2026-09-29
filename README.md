@@ -76,7 +76,7 @@ Each in its own terminal, from the repo root:
 
 | Process | Command |
 |---|---|
-| API (`localhost:8000`) | `uv run uvicorn document_analyzer.app:app --reload` |
+| API (`localhost:8000`) | `uv run python -m uvicorn document_analyzer.app:app --reload` |
 | Agent 1 worker | `uv run document-analyzer-worker` |
 | Agent 2 planner | `uv run document-analyzer-planner` |
 | Agent 3 executor | `uv run document-analyzer-executor` |

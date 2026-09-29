@@ -68,6 +68,8 @@ _ORG_SCOPED_TABLES = [
     # Agent 3 (design_agent3.md §2).
     "execution_jobs",
     "unit_executions",
+    # Live workflow run view (design.md §2) — shared by all three agents.
+    "workflow_events",
 ]
 
 
@@ -171,6 +173,12 @@ def _seed_org_a_chain(service_client, org_id: str, user_id: str) -> dict:
         org_id,
         {"job_id": job["id"], "entity_id": entity["id"], "field_path": "raw_facts.smoke", "reason": "smoke_test"},
     ).data[0]
+    workflow_event = insert_scoped(
+        service_client,
+        "workflow_events",
+        org_id,
+        {"workflow_kind": "agent1_ingestion", "workflow_id": job["id"], "event_type": "activity", "message": "smoke test event"},
+    ).data[0]
 
     agent2 = _seed_agent2_chain(service_client, org_id, user_id, project["id"], job["id"], entity["id"])
     agent3 = _seed_agent3_chain(
@@ -188,6 +196,7 @@ def _seed_org_a_chain(service_client, org_id: str, user_id: str) -> dict:
         "summary_cache": cache_entry["content_hash"],
         "filtered_files": filtered_file["id"],
         "secret_findings": secret_finding["id"],
+        "workflow_events": workflow_event["id"],
     }
 
 
@@ -330,6 +339,7 @@ def _delete_org(service_client, org_id: str) -> list[str]:
         "cluster_members",
         "clusters",
         "planning_jobs",
+        "workflow_events",
         "secret_findings",
         "summary_cache",
         "knowledge_summaries",
