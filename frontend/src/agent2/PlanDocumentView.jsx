@@ -3,12 +3,12 @@
 // no slot it falls back to its own column. It reads only; every write control is a slot supplied by PlanPage, which still owns the
 // existing behaviour (approval, overrides, submit, the unit panel):
 //
-//   slots.graph                    the existing `PlanGraph`, embedded in Architecture
+//   slots.approval                 "by you at …" on an approved plan, shown in the rail
 //   slots.unitDetail               the existing `PlanUnitDetail` panel, shown when a unit is selected
 //   slots.renderControls(card)     approval controls, merge bar and override errors under a phase card
 //   slots.renderUnitExtra(u,i,card) merge tick and move buttons beside a unit row
 //   slots.renderAcknowledge(card)  the facade acknowledge form, or undefined when the plan cannot take one
-import { useEffect, useMemo } from 'react'
+import { useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { Copy } from 'lucide-react'
 import { useOutlineSlot } from '../OutlineSlot.jsx'
@@ -41,9 +41,10 @@ import { useSchemaEntities } from './useSchemaEntities.js'
 import { useUnitGraph } from './useUnitGraph.js'
 import './agent2.css'
 
-// `intro` (the page title, status and runs) heads the document column, so the rail starts level with it;
+// `intro(actions)` (the page title and status) heads the document column, so the rail starts level with it,
+// and places `actions` (Copy as Markdown) in its top row;
 // `outro` (next steps) closes it, so it spans the same width.
-export default function PlanDocumentView({ plan, planId, selectedUnitId, phaseId, onSelectUnit, slots, intro = null, outro = null }) {
+export default function PlanDocumentView({ plan, planId, selectedUnitId, onSelectUnit, slots, intro = null, outro = null }) {
   const repo = useRepoOverview(plan.source_job_id)
   const schema = useSchemaEntities(plan.source_job_id)
   const unitGraph = useUnitGraph(planId, 'unit')
@@ -69,9 +70,6 @@ export default function PlanDocumentView({ plan, planId, selectedUnitId, phaseId
   // On narrow screens the sidebar is a drawer: close it once a section is chosen.
   const navigate = (id) => { outline.navigate(id); slot.close?.() }
 
-  // A `?phase_id=` link is about the graph: bring it into view once.
-  useEffect(() => { if (phaseId) outline.navigate('architecture-graph') }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
   const executive = useMemo(() => buildExecutiveSummary(plan, repo.summary), [plan, repo.summary])
   const overview = useMemo(() => buildRepoOverview({ stats: repo.stats, summary: repo.summary, routes: repo.routes }), [repo.stats, repo.summary, repo.routes])
   const moduleRows = useMemo(() => buildModuleRows(plan, unitGraph.graph), [plan, unitGraph.graph])
@@ -96,7 +94,6 @@ export default function PlanDocumentView({ plan, planId, selectedUnitId, phaseId
     ),
     architecture: (
       <Architecture
-        graph={slots.graph}
         rows={moduleRows}
         graphError={unitGraph.error}
         onSelectUnit={onSelectUnit}
@@ -160,17 +157,11 @@ export default function PlanDocumentView({ plan, planId, selectedUnitId, phaseId
       {slot.el ? createPortal(toc, slot.el) : null}
       <PlanDocument
         outline={slot.el ? null : toc}
-        rail={<Rail plan={plan} />}
-        glance={<Rail plan={plan} />}
-        header={(
-          <>
-          {intro}
-          <div className="a2-toolbar">
-            <button type="button" className="a2-chip-btn" onClick={collapse.toggleAll}>{collapse.allCollapsed ? 'Expand all' : 'Collapse all'}</button>
-            <button type="button" className="a2-chip-btn" onClick={exportMarkdown}><Copy size={14} className="ui-icon" aria-hidden="true" /> Copy as Markdown</button>
-          </div>
-          </>
-        )}
+        rail={<Rail plan={plan} approval={slots.approval} />}
+        glance={<Rail plan={plan} approval={slots.approval} />}
+        header={typeof intro === 'function'
+          ? intro(<button type="button" className="a2-chip-btn" onClick={exportMarkdown}><Copy size={14} className="ui-icon" aria-hidden="true" /> Copy as Markdown</button>)
+          : intro}
       >
         {selectedUnitId ? slots.unitDetail : null}
         {sections.map((s, i) => (

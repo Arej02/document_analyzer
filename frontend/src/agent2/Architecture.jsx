@@ -1,6 +1,5 @@
-// Architecture section body: the existing `PlanGraph` (passed in as `graph`, it still lives in
-// main.jsx until A2.5 splits PlanPage out) and a module table. A row opens `PlanUnitDetail` through
-// `onSelectUnit`, the same handler the graph uses. Subsection ids match `ARCHITECTURE_SUBS`.
+// Architecture section body: the system map and a module table. A row opens `PlanUnitDetail` through
+// `onSelectUnit`, the same handler the system map uses. Subsection ids match `ARCHITECTURE_SUBS`.
 import { CircleAlert, Info, TriangleAlert } from 'lucide-react'
 import { couplingHotspots } from './architectureModel.js'
 import { formatInt } from '../ui/format.js'
@@ -10,7 +9,6 @@ import './agent2.css'
 
 export const ARCHITECTURE_SUBS = [
   { id: 'architecture-system', title: 'System map' },
-  { id: 'architecture-graph', title: 'Dependency graph' },
   { id: 'architecture-modules', title: 'Module map' },
   { id: 'architecture-hotspots', title: 'Most depended-on units' },
 ]
@@ -27,15 +25,12 @@ function UnitButton({ row, onSelectUnit }) {
   return <button type="button" className="a2-link-btn" onClick={() => onSelectUnit(row.clusterId)}>{row.label}</button>
 }
 
-export default function Architecture({ graph, rows, graphError, onSelectUnit, systemMap }) {
+export default function Architecture({ rows, graphError, onSelectUnit, systemMap }) {
   const hotspots = couplingHotspots(rows)
   return (
     <>
       <Sub id="architecture-system">System map</Sub>
       {systemMap ? <SystemMap {...systemMap} onSelectUnit={onSelectUnit} /> : null}
-
-      <Sub id="architecture-graph">Dependency graph</Sub>
-      {graph}
 
       <Sub id="architecture-modules">Module map</Sub>
       {graphError ? <p className="a2-note">Coupling counts could not be loaded ({graphError}). Size and risk are shown.</p> : null}

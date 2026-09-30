@@ -1,4 +1,5 @@
-// Right rail cards: overall risk, review progress, key metrics. Render it as `PlanDocument`'s
+// Right rail cards: overall risk and open facade flags, review progress (and who approved the plan), key metrics.
+// `approval` is "by you at …" on an approved plan, else null. Render it as `PlanDocument`'s
 // `rail` (>= 1280px) and again as its `glance` (inline, below 1280px): same content, both places.
 import { CircleAlert, CircleCheck, CircleDashed, CircleX, Info, TriangleAlert } from 'lucide-react'
 import { railModel } from './railModel.js'
@@ -11,7 +12,7 @@ const RISK = {
   low: { label: 'Low', tone: 'success', Icon: Info },
 }
 
-export default function Rail({ plan }) {
+export default function Rail({ plan, approval = null }) {
   const { risk, review, metrics } = railModel(plan)
   const r = risk.level ? RISK[risk.level] : null
   return (
@@ -24,6 +25,11 @@ export default function Rail({ plan }) {
             <p className="a2-note">{risk.carriers.length ? `Carried by ${risk.carriers.join(', ')}.` : 'No phase carries any risk.'}</p>
           </>
         ) : <p className="a2-note">Not available for this plan.</p>}
+        <p>
+          <span className="ui-pill" data-tone={metrics.openFacadeFlags ? 'warning' : undefined}>
+            {metrics.openFacadeFlags} open facade {metrics.openFacadeFlags === 1 ? 'flag' : 'flags'}
+          </span>
+        </p>
       </section>
 
       <section className="a2-card" aria-labelledby="a2-rail-review">
@@ -38,7 +44,7 @@ export default function Rail({ plan }) {
           <li><CircleX size={14} className="ui-icon" aria-hidden="true" />Rejected <span>{review.rejected}</span></li>
           <li><CircleDashed size={14} className="ui-icon" aria-hidden="true" />Pending <span>{review.pending}</span></li>
         </ul>
-        {metrics.openFacadeFlags ? <p className="a2-note">{metrics.openFacadeFlags} facade {metrics.openFacadeFlags === 1 ? 'cycle needs' : 'cycles need'} acknowledgement.</p> : null}
+        {approval ? <p className="a2-note">Plan approved {approval}.</p> : null}
       </section>
 
       <section className="a2-card" aria-labelledby="a2-rail-metrics">

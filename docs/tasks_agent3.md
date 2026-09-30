@@ -134,6 +134,7 @@ The same as `tasks_agent2.md`:
       - an approved plan with no runs shows the empty state, and a draft plan shows no list;
       - a stale plan lists its failed run, and a done run shows "3 of 3 units done (2 passed)" and opens its status page;
       - the full loop: Generate code → status page (queued) → Back to plan → the new queued run is listed.
+  - *Removed 2026-09-30:* the list was taken off `PlanPage` at the user's request. Generate code still opens the new run's status page; earlier runs are reachable only by their `?execution=` link.
 
 ## Phase 2 — Unit context & generation (worker only)
 

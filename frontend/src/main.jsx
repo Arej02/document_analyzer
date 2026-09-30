@@ -1629,10 +1629,10 @@ function ExecutionUnitPage({ executionJobId, clusterId, onClose }) {
 
 // Query params that select a page (no router — see tasks_agent2.md conventions).
 const PAGE_PARAMS = ['job', 'project', 'planning_job', 'plan', 'execution']
-// Params that refine a page: `unit`/`phase_id` alongside `?plan=` (tasks_agent2.md),
+// Params that refine a page: `unit` alongside `?plan=` (tasks_agent2.md),
 // and `unit` alongside `?execution=` too (tasks_agent3.md §12: "?execution=<id>
 // (optionally &unit=<cluster_id>)") — every other navigation clears them.
-const SUB_PARAMS = ['unit', 'phase_id']
+const SUB_PARAMS = ['unit']
 
 function App() {
   const [url, setUrl] = useState('')
@@ -1647,7 +1647,7 @@ function App() {
     const params = new URLSearchParams(window.location.search)
     const param = PAGE_PARAMS.find((name) => params.get(name))
     if (!param) return null
-    if (param === 'plan') return { param, id: params.get(param), unit: params.get('unit'), phaseId: params.get('phase_id') }
+    if (param === 'plan') return { param, id: params.get(param), unit: params.get('unit') }
     if (param === 'execution') return { param, id: params.get(param), unit: params.get('unit') }
     return { param, id: params.get(param) }
   })
@@ -1670,7 +1670,7 @@ function App() {
     setPage(param ? { param, id } : null)
     setSidebarOpen(false)
   }
-  // `&unit=` and `&phase_id=` sit alongside `?plan=`/`?execution=` rather than
+  // `&unit=` sits alongside `?plan=`/`?execution=` rather than
   // replacing the page (tasks_agent2.md/tasks_agent3.md conventions). A null value
   // removes the param.
   const setSubParam = (param, key, value) => {
@@ -1682,7 +1682,6 @@ function App() {
   }
   const selectPlanUnit = (clusterId) => setSubParam('unit', 'unit', clusterId)
   const closePlanUnit = () => setSubParam('unit', 'unit', null)
-  const selectPlanPhase = (phaseId) => setSubParam('phase_id', 'phaseId', phaseId)
   const selectExecutionUnit = (clusterId) => setSubParam('unit', 'unit', clusterId)
   const closeExecutionUnit = () => setSubParam('unit', 'unit', null)
   const navigateToJobStatus = (jobId) => navigateToPage('job', jobId)
@@ -1759,15 +1758,12 @@ function App() {
       <PlanPage
         planId={page.id}
         selectedUnitId={page.unit}
-        phaseId={page.phaseId}
         onSelectUnit={selectPlanUnit}
         onCloseUnit={closePlanUnit}
-        onSelectPhase={selectPlanPhase}
         onBackToProject={navigateToProject}
         onBackToForm={backToForm}
         onOpenPlan={navigateToPlan}
         onExecutionCreated={navigateToExecution}
-        onOpenExecution={navigateToExecution}
         onProjectId={setActiveProjectId}
       />
     )

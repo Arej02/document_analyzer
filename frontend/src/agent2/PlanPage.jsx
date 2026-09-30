@@ -1,14 +1,13 @@
 // The Agent 2 plan page and everything only it uses, moved verbatim out of main.jsx (tasks_frontend.md A2.5).
 // Behaviour is unchanged: Submit for approval (`SubmitPlanAction`) and Generate code (`GenerateCodeAction`)
-// are the same code. `App` in main.jsx still owns the URL (`?plan=`, `&unit=`, `&phase_id=`) and passes
+// are the same code. `App` in main.jsx still owns the URL (`?plan=`, `&unit=`) and passes
 // handlers in.
 import { ArrowLeft } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ReactFlow, Background, Handle, MarkerType, Position } from '@xyflow/react'
 import { useApiFetch, useAuth } from '../AuthProvider'
 import PrimaryButton from '../PrimaryButton'
 import {
-  ConfidenceBadge, DEFAULT_RISK_NODE_STYLE, GroundingIssuesList, LIVE_TREE_NODE_CAP, RISK_NODE_STYLE, UnverifiedBadge, formatJobErrorMessage,
+  ConfidenceBadge, GroundingIssuesList, UnverifiedBadge, formatJobErrorMessage,
 } from '../shared.jsx'
 import PlanDocumentView from './PlanDocumentView.jsx'
 import PlanStatusBanner from './PlanStatusBanner.jsx'
@@ -268,188 +267,6 @@ function PlanUnitDetail({ planId, clusterId, unitLabel, onClose }) {
   )
 }
 
-// Same legibility cap as the live entity tree; nodes past it are the latest in
-// migration order, and the graph says how many it left out.
-const PLAN_GRAPH_NODE_CAP = LIVE_TREE_NODE_CAP
-const PLAN_GRAPH_COLUMN_WIDTH = 250
-const PLAN_GRAPH_ROW_HEIGHT = 64
-const PLAN_GRAPH_FACADE_COLOR = '#ff5c4d'
-const PLAN_GRAPH_EDGE_COLOR = 'var(--graph-edge)'
-
-function PlanGraphNode({ data }) {
-  const style = RISK_NODE_STYLE[data.riskLevel] || DEFAULT_RISK_NODE_STYLE
-  return (
-    <div
-      className={`plan-graph-node${data.selected ? ' plan-graph-node-selected' : ''}`}
-      style={{ borderColor: style.border, background: style.background }}
-      title={data.label}
-    >
-      {/* Arrows run dependent → dependency, i.e. right to left. A cycle's back edge
-          (dependency to the right) arcs over the top instead of crossing the nodes. */}
-      <Handle type="target" position={Position.Right} id="in" />
-      <Handle type="target" position={Position.Top} id="back-in" />
-      <span className="plan-graph-node-label" style={{ color: style.color }}>{data.label}</span>
-      <span className="plan-graph-node-size">{data.size ?? '—'}</span>
-      <Handle type="source" position={Position.Left} id="out" />
-      <Handle type="source" position={Position.Top} id="back-out" />
-    </div>
-  )
-}
-
-// Module scope for the same reason as LIVE_TREE_NODE_TYPES.
-const PLAN_GRAPH_NODE_TYPES = { plan: PlanGraphNode }
-
-// Pure layout: a node's column is one past its deepest dependency, so dependencies sit
-// left of their dependents and left-to-right reads as migration order. Nodes arrive in
-// plan order (dependencies first), so a dependency not placed yet can only be the other
-// end of a cycle, and is ignored for layering.
-function buildPlanGraph(graph, { labelFor, selectedId }) {
-  const shown = graph.nodes.slice(0, PLAN_GRAPH_NODE_CAP)
-  const shownIds = new Set(shown.map((node) => node.id))
-  const edges = graph.edges.filter((edge) => shownIds.has(edge.from) && shownIds.has(edge.to))
-
-  const dependencies = new Map()
-  edges.forEach((edge) => {
-    if (!dependencies.has(edge.from)) dependencies.set(edge.from, [])
-    dependencies.get(edge.from).push(edge.to)
-  })
-  const column = new Map()
-  const rowsInColumn = []
-  const nodes = shown.map((node, index) => {
-    const placed = (dependencies.get(node.id) || []).filter((id) => column.has(id)).map((id) => column.get(id))
-    const col = placed.length ? Math.max(...placed) + 1 : 0
-    column.set(node.id, col)
-    const row = rowsInColumn[col] || 0
-    rowsInColumn[col] = row + 1
-    return {
-      id: node.id,
-      type: 'plan',
-      position: { x: col * PLAN_GRAPH_COLUMN_WIDTH, y: row * PLAN_GRAPH_ROW_HEIGHT },
-      data: { label: labelFor(node, index), size: node.size, riskLevel: node.risk_level, selected: node.id === selectedId },
-      draggable: false,
-      selectable: false,
-    }
-  })
-
-  const flowEdges = edges.map((edge) => {
-    const color = edge.flag === 'needs_facade' ? PLAN_GRAPH_FACADE_COLOR : PLAN_GRAPH_EDGE_COLOR
-    const backEdge = column.get(edge.to) >= column.get(edge.from)
-    return {
-      id: `${edge.from}->${edge.to}`,
-      source: edge.from,
-      target: edge.to,
-      sourceHandle: backEdge ? 'back-out' : 'out',
-      targetHandle: backEdge ? 'back-in' : 'in',
-      ...(backEdge ? { type: 'smoothstep', pathOptions: { offset: 24 } } : {}),
-      markerEnd: { type: MarkerType.ArrowClosed, color },
-      style: {
-        stroke: color,
-        strokeWidth: edge.flag === 'needs_facade' ? 2 : 1.5,
-        ...(edge.flag === 'merged' ? { strokeDasharray: '6 4' } : {}),
-      },
-    }
-  })
-
-  return { nodes, edges: flowEdges, total: graph.nodes.length }
-}
-
-// tasks_agent2.md Phase 5 "Plan graph" — GET /api/agent2/plans/{plan_id}/graph
-// (design_agent2.md §11). Phase level first; clicking a phase drills into its units
-// (`&phase_id=`), and clicking a unit opens PlanUnitDetail (`&unit=`). Labels come
-// from the plan overview, so they match the list view.
-function PlanGraph({ planId, phases, phaseId, selectedUnitId, onSelectPhase, onSelectUnit }) {
-  const [graph, setGraph] = useState(null)
-  const [error, setError] = useState(null)
-  const apiFetch = useApiFetch()
-
-  useEffect(() => {
-    let cancelled = false
-    setGraph(null)
-    setError(null)
-    const query = phaseId ? `level=unit&phase_id=${encodeURIComponent(phaseId)}` : 'level=phase'
-    apiFetch(`/api/agent2/plans/${planId}/graph?${query}`)
-      .then(async (response) => {
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}))
-          throw new Error(formatJobErrorMessage(response.status, body))
-        }
-        return response.json()
-      })
-      .then((data) => { if (!cancelled) setGraph(data) })
-      .catch((err) => { if (!cancelled) setError(err.message) })
-    return () => { cancelled = true }
-  }, [planId, phaseId])
-
-  const phase = phases.find((p) => p.phase_cluster_id === phaseId)
-  const phaseTitle = (p) => `Phase ${p.phase_order}${p.label ? ` · ${p.label}` : ''}`
-  const noun = phaseId ? 'units' : 'phases'
-
-  const flow = useMemo(() => {
-    if (!graph) return null
-    const labelFor = phaseId
-      ? (node) => {
-          const unit = phase?.units.find((u) => u.cluster_id === node.id)
-          return unit ? `${phase.phase_order}.${unit.unit_order} ${unit.label || 'Unlabeled unit'}` : (node.label || 'Unlabeled unit')
-        }
-      : (node) => {
-          const p = phases.find((candidate) => candidate.phase_cluster_id === node.id)
-          return p ? phaseTitle(p) : (node.label || 'Unlabeled phase')
-        }
-    return buildPlanGraph(graph, { labelFor, selectedId: phaseId ? selectedUnitId : null })
-  }, [graph, phases, phaseId, selectedUnitId])
-
-  return (
-    <div className="plan-graph">
-      <nav className="plan-graph-breadcrumb" aria-label="Graph level">
-        {phaseId ? (
-          <>
-            <button type="button" className="project-link" onClick={() => onSelectPhase(null)}>All phases</button>
-            <span aria-hidden="true">›</span>
-            <span aria-current="page">{phase ? phaseTitle(phase) : 'Phase'}</span>
-          </>
-        ) : (
-          <span aria-current="page">All phases</span>
-        )}
-      </nav>
-      {error && <p className="error">{error}</p>}
-      {!error && !flow && <p className="summary-loading">Loading graph…</p>}
-      {flow && flow.nodes.length === 0 && <p className="summary-loading">There are no {noun} to draw.</p>}
-      {flow && flow.nodes.length > 0 && (
-        <>
-          {flow.total > flow.nodes.length && (
-            <p className="plan-graph-cap-note">
-              Showing {flow.nodes.length} of {flow.total} {noun}, the earliest in migration order.
-            </p>
-          )}
-          <div className="plan-graph-canvas">
-            <ReactFlow
-              key={phaseId || 'phases'}
-              nodes={flow.nodes}
-              edges={flow.edges}
-              nodeTypes={PLAN_GRAPH_NODE_TYPES}
-              onNodeClick={(_event, node) => (phaseId ? onSelectUnit(node.id) : onSelectPhase(node.id))}
-              fitView
-              fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
-              nodesDraggable={false}
-              nodesConnectable={false}
-              elementsSelectable={false}
-              proOptions={{ hideAttribution: true }}
-            >
-              <Background gap={16} color="rgba(var(--neutral-rgb),.06)" />
-            </ReactFlow>
-          </div>
-          <p className="plan-graph-legend">
-            Left to right is migration order, and arrows point at what each {phaseId ? 'unit' : 'phase'} depends on.
-            {' '}<span className="plan-graph-legend-facade">Red</span>: cycle that needs a facade.
-            {' '}<span className="plan-graph-legend-merged">Dashed</span>: merged.
-            {' '}Click a {phaseId ? 'unit to see its detail' : 'phase to see its units'}.
-          </p>
-        </>
-      )}
-    </div>
-  )
-}
-
 // tasks_agent2.md Phase 5 "Submit" — POST /api/agent2/plans/{plan_id}/submit
 // (design_agent2.md §11), `draft → in_review`. PlanPage only renders this for a draft.
 // A 409 (stale, or the plan moved on since it loaded) shows the backend's message.
@@ -544,62 +361,6 @@ function GenerateCodeAction({ plan, onExecutionCreated }) {
       />
       {error && <p className="error" role="alert">{error}</p>}
     </form>
-  )
-}
-
-// tasks_agent3.md Phase 1 "Execution list" — GET /api/agent3/plans/{plan_id}/executions
-// (design_agent3.md §9): every code generation run of this plan, newest first, each
-// linking to its status page. `counts` is live, so a running job shows its progress.
-function ExecutionRunsList({ planId, onOpenExecution }) {
-  const [runs, setRuns] = useState(null)
-  const [error, setError] = useState(null)
-  const apiFetch = useApiFetch()
-
-  useEffect(() => {
-    let cancelled = false
-    setRuns(null)
-    setError(null)
-    apiFetch(`/api/agent3/plans/${planId}/executions`)
-      .then(async (response) => {
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}))
-          throw new Error(formatJobErrorMessage(response.status, body))
-        }
-        return response.json()
-      })
-      .then((data) => { if (!cancelled) setRuns(data.executions) })
-      .catch((err) => { if (!cancelled) setError(err.message) })
-    return () => { cancelled = true }
-  }, [planId])
-
-  return (
-    <section className="job-history" aria-label="Code generation runs">
-      <h2>Code generation runs</h2>
-      {error && <p className="error">{error}</p>}
-      {!error && !runs && <p className="summary-loading">Loading code generation runs…</p>}
-      {runs && runs.length === 0 && <p className="summary-loading">No code generation runs yet.</p>}
-      {runs && runs.length > 0 && (
-        <ul className="projects-list">
-          {runs.map((run) => (
-            <li key={run.id}>
-              <button type="button" className="project-link" onClick={() => onOpenExecution(run.id)}>
-                {new Date(run.created_at).toLocaleString()}
-                <span className="run-diff-hint">
-                  {' · '}{run.counts.done} of {run.counts.total} {run.counts.total === 1 ? 'unit' : 'units'} done
-                  {run.counts.done > 0 && ` (${run.counts.passed} passed)`}
-                </span>
-              </button>
-              <span className="plan-row-badges">
-                {run.status === 'running' && run.progress_stage && (
-                  <span className="run-diff-hint">{run.progress_stage.replace('_', ' ')}</span>
-                )}
-                <span className="project-status">{run.status}</span>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
   )
 }
 
@@ -773,11 +534,10 @@ function useCreateOverride(planId, onCreated) {
 // is already `stale` where it applies. The header keeps Submit for approval and Generate code
 // exactly as before; the plan itself is the document in PlanDocumentView (outline, eight sections,
 // rail). What each control may do comes from `reviewAccess`, which mirrors the backend's rules.
-// A unit click sets `&unit=`, which opens PlanUnitDetail at the top of the document; a
-// `&phase_id=` link scrolls to the graph, drilled into that phase.
+// A unit click sets `&unit=`, which opens PlanUnitDetail at the top of the document.
 export default function PlanPage({
-  planId, selectedUnitId, phaseId, onSelectUnit, onCloseUnit, onSelectPhase, onBackToProject, onBackToForm, onOpenPlan,
-  onExecutionCreated, onOpenExecution, onProjectId,
+  planId, selectedUnitId, onSelectUnit, onCloseUnit, onBackToProject, onBackToForm, onOpenPlan,
+  onExecutionCreated, onProjectId,
 }) {
   const [plan, setPlan] = useState(null)
   const [error, setError] = useState(null)
@@ -864,16 +624,7 @@ export default function PlanPage({
 
   // Everything the document cannot own: existing controls that write, handed in as slots.
   const slots = plan && {
-    graph: (
-      <PlanGraph
-        planId={planId}
-        phases={plan.phases}
-        phaseId={phaseId}
-        selectedUnitId={selectedUnitId}
-        onSelectPhase={onSelectPhase}
-        onSelectUnit={onSelectUnit}
-      />
-    ),
+    approval: approvedExtra,
     unitDetail: selectedUnitId ? (
       <PlanUnitDetail planId={planId} clusterId={selectedUnitId} unitLabel={unitLabel} onClose={onCloseUnit} />
     ) : null,
@@ -913,19 +664,24 @@ export default function PlanPage({
   }
 
   // The page header. With a plan it heads the document column (level with the rail); without one it stands alone.
-  const hero = (
+  // `actions` (the document's Copy as Markdown) sit at the right of the back button's row.
+  const renderHero = (actions = null) => (
     <section className="hero project-detail" aria-label="Migration plan">
-      <button
-        type="button"
-        className="a2-back"
-        onClick={() => (plan ? onBackToProject(plan.project_id) : onBackToForm())}
-      >
-        <ArrowLeft size={14} className="ui-icon" aria-hidden="true" /> {plan ? 'Back to project' : 'Back to repositories'}
-      </button>
+      <div className="a2-hero-top">
+        <button
+          type="button"
+          className="a2-back"
+          onClick={() => (plan ? onBackToProject(plan.project_id) : onBackToForm())}
+        >
+          <ArrowLeft size={14} className="ui-icon" aria-hidden="true" /> {plan ? 'Back to project' : 'Back to repositories'}
+        </button>
+        {actions}
+      </div>
       {plan && (
         <>
-          <p className="eyebrow">MIGRATION PLAN</p>
-          <h1 className="project-detail-title">Version {plan.version}</h1>
+          <h1 className="project-detail-title a2-plan-title">
+            Migration plan <span className="a2-plan-version">Version {plan.version}</span>
+          </h1>
           {plan.parent_plan_id && (
             // An override made this version from an earlier one (design_agent2.md §9.2); the
             // project page's Plans list has every version.
@@ -941,27 +697,26 @@ export default function PlanPage({
               </button>
             </p>
           )}
-          <div className="summary-badges plan-header-badges">
-            <span className={`plan-status plan-status-${plan.status}`}>{plan.status.replace('_', ' ')}</span>
-            <span className={`plan-flag${plan.open_facade_flags > 0 ? ' plan-flag-warn' : ''}`}>
-              {plan.open_facade_flags} open facade {plan.open_facade_flags === 1 ? 'flag' : 'flags'}
-            </span>
-            {/* Clustering-quality metrics (design_agent2.md §2/§13) — null for a plan
-                whose planning job predates these fields. single_unit_phases > 1 is the
-                forward-looking detector for the 46-single-unit-phase degeneracy §13
-                documents, which used to only be caught by a manual dry-run inspection. */}
-            {plan.modularity != null && (
-              <span className="plan-flag" title="Leiden modularity of the final unit-level clustering">
-                modularity {plan.modularity.toFixed(2)}
-              </span>
-            )}
-            {plan.phase_size_stats && plan.phase_size_stats.single_unit_phases > 1 && (
-              <span className="plan-flag plan-flag-warn" title="Phases with only one unit each often mean the phase graph was too sparse to cluster meaningfully">
-                {plan.phase_size_stats.single_unit_phases} single-unit phases
-              </span>
-            )}
-          </div>
-          <PlanStatusBanner access={access} extra={approvedExtra} />
+          {(plan.modularity != null || plan.phase_size_stats?.single_unit_phases > 1) && (
+            <div className="summary-badges plan-header-badges">
+              {/* Clustering-quality metrics (design_agent2.md §2/§13) — null for a plan
+                  whose planning job predates these fields. single_unit_phases > 1 is the
+                  forward-looking detector for the 46-single-unit-phase degeneracy §13
+                  documents, which used to only be caught by a manual dry-run inspection. */}
+              {plan.modularity != null && (
+                <span className="plan-flag" title="Leiden modularity of the final unit-level clustering">
+                  modularity {plan.modularity.toFixed(2)}
+                </span>
+              )}
+              {plan.phase_size_stats && plan.phase_size_stats.single_unit_phases > 1 && (
+                <span className="plan-flag plan-flag-warn" title="Phases with only one unit each often mean the phase graph was too sparse to cluster meaningfully">
+                  {plan.phase_size_stats.single_unit_phases} single-unit phases
+                </span>
+              )}
+            </div>
+          )}
+          {/* An approved plan says so, and by whom, in the rail's Review progress card instead. */}
+          {!approvedExtra && <PlanStatusBanner access={access} />}
         </>
       )}
     </section>
@@ -970,7 +725,7 @@ export default function PlanPage({
   return (
     <main className="page-shell">
 
-      {!plan && hero}
+      {!plan && renderHero()}
       {!plan && !error && <PlanSkeleton />}
       {error && (
         <PlanFailed
@@ -989,18 +744,9 @@ export default function PlanPage({
           plan={plan}
           planId={planId}
           selectedUnitId={selectedUnitId}
-          phaseId={phaseId}
           onSelectUnit={onSelectUnit}
           slots={slots}
-          intro={(
-            <>
-              {hero}
-              {(plan.status === 'approved' || plan.is_stale) && (
-                // An approved plan that later went stale keeps its earlier runs (design_agent3.md §13).
-                <ExecutionRunsList planId={planId} onOpenExecution={onOpenExecution} />
-              )}
-            </>
-          )}
+          intro={renderHero}
           outro={(
             // Next steps sit after the document, so the review happens before the button that ends it.
             <>

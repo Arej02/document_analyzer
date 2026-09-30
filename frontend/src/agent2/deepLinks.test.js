@@ -1,4 +1,4 @@
-// Deep links (`?plan=<id>&unit=<cluster_id>`, `&phase_id=`) belong to `main.jsx` (`navigateToPage`,
+// Deep links (`?plan=<id>&unit=<cluster_id>`) belong to `main.jsx` (`navigateToPage`,
 // `setPlanParam`, `PLAN_SUB_PARAMS`). The outline and scrollspy must never write to the URL, or a
 // scroll would rewrite the address bar and drop those params. Guard it structurally.
 import test from 'node:test'

@@ -1,5 +1,5 @@
 // Whole-plan graph at one level (`unit` for the module table's fan-in / fan-out, `phase` for a phase's
-// dependencies), never with a `phase_id`. The drill-down graph inside `PlanGraph` fetches its own copy.
+// dependencies), never with a `phase_id`.
 import { useEffect, useState } from 'react'
 import { useApiFetch } from '../AuthProvider.jsx'
 

@@ -8,7 +8,7 @@
   box-sizing: border-box;
   position: sticky;
   top: 88px;
-  max-height: calc(100svh - 88px);
+  height: calc(100svh - 88px);
   overflow-y: auto;
   padding: 26px 14px 24px;
   border-right: 1px solid var(--border);
