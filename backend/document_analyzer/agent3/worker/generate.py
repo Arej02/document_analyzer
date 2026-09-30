@@ -214,6 +214,7 @@ def generate_unit_code(
 
 
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_NON_IDENT = re.compile(r"[^a-z0-9]+")
 
 
 def _snake_case(name: str) -> str:
@@ -222,13 +223,27 @@ def _snake_case(name: str) -> str:
     return _CAMEL_BOUNDARY.sub("_", name).lower()
 
 
-def _stub_function_source(name: str, params: list[str]) -> str:
-    return f"def {name}({', '.join(params)}):\n    raise NotImplementedError({name!r})"
+def _safe_ident(name: str) -> str:
+    """Slugify a `public_interface` entry's `name` into a valid Python identifier.
+    Same slug rule as `tests_gen.py::_safe_ident` (duplicated, not imported — see
+    `_snake_case` above), plus a leading-digit guard that call site doesn't need
+    (its output is always prefixed with `test_`, this one isn't). Needed because a
+    route-bound entry's `name` is literally `"METHOD /path"` (design_agent3.md §6),
+    not a Python identifier, and this is the only place `name` is used as one."""
+    slug = _NON_IDENT.sub("_", name.lower()).strip("_") or "x"
+    if slug[0].isdigit():
+        slug = f"_{slug}"
+    return slug
+
+
+def _stub_function_source(ident: str, original_name: str, params: list[str]) -> str:
+    return f"def {ident}({', '.join(params)}):\n    raise NotImplementedError({original_name!r})"
 
 
 def _stub_class_source(class_name: str, methods: list[dict]) -> str:
     blocks = [
-        f"    def {m['name']}({', '.join(['self', *m['params']])}):\n        raise NotImplementedError({m['name']!r})"
+        f"    def {m['ident']}({', '.join(['self', *m['params']])}):\n"
+        f"        raise NotImplementedError({m['name']!r})"
         for m in sorted(methods, key=lambda m: m["entity_id"])
     ]
     return f"class {class_name}:\n" + "\n\n".join(blocks)
@@ -254,14 +269,17 @@ def generate_stub_unit(item: dict, unit_slug: str) -> GeneratedUnit:
 
     for entry in sorted(public_interface, key=lambda e: e["entity_id"]):
         name = entry["name"]
+        ident = _safe_ident(name)
         params = [_snake_case(p) for p in (entry.get("params") or []) if p]
         class_name = entry.get("class")
         if entry.get("kind") == "method" and class_name:
-            classes.setdefault(class_name, []).append({"entity_id": entry["entity_id"], "name": name, "params": params})
-            symbol_map[entry["entity_id"]] = {"python_module": module, "python_name": f"{class_name}.{name}", "kind": "method"}
+            classes.setdefault(class_name, []).append(
+                {"entity_id": entry["entity_id"], "name": name, "ident": ident, "params": params}
+            )
+            symbol_map[entry["entity_id"]] = {"python_module": module, "python_name": f"{class_name}.{ident}", "kind": "method"}
         else:
-            functions.append(_stub_function_source(name, params))
-            symbol_map[entry["entity_id"]] = {"python_module": module, "python_name": name, "kind": "function"}
+            functions.append(_stub_function_source(ident, name, params))
+            symbol_map[entry["entity_id"]] = {"python_module": module, "python_name": ident, "kind": "function"}
 
     class_blocks = [_stub_class_source(name, methods) for name, methods in sorted(classes.items())]
     body = "\n\n\n".join(

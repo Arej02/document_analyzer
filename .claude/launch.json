@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "agent3-fake-api",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "C:/Users/avish/AppData/Local/Temp/claude/C--Users-avish-OneDrive-Desktop-document-analyzer-document-analyzer/1ee86488-9f86-472f-90eb-e1d3c50cbf85/scratchpad/agent3_dev_server.py"],
+      "port": 8000
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
+      "port": 5173
+    }
+  ]
+}

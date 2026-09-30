@@ -359,3 +359,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--emphasis); outl
 .execution-file-panes { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1100px; margin: 18px 0; }
 .execution-file-pane h4 { margin: 0 0 8px; }
 @media (max-width: 860px) { .execution-file-panes { grid-template-columns: 1fr; } }
+
+/* tasks_agent3.md Phase 6 frontend audit ("readability of long logs"): generated
+   code, test files and the sandbox log can be far longer than anything Agent 1/2
+   ever showed (design_agent3.md §7 caps the log at 64 KB) — bound their height so
+   one long file doesn't turn the whole page into one giant scroll. */
+.execution-file-pane pre, .execution-long-pre pre { max-height: 420px; overflow-y: auto; }

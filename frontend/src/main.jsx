@@ -1493,12 +1493,13 @@ function FilePickerPane({ title, items, emptyMessage }) {
         <p className="entity-table-empty">{emptyMessage}</p>
       ) : (
         <>
-          <div className="summary-badges">
+          <div className="summary-badges" role="group" aria-label={`${title} files`}>
             {items.map((item) => (
               <button
                 key={item.key}
                 type="button"
                 className={`citation-chip${item.key === selectedKey ? ' citation-chip-active' : ''}`}
+                aria-pressed={item.key === selectedKey}
                 onClick={() => setSelectedKey(item.key)}
               >
                 {item.label}
@@ -1582,7 +1583,7 @@ function ExecutionUnitPage({ executionJobId, clusterId, onClose }) {
               <p className="entity-table-empty">No test files were uploaded for this unit.</p>
             ) : (
               unit.tests.map((test) => (
-                <figure key={test.path} className="ask-excerpt">
+                <figure key={test.path} className="ask-excerpt execution-long-pre">
                   <figcaption><code>{test.path}</code></figcaption>
                   <pre>{test.content}</pre>
                 </figure>
@@ -1591,8 +1592,8 @@ function ExecutionUnitPage({ executionJobId, clusterId, onClose }) {
 
             <h4>Log</h4>
             {unit.log ? (
-              <details className="coverage-details">
-                <summary>Sandbox output</summary>
+              <details className="coverage-details execution-long-pre">
+                <summary>Sandbox output ({unit.log.length.toLocaleString()} characters)</summary>
                 <pre>{unit.log}</pre>
               </details>
             ) : (

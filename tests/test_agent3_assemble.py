@@ -169,6 +169,14 @@ def test_assemble_readme_has_a_verdict_table_per_phase(client, three_unit_state)
     assert "02_01_c" in readme and "error" in readme and "stubbed" in readme
 
 
+def test_assemble_writes_requirements_txt(client, three_unit_state):
+    run_assemble_stage(client, _execution_job(), three_unit_state)
+
+    requirements = (three_unit_state.project_dir / "requirements.txt").read_text()
+    for package in ("fastapi", "uvicorn", "sqlalchemy", "httpx", "python-multipart", "pytest", "pytest-asyncio"):
+        assert package in requirements
+
+
 def test_assemble_raises_on_a_unit_missing_from_state_unit_files(client, three_unit_state):
     del three_unit_state.unit_files["cluster-b"]
 
