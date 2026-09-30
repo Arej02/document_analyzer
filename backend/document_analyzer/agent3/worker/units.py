@@ -29,28 +29,30 @@ Two decisions worth calling out (both design_agent3.md §4, added 2026-09-28):
   flagged `built_on_failed_dependency`.
 - **`__init__.py` re-export guarantee**: `generate.py`'s prompt now asks the
   model to make its package's `__init__.py` import every other file it wrote,
-  but this module never trusts that alone — `_ensure_package_init` adds the
+  but this module never trusts that alone — `ensure_package_init` adds the
   same guaranteed imports on top of whatever the model (or a stub) produced,
   because both `app.main`'s router discovery and this unit's own
   `hooks_bound`/`routes_bound` contract tests (§6) import the *package*, not
   a specific submodule, and rely on that import alone triggering the unit's
   module-level code.
 
-**Known gaps, out of scope for this task:**
+**Known gap, out of scope for this task:**
 - §8's `app/models/{name}.py` (a unit owning a schema entity writes a shared
   model file) is not reachable: `generate.py::_validate_path` only ever
   allows `app/units/{unit_slug}/`. Recorded here rather than fixed, since
   fixing it means deciding how two units sharing one model file would coexist
   across separate per-unit sandbox workspaces — more than this task needs,
   and the fixture repo has no schema entities to exercise it.
-- On a **resumed** job, `state.symbol_maps` is repopulated from
-  `unit_executions.symbol_map` for units finished in an earlier run (§3 step
-  5), but `state.unit_files` (this module's own in-memory cache of file
-  contents, needed to assemble a *dependent's* workspace) is not — it is only
-  ever filled in during the current run. A dependent of a unit finished
-  before a crash would need this module to fetch that unit's last attempt
-  back from storage instead. `tasks_agent3.md` Phase 6 ("Redelivery") owns
-  full resumption correctness and should close this gap.
+
+**Resume (2026-09-29, tasks_agent3.md Phase 6 "Redelivery"):** on a resumed
+job, `prepare.py::_load_resume_state` repopulates `state.unit_files`/
+`unit_test_files`/`stubbed_units` for every already-terminal unit — not just
+`state.symbol_maps` — by reading a passed/failed_verification unit's last
+attempt back from `agent3-output` (`download_attempt_files` below) or
+regenerating an `error` unit's deterministic stub. A dependent of a unit
+finished in an *earlier* run of the same job therefore sees its real result
+here exactly as `_resolve_dependency` would if that unit had just finished in
+this run.
 """
 
 import os
@@ -118,12 +120,18 @@ def _dotted_module_name(path: str) -> str:
     return ".".join(parts)
 
 
-def _ensure_package_init(files: list[GeneratedFile], unit_slug: str) -> list[GeneratedFile]:
+def ensure_package_init(files: list[GeneratedFile], unit_slug: str) -> list[GeneratedFile]:
     """Guarantees `app/units/{unit_slug}/__init__.py` imports every other file the
     unit wrote, via `importlib.import_module` (§8's digit-prefix rule — a literal
     `from . import module` is fine here since it doesn't *name* `unit_slug`, but
     `importlib` is used anyway for one uniform mechanism). See the module docstring:
-    this is a guarantee, not a hope that the model followed the prompt."""
+    this is a guarantee, not a hope that the model followed the prompt.
+
+    Public (no leading underscore, 2026-09-29): `prepare.py`'s resume path also
+    needs it, to rebuild a regenerated stub's package the exact same way a live
+    `error` verdict does (`_finish_as_error` below) — same precedent as
+    `status.py::counts_by_job` losing its underscore when it became a
+    cross-module API."""
     init_path = f"app/units/{unit_slug}/__init__.py"
     other_modules = sorted(_dotted_module_name(f.path) for f in files if f.path != init_path)
     if not other_modules:
@@ -215,7 +223,7 @@ def _resolve_dependency(dep_id: str, items_by_cluster_id: dict, state) -> tuple[
         # won't have this module (design_agent3.md §13, a sparse/inconsistent graph).
         return dep_id, [], True
     stub = generate_stub_unit(dep_item, dep_item["unit_slug"])
-    return dep_item["unit_slug"], _ensure_package_init(stub.files, dep_item["unit_slug"]), True
+    return dep_item["unit_slug"], ensure_package_init(stub.files, dep_item["unit_slug"]), True
 
 
 # --------------------------------------------------------------------------- #
@@ -297,6 +305,48 @@ def _upload_attempt(
     bucket.upload(f"{prefix}junit.xml", sandbox_result.junit_xml.encode("utf-8"), {"content-type": "application/xml"})
 
 
+def _list_storage_objects(bucket, prefix: str) -> list[str]:
+    """Every object path under `prefix`, recursively — same pattern as
+    `agent3/router.py::_list_objects`, kept as its own copy (the worker must never
+    import from the router, CLAUDE.md)."""
+    paths: list[str] = []
+    for entry in bucket.list(prefix.rstrip("/")):
+        path = f"{prefix.rstrip('/')}/{entry['name']}"
+        if entry.get("id") is None:
+            paths.extend(_list_storage_objects(bucket, path))
+        else:
+            paths.append(path)
+    return paths
+
+
+def download_attempt_files(client: Client, storage_prefix: str, attempts: int) -> tuple[list[GeneratedFile], list[GeneratedFile]]:
+    """The last attempt's code and test files, read back from `agent3-output`.
+
+    Used by `prepare.py`'s resume path (§3 step 5) to repopulate
+    `ExecutionState.unit_files`/`unit_test_files` for a unit that finished in an
+    *earlier* run of this job — neither dict is persisted anywhere but this
+    process's own in-memory state, so a fresh process has to reconstruct them
+    from what `_upload_attempt` already wrote. Mirrors
+    `router.py::_read_attempt_files`'s object-layout logic (kept as its own copy,
+    same reason as `_list_storage_objects` above)."""
+    bucket = client.storage.from_(OUTPUT_BUCKET)
+    attempt_prefix = f"{storage_prefix}attempt_{attempts}/"
+
+    code_prefix = f"{attempt_prefix}code/"
+    code_files = [
+        GeneratedFile(path=path[len(code_prefix) :], content=bucket.download(path).decode("utf-8"))
+        for path in sorted(_list_storage_objects(bucket, code_prefix))
+    ]
+    tests_prefix = f"{attempt_prefix}tests/"
+    test_files = [
+        # Stripped only to attempt_prefix, not tests_prefix: the original path (as
+        # generate.py/tests_gen.py wrote it) already starts with "tests/...".
+        GeneratedFile(path=path[len(attempt_prefix) :], content=bucket.download(path).decode("utf-8"))
+        for path in sorted(_list_storage_objects(bucket, tests_prefix))
+    ]
+    return code_files, test_files
+
+
 # --------------------------------------------------------------------------- #
 # Per-unit orchestration
 # --------------------------------------------------------------------------- #
@@ -318,7 +368,7 @@ def _finish_as_error(client: Client, execution_job: dict, state, item: dict, fla
     stored into `state` and flagged `stubbed` on this unit's own row."""
     org_id, cluster_id, unit_slug = execution_job["org_id"], item["cluster_id"], item["unit_slug"]
     stub = generate_stub_unit(item, unit_slug)
-    stub_files = _ensure_package_init(stub.files, unit_slug)
+    stub_files = ensure_package_init(stub.files, unit_slug)
     state.symbol_maps[cluster_id] = stub.symbol_map
     state.unit_files[cluster_id] = stub_files
     state.stubbed_units.add(cluster_id)
@@ -382,7 +432,7 @@ def _run_one_unit(client: Client, execution_job: dict, state, item: dict, items_
             _finish_as_error(client, execution_job, state, item, flags, attempts=attempt, error=str(exc))
             return
 
-        own_files = _ensure_package_init(generated.files, unit_slug)
+        own_files = ensure_package_init(generated.files, unit_slug)
         contract_files = generate_contract_tests(unit_slug, test_contract, generated.symbol_map, context.dependencies)
         behaviour_result = generate_behaviour_tests(
             context, unit_slug, generated, llm_client, params["model_deployment"], max_attempts

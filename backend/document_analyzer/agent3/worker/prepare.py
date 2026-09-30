@@ -4,8 +4,10 @@ Loads everything the rest of the execution job needs into the in-memory
 `ExecutionState` (run.py): the plan (re-checked), its items in migration order,
 each item's member entities and their summaries, and the unpacked source
 snapshot. Also resumes a redelivered job by carrying forward already-terminal
-units' symbol maps, and attaches each item's `unit_slug` (§8, `unit_slug.py`)
-so `generate.py` and `tests_gen.py` don't each have to derive it.
+units' symbol maps, real code/tests (or a regenerated stub) and `stubbed_units`
+membership (§3 step 5, `_load_resume_state`), and attaches each item's
+`unit_slug` (§8, `unit_slug.py`) so `generate.py` and `tests_gen.py` don't each
+have to derive it.
 
 Reads only (CLAUDE.md "Agent 2 is read-only on Agent 1 tables" — Agent 3 is
 read-only on Agents 1 and 2 too), all through the worker's service-role client,
@@ -27,8 +29,10 @@ from document_analyzer.shared.plan_staleness import is_stale, mark_stale_plans
 from document_analyzer.shared.unit_sources import unit_sources
 from document_analyzer.worker.snapshot import SNAPSHOT_BUCKET
 
+from .generate import generate_stub_unit
 from .status import TERMINAL_UNIT_STATUSES
 from .unit_slug import derive_unit_slug
+from .units import download_attempt_files, ensure_package_init
 
 # PostgREST caps a response at 1000 rows; plan items and member rows are paged
 # past it, following the pattern in router.py / agent2/worker/graph.py.
@@ -288,23 +292,51 @@ def _download_and_unpack_snapshot(client: Client, org_id: str, source_job_id: st
     return dest_dir
 
 
-def _load_resume_state(client: Client, org_id: str, execution_job_id: str) -> tuple[set[str], dict[str, dict]]:
-    """§3 step 5: a redelivered message must not re-run a terminal unit. Returns the
-    terminal cluster ids and the symbol maps already produced, so their dependents
-    (built later in the same or a later run) can still see them."""
+def _load_resume_state(
+    client: Client, org_id: str, execution_job_id: str, items_by_cluster_id: dict[str, dict]
+) -> tuple[set[str], dict[str, dict], dict[str, list], dict[str, list], set[str]]:
+    """§3 step 5: a redelivered message must not re-run a terminal unit, and its
+    dependents (built later in the same or a later run) must see its *real* result,
+    not fall back to a fresh stub. Returns terminal cluster ids, symbol maps,
+    `unit_files`/`unit_test_files` and `stubbed_units` — the same four pieces of
+    state `units.py` builds up live during a single uninterrupted run (design_agent3.md
+    §4), reconstructed here for whatever finished in an *earlier* run of this job.
+
+    Closes the gap this module used to document ("state.unit_files is not
+    repopulated from storage on resume"): a terminal unit with a `storage_prefix`
+    (`passed`/`failed_verification`, which always ran a real sandbox attempt) has its
+    last attempt's code and tests read back from `agent3-output`
+    (`units.py::download_attempt_files`); one with no `storage_prefix` (`error` with
+    no sandbox run at all, §4 "Failed dependencies") has its stub regenerated instead
+    — `generate_stub_unit` is pure and deterministic, so this produces exactly the
+    same files `_finish_as_error` would have stored, without needing to have stored
+    them anywhere."""
     rows = _fetch_all(
         lambda: client.table("unit_executions")
-        .select("cluster_id, status, symbol_map")
+        .select("cluster_id, status, symbol_map, attempts, flags, storage_prefix")
         .eq("org_id", org_id)
         .eq("execution_job_id", execution_job_id)
     )
-    terminal_unit_ids = {row["cluster_id"] for row in rows if row["status"] in TERMINAL_UNIT_STATUSES}
-    symbol_maps = {
-        row["cluster_id"]: row["symbol_map"]
-        for row in rows
-        if row["status"] in TERMINAL_UNIT_STATUSES and row.get("symbol_map")
-    }
-    return terminal_unit_ids, symbol_maps
+    terminal_rows = [row for row in rows if row["status"] in TERMINAL_UNIT_STATUSES]
+    terminal_unit_ids = {row["cluster_id"] for row in terminal_rows}
+    symbol_maps = {row["cluster_id"]: row["symbol_map"] for row in terminal_rows if row.get("symbol_map")}
+    stubbed_units = {row["cluster_id"] for row in terminal_rows if "stubbed" in (row.get("flags") or [])}
+
+    unit_files: dict[str, list] = {}
+    unit_test_files: dict[str, list] = {}
+    for row in terminal_rows:
+        cluster_id = row["cluster_id"]
+        if row.get("storage_prefix"):
+            code_files, test_files = download_attempt_files(client, row["storage_prefix"], row["attempts"])
+            unit_files[cluster_id] = code_files
+            unit_test_files[cluster_id] = test_files
+            continue
+        item = items_by_cluster_id.get(cluster_id)
+        if item is not None:
+            stub = generate_stub_unit(item, item["unit_slug"])
+            unit_files[cluster_id] = ensure_package_init(stub.files, item["unit_slug"])
+
+    return terminal_unit_ids, symbol_maps, unit_files, unit_test_files, stubbed_units
 
 
 def run_prepare_stage(client: Client, execution_job: dict, state) -> None:
@@ -342,6 +374,12 @@ def run_prepare_stage(client: Client, execution_job: dict, state) -> None:
 
     state.snapshot_dir = _download_and_unpack_snapshot(client, org_id, plan["source_job_id"])
 
-    terminal_unit_ids, resumed_symbol_maps = _load_resume_state(client, org_id, execution_job["id"])
+    items_by_cluster_id = {item["cluster_id"]: item for item in items}
+    terminal_unit_ids, resumed_symbol_maps, resumed_unit_files, resumed_unit_test_files, resumed_stubbed_units = (
+        _load_resume_state(client, org_id, execution_job["id"], items_by_cluster_id)
+    )
     state.terminal_unit_ids = terminal_unit_ids
     state.symbol_maps.update(resumed_symbol_maps)
+    state.unit_files.update(resumed_unit_files)
+    state.unit_test_files.update(resumed_unit_test_files)
+    state.stubbed_units.update(resumed_stubbed_units)

@@ -138,8 +138,8 @@ Written by Agent 3's worker, all scoped by `org_id` and an `execution_job_id`:
 
 ## 9. Open questions
 
-- Default `AGENT3_MAX_ATTEMPTS` (3) and the sandbox timeout (120 s). Tune on the first real WordPress plan.
-- Whether to run independent units in the same phase in parallel. Revisit after measuring per-unit time.
+- ~~Default `AGENT3_MAX_ATTEMPTS` (3) and the sandbox timeout (120 s). Tune on the first real WordPress plan.~~ **Settled 2026-09-29** (`design_agent3.md` §11 "Load run findings", a 12-unit synthetic run — real `php` wasn't available to run a true WordPress plan through Agent 1/2, so this is a lower-confidence stand-in, worth re-checking once a real plan is available): both defaults hold. Max attempts actually used was 2 of 3; the whole assembled suite finished in 11.2 s against a 600 s (5×) timeout. No evidence either needs raising for functions of this size/complexity.
+- ~~Whether to run independent units in the same phase in parallel. Revisit after measuring per-unit time.~~ **Settled (recommendation) 2026-09-29**: yes, worth adding. Per-unit time (13–44 s) is dominated by LLM latency (77% of units-stage wall time) and Docker container startup, both independently parallelizable; the sandbox's own per-container resource caps (§7 memory/cpus/pids-limit) already bound worst-case load regardless of concurrency, so a bounded concurrency cap (Agent 1's `summarize_fanout` pattern) would cut a large phase's wall time roughly in proportion to the cap. Not implemented — a follow-up task, since `run_units_stage`'s current one-at-a-time loop would need a bounded `ThreadPoolExecutor` (or similar) per phase, plus race-free `state.symbol_maps`/`state.unit_files` writes from concurrent units.
 - How far the fixed `wp_compat` template should go (options, post meta, HTTP, `$wpdb`) before units need to generate their own adapters.
 - A per-unit "regenerate" action for reviewers, and whether regenerating should invalidate the units that depend on it.
 - Whether behaviour-test failures alone should give a separate verdict (for example `passed_contract_only`) rather than `failed_verification`.

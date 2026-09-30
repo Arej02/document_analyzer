@@ -4,12 +4,13 @@ A fake Azure OpenAI client answers a queue of canned responses, same style as
 tests/test_agent2_report.py's FakeLLM.
 """
 
+import ast
 import json
 
 import pytest
 
 from document_analyzer.agent3.worker.context import UnitContext
-from document_analyzer.agent3.worker.generate import GenerationError, generate_unit_code
+from document_analyzer.agent3.worker.generate import GenerationError, generate_stub_unit, generate_unit_code
 
 UNIT_SLUG = "01_01_cart"
 
@@ -130,3 +131,58 @@ def test_exhausting_every_attempt_raises_generation_error():
         generate_unit_code(_context(), UNIT_SLUG, llm, "gpt-x", max_attempts=2)
 
     assert len(llm.calls) == 2
+
+
+def _exec_module(source: str):
+    module = type(ast)("stub")
+    exec(compile(source, "<stub>", "exec"), module.__dict__)
+    return module
+
+
+def test_stub_unit_route_bound_name_is_valid_python():
+    """design_agent3.md §4 'Failed dependencies' / §6 `routes_bound[]`: a route-bound
+    entry's `name` is literally "METHOD /path", not a Python identifier."""
+    item = {
+        "test_contract": {
+            "public_interface": [
+                {"entity_id": "e-a", "name": "POST /appointment", "kind": "function", "params": []},
+                {"entity_id": "e-b", "name": "GET /get-available-dates", "kind": "function", "params": []},
+            ]
+        }
+    }
+
+    result = generate_stub_unit(item, UNIT_SLUG)
+
+    [file] = result.files
+    ast.parse(file.content, filename=file.path)  # would raise SyntaxError before the fix
+    module = _exec_module(file.content)
+
+    for entity_id, expected_ident in (("e-a", "post_appointment"), ("e-b", "get_get_available_dates")):
+        python_name = result.symbol_map[entity_id]["python_name"]
+        assert python_name == expected_ident
+        assert callable(getattr(module, python_name))
+        with pytest.raises(NotImplementedError):
+            getattr(module, python_name)()
+
+
+def test_stub_unit_route_bound_method_name_is_valid_python():
+    item = {
+        "test_contract": {
+            "public_interface": [
+                {"entity_id": "e-a", "name": "POST /appointment", "kind": "method", "class": "Scheduler", "params": []},
+            ]
+        }
+    }
+
+    result = generate_stub_unit(item, UNIT_SLUG)
+
+    [file] = result.files
+    ast.parse(file.content, filename=file.path)
+    module = _exec_module(file.content)
+
+    python_name = result.symbol_map["e-a"]["python_name"]
+    assert python_name == "Scheduler.post_appointment"
+    class_name, _, method_name = python_name.partition(".")
+    cls = getattr(module, class_name)
+    with pytest.raises(NotImplementedError):
+        getattr(cls, method_name)(cls())

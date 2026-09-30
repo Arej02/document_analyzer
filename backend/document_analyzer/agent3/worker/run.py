@@ -84,11 +84,12 @@ class ExecutionState:
     # (Phase 3) skips them (§3 step 5).
     terminal_unit_ids: set[str] = field(default_factory=set)
     # cluster_id -> that unit's last-attempt files (real or a generate_stub_unit
-    # stand-in), for a dependent's workspace (§4 step 4, units.py). Built up during
-    # THIS run only — unlike symbol_maps, resume does not currently repopulate this
-    # from storage for units finished in an earlier run; a dependent of one of those
-    # would need units.py to fetch its files from storage instead (tasks_agent3.md
-    # Phase 6 "Redelivery" owns full resumption correctness, not this task).
+    # stand-in), for a dependent's workspace (§4 step 4, units.py). Filled in live
+    # by units.py for a unit finished during THIS run, and by prepare.py's resume
+    # path (`_load_resume_state`, §3 step 5) for one finished in an earlier run of
+    # the same job — read back from storage, or regenerated (a stub is pure and
+    # deterministic), so a dependent never falls back to a fresh stub for a
+    # dependency that actually passed (tasks_agent3.md Phase 6 "Redelivery").
     unit_files: dict[str, list] = field(default_factory=dict)
     # cluster_id -> that unit's last-attempt test files (contract + behaviour, §6),
     # set alongside unit_files at the same two sites (passed, failed_verification —

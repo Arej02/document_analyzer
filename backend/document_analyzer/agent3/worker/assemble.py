@@ -5,7 +5,8 @@
 `generate_stub_unit` stand-in for an `error` unit, §4 "Failed dependencies")
 into one whole project tree: the fixed template plus every unit's own files,
 `app/units/__init__.py` importing every unit in plan order (§8's one
-unit-loading mechanism), and a `README.md` verdict table. `final_test` then
+unit-loading mechanism), a `README.md` verdict table, and a `requirements.txt`
+pinning the assembled project's own runtime + test dependencies. `final_test` then
 runs that whole tree's test suite once for real in the sandbox, zips it, and
 records the result — never raising on a failing suite (design doc §5: "the job
 only fails on infrastructure errors").
@@ -31,6 +32,19 @@ from .units import _TEMPLATE_DIR
 
 OUTPUT_BUCKET = "agent3-output"
 
+# design_agent3.md §5: the assembled project's own runtime + test deps, pinned to
+# match the root pyproject.toml's constraints (the only place all seven already
+# appear together) — a static constant rather than parsed from that file at
+# assemble time, to avoid coupling this stage to the dev project's own layout.
+REQUIREMENTS_TXT = """fastapi>=0.141.1
+uvicorn[standard]>=0.53.0
+sqlalchemy==2.1.0
+httpx>=0.28.1
+python-multipart>=0.0.32
+pytest>=9.1.1
+pytest-asyncio>=1.4.0
+"""
+
 # design_agent3.md §5: the whole assembled suite gets a longer timeout than any one
 # unit's own sandbox run, since it's every unit's tests running together.
 _FINAL_TEST_TIMEOUT_MULTIPLIER = 5
@@ -38,10 +52,12 @@ _FINAL_TEST_TIMEOUT_MULTIPLIER = 5
 
 class AssembleError(Exception):
     """A job-level failure raised by stage `assemble` (never a unit verdict) — same
-    shape as `prepare.py::PrepareError`. Currently only raised for the documented
-    `state.unit_files` resume gap (design_agent3.md §4 "Known gaps"): a plan item
-    with no entry means this run never (re)generated it and nothing was carried
-    forward from a previous run either, so there is nothing correct to assemble."""
+    shape as `prepare.py::PrepareError`. A plan item with no `state.unit_files` entry
+    means neither this run's `units.py` nor `prepare.py`'s resume path
+    (`_load_resume_state`, §3 step 5) ever produced one for it — since resume now
+    repopulates every already-terminal unit (tasks_agent3.md Phase 6 "Redelivery"),
+    this should only fire if `units.py` itself failed to reach a terminal status for
+    some item, a bug elsewhere rather than an expected gap."""
 
 
 # --------------------------------------------------------------------------- #
@@ -170,6 +186,7 @@ def run_assemble_stage(client: Client, execution_job: dict, state) -> None:
 
     unit_rows = _load_unit_rows(client, org_id, execution_job_id)
     (dest / "README.md").write_text(_render_readme(state, unit_rows), encoding="utf-8")
+    (dest / "requirements.txt").write_text(REQUIREMENTS_TXT, encoding="utf-8")
 
     state.project_dir = dest
 
