@@ -180,6 +180,13 @@ Each endpoint below is followed directly by its frontend pair. Every plan read a
 - [ ] Load test at 5,000–10,000+ entities, reusing `tests/test_load_large_repo.py`'s synthetic WordPress generator. Record stage timings and peak memory, confirm report fan-out never exceeds the cap, and note the results in `design_agent2.md`. No endpoint, so no frontend pair.
 - [ ] Frontend audit across `PlanningJobStatusPage`, `PlanPage` (list, graph, unit detail) and the `ProjectDetailPage` additions: loading, empty and error states; keyboard reachability of the approve/override controls; and graph readability at the node cap.
 
+## Phase 7 — Plan document data (from `design_agent2.md` §16)
+
+- [ ] **Agent 1, `tasks.md`:** persist declared packages as `dependency` entities from composer.json / package.json / requirements.txt (`name`, `raw_facts: {ecosystem, version_spec, manifest_path, dev}`), reusing `worker/discovery.py`'s manifest parsing. Frontend pair: none until Agent 2 reads them.
+- [ ] `plan_dependency_targets` table and migration (RLS, `org_id`, service-role writes only) and a planner stage that proposes a target per dependency, grounded against the manifest line, `unverified` on failure. Add `GET /plans/{plan_id}/dependencies` (facts plus optional target). Frontend pair: `tasks_frontend.md` A2.3 dependency inventory (target column only when present).
+- [ ] Confirm no backend work is needed for the other sections: plan overview, graph and unit detail cover the summary, architecture, risk and migration plan; overview and stats come from Agent 1 endpoints. Free-form open decisions and schema "becomes" mapping are deferred (§16).
+- [ ] Expose provenance to the plan document: `source_commit_sha` on `GET /api/agent1/jobs/{id}` (Agent 1, `design.md` §4, `tasks.md`; the column exists, `_JOB_STATUS_COLUMNS` omits it) and a generation time on `GET /plans/{plan_id}` (`created_at`, `design_agent2.md` §11). Frontend pair: `tasks_frontend.md` A2.2 provenance line (`Provenance.jsx`), pass both when available.
+
 ---
 
 ## Cross-cutting: keeping backend and frontend in sync

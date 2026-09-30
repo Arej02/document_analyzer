@@ -8,7 +8,7 @@ export function ProductShell({ children }) {
   return (
     <div id="workspace" className="product-shell" tabIndex={-1}>
       <SiteHeader />
-      {session && <div className="product-account"><button type="button" onClick={signOut}>Sign out</button></div>}
+      {session && <div className="product-account"><button type="button" onClick={signOut}>Sign Out</button></div>}
       {children}
       <footer className="product-footer">
         <div className="product-footer-brand">

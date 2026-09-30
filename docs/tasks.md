@@ -176,6 +176,118 @@ Galvanise (`knowledge_base/galvanise`, a parallel build of this stage) had broad
   - [x] Frontend sync: `supabaseClient.js::loadSupabase()` builds the client from `/api/config` (`VITE_SUPABASE_*` only as an override), `AuthProvider` exposes the client, `SignIn` takes it from `useAuth()`, and the setup screen shows the backend's error.
 - [x] Signup is the only step: `20260928020000_auto_org_on_signup.sql` gives every new `auth.users` row its own org (and backfills existing users); `SignIn.jsx` goes straight into the app when `signUp` returns a session. design.md §1a updated. No endpoint.
 
+## Live workflow run view (added 2026-09-28)
+
+**Why:** while a job runs, `JobStatusPage` only shows the 3-step `progress_stage` stepper and `LiveEntityTree`'s "Scanning files…". The worker does much more than that (clone, boilerplate strip, snapshot, each extractor, evidence, diff, per-entity summaries, module/subsystem/repo folds), but none of it is visible. This adds an append-only **workflow event stream** that the worker writes, and a **generic run view** (header + live timer, configurable stepper, timestamped activity feed, outputs, stats footer) that renders any workflow's events. Agent 1 is the first producer. Agents 2 and 3 plug in later without UI changes.
+
+**Decisions:**
+- **Cursor polling at about 1.5 s while running**, same pattern as today's polls, with auth and RLS staying in FastAPI. Realtime is an optional follow-up.
+- **One shared `workflow_events` table** keyed by `(workflow_kind, workflow_id)`. Each agent writes only its own rows, so there are no agent-to-agent calls.
+- **The workflow declares its own stages** in `workflow.started`, so the UI never hardcodes them.
+- **The existing `progress_stage` writes stay unchanged.**
+- **Event writes never fail a job**, same as grounding failures.
+- **Event payloads are untrusted repo text** (paths, entity names). They are rendered as React text only, and no excerpts or secret-scan content go into them.
+
+**Event model** (`event_type`, optional `stage`, `message`, `data jsonb`, `created_at`, cursor = `bigserial id`):
+- `workflow.started` (`data.stages = [{key,label}]`), `workflow.completed`, `workflow.failed` (`data.error`)
+- `stage.started` / `stage.completed` (`stage` = key)
+- `activity`: `message`, `data.level` (`info|warn|error`) and `data.refs = [{kind: file|repo|entity|id|commit, value}]`. The UI highlights refs; it doesn't parse free text.
+- `output.created` / `output.updated`: `data = {output_id, kind, label, status}`
+- `stats.updated`: a flat `{name: number}` map, merged, and the UI renders whatever keys arrive
+
+Agent 1 stages: `fetch → filter → snapshot → extract → evidence → summarize → fold`.
+
+- [x] **Docs first:**
+  - `design.md` §2: the `workflow_events` table and the event types above.
+  - §4: `GET /api/agent1/jobs/{job_id}/events`.
+  - §6: the run-view frontend item.
+  - `docs/architecture.md`: one line saying the event stream is per-agent writes to a shared table.
+- [x] **Migration** `supabase/migrations/20260928030000_workflow_events.sql`:
+  - `id bigserial`, `org_id`, `workflow_kind` (check `agent1_ingestion|agent2_planning|agent3_execution`), `workflow_id uuid`, `event_type`, `stage`, `message`, `data jsonb`, `created_at`.
+  - An index on `(workflow_kind, workflow_id, id)`.
+  - RLS select by `current_org_id()`; writes are service-role only.
+  - Add the table to `tests/test_rls_multi_tenancy.py`.
+- [x] **Project delete covers `workflow_events`** (`projects.py`, `tests/test_projects_delete.py`).
+- [x] **`shared/workflow_events.py::WorkflowEventEmitter(client, kind, workflow_id, org_id)`:**
+  - Methods: `start(stages)`, `stage(key)`, `activity(msg, refs, level)`, `output(...)`, `stats(**counts)`, `complete()`, `fail(error)`, `flush()`.
+  - Thread-safe: a lock plus a buffer, flushed every ~1 s or 50 events, since summarization runs in a `ThreadPoolExecutor`.
+  - Never raises (it logs and drops), and stamps `org_id` from the job row.
+  - Tests: batching, concurrent emits, a failing insert not raising, org stamping.
+- [x] **Instrument `worker/run.py::process_job`.** The emitter is passed as a parameter, not a global:
+  - start / fail / complete alongside `mark_job_running` / `_record_job_failure` / `mark_job_done_if_ready`.
+  - `fetch_source`: the repo and commit as refs.
+  - `_strip_boilerplate`: the filtered count.
+  - `archive_source_snapshot`: an output.
+  - `_run_extractors`: one activity per extractor (entities/edges), evidence chunk counts, and the coverage output.
+  - Diff counts as stats.
+  - `_process_one_entity`: one activity per entity (cache hit / summarized, unverified as `warn`) plus `summaries_done/total`.
+  - `_fold_ancestors`: an output per module, subsystem and the repo.
+  - Extend the existing worker tests to check the event sequence for a small fixture and for a failure path.
+- [x] **`GET /api/agent1/jobs/{job_id}/events?after=<id>&limit=500`** (`jobs.py`):
+  - Uses the request-scoped client (RLS) and returns 404 like the other job routes.
+  - Response: `{job_id, status, events[], next_cursor, server_time}`. `server_time` lets the client correct its clock for the timer.
+  - Tests: cursor paging, limit cap, org isolation, 404.
+  - [x] Frontend sync, **`frontend/src/workflow/workflowReducer.js`:** a pure `(state, event) → state` that tracks status, startedAt/finishedAt, per-stage state (pending/active/complete/failed), the activity feed (keeps the last ~500 rows with an "N earlier events hidden" count), outputs keyed by `output_id` (updated in place), merged stats, and deduping by id. Tests in `workflowReducer.test.js` under `node --test` (same pattern as `theme/themeStore.test.js`).
+  - [x] Frontend sync, **`useWorkflowEvents(url)`:** built on the existing `useApiFetch`, keeps the cursor, dispatches to the reducer, stops at a terminal state, and cancels on unmount (same as `JobStatusPage`'s poll).
+  - [x] Frontend sync, **`WorkflowRun.jsx`**, a presentational component that takes only reducer state:
+    - Header: the workflow name, a status pill and a mono elapsed timer. The timer is anchored on `workflow.started.created_at`, skew-corrected, and stops at the terminal event.
+    - A horizontal stepper. Generalize `main.jsx::ProgressStages` to accept precomputed stage states and reuse the `.job-stage*` CSS.
+    - A live feed: mono timestamps, highlighted refs, a subtle fade-in, and auto-scroll unless the user has scrolled up.
+    - A slim outputs list and a stats footer.
+  - [x] Frontend sync, **`workflow.css`:**
+    - Theme tokens only, plus one restrained teal `--workflow-accent` added to **both** themes in `theme/themes.js`.
+    - Subtle borders, few cards, compact type, and `prefers-reduced-motion` turns animation off.
+    - Checked in both light and dark.
+  - [x] Frontend sync, **wire into `JobStatusPage`:**
+    - `<WorkflowRun>` replaces `ProgressStages` and "Scanning files…" while the job runs.
+    - It stays visible, with the timer stopped, after done or failed.
+    - `LiveEntityTree` stays below it.
+    - Jobs with no events (from before this change) fall back to today's `ProgressStages`.
+- [ ] **Verify end-to-end:**
+  - `uv run pytest`, `node --test frontend/src/workflow/workflowReducer.test.js` and `npm run build --prefix frontend`.
+  - Ingest the WordPress fixture with a worker running and confirm in the browser that events stream without a refresh, stages advance, outputs appear, stats update and the timer stops at done.
+  - Force a failure (bad repo URL) and confirm `workflow.failed` with a red stage and the error shown.
+  - Confirm an old job still renders the fallback stepper, and check both themes.
+- [ ] Follow-up: Agent 2 (`planner`) and Agent 3 (`executor`) emit `agent2_planning` / `agent3_execution` events, and `PlanningJobStatusPage` / `ExecutionStatusPage` reuse `WorkflowRun`. Add the tasks to `tasks_agent2.md` / `tasks_agent3.md` when picked up.
+- [ ] Follow-up (optional): a Supabase Realtime subscription on `workflow_events` in place of polling.
+
+## Job status carries `project_id` (added 2026-09-29, `tasks_frontend.md` A1.6)
+
+- [x] `GET /api/agent1/jobs/{job_id}` returns `project_id` (design.md §4) — `backend/document_analyzer/jobs.py::get_job_status`; `tests/test_jobs_api.py` asserts it in the existing status test plus one new test (48 passing in that file).
+- [x] Paired frontend: `JobStatusPage` (`frontend/src/main.jsx`) uses it to render the redesigned failed state (`agent1/FailedState.jsx`) with a "Restart analysis" action through `ReingestAction`, fetching the project via `GET /api/agent1/projects/{project_id}`.
+
+## Cancel a run (added 2026-09-29, `tasks_frontend.md` A1.4)
+
+- [x] Design first: `design.md` §4 `POST /api/agent1/jobs/{job_id}/cancel` with the worker semantics (stops at the next check, never overwrites a terminal status, no partial-result cleanup). Pause/resume is out of scope.
+- [x] Migration `20260929000000_job_status_cancelled.sql` adds `cancelled` to the shared `job_status` enum (additive; Agent 2 and Agent 3 never write it). **Apply it to the database before deploying the API or worker**, or the cancel update will fail.
+- [x] `POST /api/agent1/jobs/{job_id}/cancel` — `backend/document_analyzer/jobs.py::cancel_job_endpoint`: org-checked read with the caller's client, then a service-role update filtered by `id`, `org_id` and `status in (queued, running)`; `404` missing/other org, `409` already done/failed, idempotent for `cancelled`. 9 tests in `tests/test_jobs_api.py`.
+- [x] Worker: `worker/cancellation.py` (`raise_if_cancelled`, throttled to ~1 s and shared across the summarizer threads, remembers a seen cancel), checked at every stage boundary and before each entity summary and fold in `worker/run.py`; `WorkflowEventEmitter.cancel()` emits `workflow.cancelled`; `mark_job_failed` and `mark_job_done_if_ready` only transition `queued`/`running` jobs; a cancelled `queued` job is skipped on dequeue. 10 tests in `tests/test_worker_cancellation.py`.
+- [x] Paired frontend: `agent1/CancelControl.jsx` (inline two-step confirm) and `agent1/CancelledState.jsx`, wired into `JobStatusPage`; the workflow reducer, `buildRunView`, announcements and `ProgressViz` understand `cancelled`.
+
+## Per-step progress (added 2026-09-29, `tasks_frontend.md` A1.6)
+
+- [x] Design first: `design.md` §2 `progress.updated` event (`data = {done, total, unit, current_path}`, throttled to one per second, closing event always sent). No new table or endpoint: the events endpoint already returns any event type. Also lists `workflow.cancelled`, which the cancel task had left out.
+- [x] `WorkflowEventEmitter.progress()` (`shared/workflow_events.py`), used by `worker/run.py` for `summarize` (entities) and `fold` (module, subsystem and repo summaries, via `_FoldProgress`). The other stages emit none (the extractors have no per-file hook), so they stay indeterminate. 3 emitter tests and 1 worker test.
+- [x] Paired frontend: `workflowReducer` keeps the latest counts per stage; `buildRunView` uses them for a running phase's fraction (so the segment fills, `pct` and the ETA move within a stage) and exposes `detail`; `PhaseTimeline` shows "n / total unit", a bar and the current path, or an indeterminate bar for stages with no counts.
+
+## Warnings (added 2026-09-29, `tasks_frontend.md` A1.6)
+
+- [x] Design first: `design.md` §2 documents warnings as `activity` events with `data.level = warn` (phase = `stage`, files = `file` refs, capped at 10). No new event type or endpoint.
+- [x] Worker (`worker/run.py`): `_warn_on_extraction_gaps` (Graphify unavailable, or files it only partly extracted) and `_warn_on_evidence_gaps` (files skipped when building source evidence), alongside the existing warning for an `unverified` summary. Never fail or block a job. 5 tests in `tests/test_worker_warnings.py`.
+- [x] Paired frontend: `buildRunView` warnings now carry `files`; `PhaseTimeline` lists them under the warning note.
+
+## Discovered stats while running (added 2026-09-29, `tasks_frontend.md` A1.6)
+
+- [x] Design first: `design.md` §2 lists the flat `stats.updated` keys sent after the `filter` stage: `loc`, `language.<Name>`, `framework.<Name>`, `dependencies`. No new table or endpoint.
+- [x] `backend/document_analyzer/worker/discovery.py::discover_repo` (pure, static, nothing executed) and `run.py::_emit_discovered_stats` (best effort, never fails a job). 7 tests in `tests/test_worker_discovery.py`.
+- [x] Paired frontend: `agent1/statChips.js` fills the Lines of code, Languages, Frameworks and Dependencies chips (3 tests); before discovery they stay "Pending".
+
+## Queue position (added 2026-09-29, `tasks_frontend.md` A1.6)
+
+- [x] Design first: `design.md` §4 adds `queue_position` to `GET /api/agent1/jobs/{job_id}` (jobs ahead: running plus queued earlier; `null` unless `queued`; global count, number only, best effort).
+- [x] `backend/document_analyzer/jobs.py::get_queue_position` (service-role read, oldest first) called from `get_job`; a failure returns `null`. 5 tests in `tests/test_jobs_api.py`, and the file's fixtures now point the service client at the fake.
+- [x] Paired frontend: `agent1/QueuedState.jsx` shows "This job is next in line." or "N jobs are ahead of this one." (`agent1/queueText.js`, 2 tests); nothing is shown when the position is unknown.
+
 ## Cross-cutting: keeping backend and frontend in sync going forward
 
 Whenever you add or change an `/api/agent1/...` endpoint:

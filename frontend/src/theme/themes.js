@@ -47,7 +47,14 @@ const light = {
   "warning": "#805400",
   "danger-strong": "#912018",
   "danger-heading": "#b42318",
-  "graph-edge": "rgba(67,74,95,.55)"
+  "graph-edge": "rgba(67,74,95,.55)",
+  "workflow-accent": "oklch(0.58 0.09 195)",
+  "accent-ui": "#55569a",
+  "accent-ui-foreground": "#ffffff",
+  "success": "#16724a",
+  "surface-sunken": "var(--sidebar)",
+  "radius-sm": "0.375rem",
+  "radius-lg": "0.875rem"
 }
 const dark = {
   "background": "#242936",
@@ -97,7 +104,14 @@ const dark = {
   "warning": "#ffcf7a",
   "danger-strong": "#ffd9d2",
   "danger-heading": "#ffb3a6",
-  "graph-edge": "rgba(205,216,242,.45)"
+  "graph-edge": "rgba(205,216,242,.45)",
+  "workflow-accent": "oklch(0.75 0.1 195)",
+  "accent-ui": "#a0a1cf",
+  "accent-ui-foreground": "#1d2130",
+  "success": "#7fd6a0",
+  "surface-sunken": "var(--sidebar)",
+  "radius-sm": "0.375rem",
+  "radius-lg": "0.875rem"
 }
 export const themes = Object.freeze({ dark: Object.freeze(dark), light: Object.freeze(light) })
 // Strategy: each preference provides the same resolution interface.

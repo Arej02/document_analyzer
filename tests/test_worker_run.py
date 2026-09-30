@@ -10,6 +10,7 @@ wrong.
 
 from pathlib import Path
 
+from document_analyzer.shared.workflow_events import WorkflowEventEmitter
 from document_analyzer.worker import persist_summary as persist_summary_module
 from document_analyzer.worker import run as run_module
 from document_analyzer.worker.fetch import FetchResult, SourceFetchError
@@ -81,9 +82,11 @@ def _patch_grounded_pipeline(monkeypatch):
     monkeypatch.setattr(
         run_module, "fetch_source", lambda client, job, dest_dir: FetchResult(Path(dest_dir) / "repo", None)
     )
-    monkeypatch.setattr(run_module, "_strip_boilerplate", lambda repo_path, client, job_id, org_id: None)
+    monkeypatch.setattr(run_module, "_strip_boilerplate", lambda repo_path, client, job_id, org_id, emitter: None)
     monkeypatch.setattr(
-        run_module, "archive_source_snapshot", lambda client, job_id, org_id, repo_path: "org-1/job-1/source.tar.gz"
+        run_module,
+        "archive_source_snapshot",
+        lambda client, job_id, org_id, repo_path: "org-1/job-1/source.tar.gz",
     )
 
 
@@ -94,7 +97,7 @@ def test_process_job_runs_full_pipeline_and_marks_done(monkeypatch):
     _seed_job(client, "job-1", "org-1")
     client.table("ingestion_jobs").rows[-1]["project_id"] = "project-1"
 
-    def fake_run_extractors(repo_path, client, job_id, org_id):
+    def fake_run_extractors(repo_path, client, job_id, org_id, emitter):
         _seed_entities(
             client,
             job_id,
@@ -123,6 +126,129 @@ def test_process_job_runs_full_pipeline_and_marks_done(monkeypatch):
     assert project_row["latest_job_id"] == "job-1"  # tasks.md Phase 5
 
 
+def _workflow_events(client):
+    return client.table("workflow_events").rows
+
+
+def test_strip_boilerplate_emits_the_filtered_count(tmp_path):
+    """The real (non-stubbed) _strip_boilerplate — the small-fixture test below
+    stubs it out wholesale, same as everywhere else in this file, so its own
+    "boilerplate_filtered" stat is covered here instead."""
+    client = FakeClient(org_id="org-1")
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "vendor" / "lib.php").write_text("<?php\n")
+    (tmp_path / "app.php").write_text("<?php\n")
+    emitter = WorkflowEventEmitter(client, "agent1_ingestion", "job-1", "org-1")
+
+    run_module._strip_boilerplate(tmp_path, client, "job-1", "org-1", emitter)
+    emitter.flush()
+
+    [stats_event] = [e for e in _workflow_events(client) if e["event_type"] == "stats.updated"]
+    assert stats_event["data"] == {"boilerplate_filtered": 1}
+    assert not (tmp_path / "vendor" / "lib.php").exists()
+    assert (tmp_path / "app.php").exists()
+
+
+def test_process_job_emits_the_expected_workflow_event_sequence_for_a_small_fixture(monkeypatch):
+    """Live workflow run view (design.md §2, tasks.md) — orchestration-level: which
+    stages process_job itself opens/closes, in what order, and start/complete bracket
+    them. _run_extractors' own extract/evidence-stage events are covered at the step
+    level in test_worker_evidence.py (it's stubbed wholesale here, same as every
+    other test in this file)."""
+    client = FakeClient(org_id="org-1")
+    monkeypatch.setattr(run_module, "get_service_role_client", lambda: client)
+    client.table("projects").insert({"id": "project-1", "org_id": "org-1", "source_type": "github", "source_ref": "x"}).execute()
+    _seed_job(client, "job-1", "org-1")
+    client.table("ingestion_jobs").rows[-1]["project_id"] = "project-1"
+
+    def fake_run_extractors(repo_path, client, job_id, org_id, emitter):
+        _seed_entities(
+            client,
+            job_id,
+            org_id,
+            [
+                {"name": "foo", "file_path": "app.php", "content_hash": "hash-foo"},
+                {"name": "bar", "file_path": "app.php", "content_hash": "hash-bar"},
+            ],
+        )
+
+    monkeypatch.setattr(run_module, "_run_extractors", fake_run_extractors)
+    _patch_grounded_pipeline(monkeypatch)
+
+    run_module.process_job("job-1", "org-1")
+
+    events = _workflow_events(client)
+    assert events, "process_job must emit at least one workflow event"
+    assert all(
+        e["workflow_kind"] == "agent1_ingestion" and e["workflow_id"] == "job-1" and e["org_id"] == "org-1"
+        for e in events
+    )
+
+    event_types = [e["event_type"] for e in events]
+    assert event_types[0] == "workflow.started"
+    assert event_types[-1] == "workflow.completed"
+    assert "workflow.failed" not in event_types
+
+    [started] = [e for e in events if e["event_type"] == "workflow.started"]
+    assert [s["key"] for s in started["data"]["stages"]] == [
+        "fetch",
+        "filter",
+        "snapshot",
+        "extract",
+        "evidence",
+        "summarize",
+        "fold",
+    ]
+
+    # _run_extractors is stubbed here (see docstring above), so it never opens
+    # "extract"/"evidence" itself — only the stages process_job opens directly show up.
+    stage_starts = [e["stage"] for e in events if e["event_type"] == "stage.started"]
+    stage_completions = [e["stage"] for e in events if e["event_type"] == "stage.completed"]
+    assert stage_starts == ["fetch", "filter", "snapshot", "summarize", "fold"]
+    assert stage_completions == stage_starts  # every opened stage was also closed, in the same order
+
+    activity_messages = [e["message"] for e in events if e["event_type"] == "activity"]
+    assert "Fetched source" in activity_messages
+    assert {"foo (app.php): summarized", "bar (app.php): summarized"} <= set(activity_messages)
+    assert all(e["data"]["level"] == "info" for e in events if e["event_type"] == "activity")  # nothing unverified
+
+    # _strip_boilerplate is stubbed wholesale by _patch_grounded_pipeline (same reason
+    # extract/evidence don't show up above), so its own "boilerplate_filtered" stat
+    # isn't emitted in this test either — covered directly where it's not stubbed
+    # instead, alongside the rest of process_job's real orchestration.
+    stats_events = [e["data"] for e in events if e["event_type"] == "stats.updated"]
+    # Both entities share file_path "app.php", so diff.py counts one changed file, not two
+    # (design.md §3: "a file with even one changed/new entity in it is changed as a whole").
+    assert {"changed_files": 1, "unchanged_files": 0, "removed_files": 0} in stats_events
+    assert {"summaries_done": 1, "summaries_total": 2} in stats_events
+    assert {"summaries_done": 2, "summaries_total": 2} in stats_events
+
+    output_ids = {e["data"]["output_id"] for e in events if e["event_type"] == "output.created"}
+    assert output_ids == {"source_snapshot", "module:app.php", "subsystem:(root)", "repo:repo"}
+
+
+def test_process_job_emits_workflow_failed_on_a_pipeline_error(monkeypatch):
+    client = FakeClient(org_id="org-1")
+    monkeypatch.setattr(run_module, "get_service_role_client", lambda: client)
+    _seed_job(client, "job-1", "org-1")
+    monkeypatch.setattr(run_module, "fetch_source", lambda client, job, dest_dir: (_ for _ in ()).throw(SourceFetchError("could not clone repo")))
+
+    run_module.process_job("job-1", "org-1")
+
+    events = _workflow_events(client)
+    event_types = [e["event_type"] for e in events]
+    assert event_types[0] == "workflow.started"
+    assert event_types[-1] == "workflow.failed"
+    assert "workflow.completed" not in event_types
+
+    [failed] = [e for e in events if e["event_type"] == "workflow.failed"]
+    assert failed["data"]["error"] == "could not clone repo"
+    assert failed["stage"] == "fetch"  # the stage that was open when it died
+
+    # fetch never finished, so it was never closed with stage.completed.
+    assert "stage.completed" not in event_types
+
+
 def test_process_job_skips_a_redelivered_job_that_already_finished(monkeypatch):
     client = FakeClient(org_id="org-1")
     monkeypatch.setattr(run_module, "get_service_role_client", lambda: client)
@@ -147,7 +273,7 @@ def test_process_job_folds_modules_across_several_files_and_subsystems(monkeypat
     monkeypatch.setattr(run_module, "get_service_role_client", lambda: client)
     _seed_job(client, "job-1", "org-1")
 
-    def fake_run_extractors(repo_path, client, job_id, org_id):
+    def fake_run_extractors(repo_path, client, job_id, org_id, emitter):
         _seed_entities(
             client,
             job_id,
@@ -174,7 +300,7 @@ def test_process_job_with_zero_entities_still_completes(monkeypatch):
     client = FakeClient(org_id="org-1")
     monkeypatch.setattr(run_module, "get_service_role_client", lambda: client)
     _seed_job(client, "job-1", "org-1")
-    monkeypatch.setattr(run_module, "_run_extractors", lambda repo_path, client, job_id, org_id: None)
+    monkeypatch.setattr(run_module, "_run_extractors", lambda repo_path, client, job_id, org_id, emitter: None)
     _patch_grounded_pipeline(monkeypatch)
 
     run_module.process_job("job-1", "org-1")
@@ -231,7 +357,7 @@ def test_process_job_reuses_unchanged_entity_summary_across_a_reingestion(monkey
     _seed_job(client, "job-2", "org-1")
     client.table("ingestion_jobs").rows[-1]["project_id"] = "project-1"
 
-    def fake_run_extractors(repo_path, client, job_id, org_id):
+    def fake_run_extractors(repo_path, client, job_id, org_id, emitter):
         _seed_entities(client, job_id, org_id, [{"name": "foo", "file_path": "app.php", "content_hash": "same-hash"}])
 
     monkeypatch.setattr(run_module, "_run_extractors", fake_run_extractors)
@@ -305,3 +431,38 @@ def test_process_job_does_not_raise_when_recording_the_failure_also_fails(monkey
     monkeypatch.setattr(run_module, "mark_job_failed", raise_bad_input)
 
     run_module.process_job("job-1", "org-dev")
+
+
+def test_process_job_reports_progress_for_the_summarize_and_fold_stages(monkeypatch):
+    client = FakeClient(org_id="org-1")
+    monkeypatch.setattr(run_module, "get_service_role_client", lambda: client)
+    _seed_job(client, "job-1", "org-1")
+
+    def fake_run_extractors(repo_path, client, job_id, org_id, emitter):
+        _seed_entities(
+            client,
+            job_id,
+            org_id,
+            [
+                {"name": "foo", "file_path": "app.php", "content_hash": "hash-foo"},
+                {"name": "bar", "file_path": "lib/util.php", "content_hash": "hash-bar"},
+            ],
+        )
+
+    monkeypatch.setattr(run_module, "_run_extractors", fake_run_extractors)
+    _patch_grounded_pipeline(monkeypatch)
+
+    run_module.process_job("job-1", "org-1")
+
+    progress = [e for e in _workflow_events(client) if e["event_type"] == "progress.updated"]
+    summarize = [e for e in progress if e["stage"] == "summarize"]
+    fold = [e for e in progress if e["stage"] == "fold"]
+
+    # The closing event of each stage always goes out, so both end at done == total.
+    assert summarize[-1]["data"]["done"] == summarize[-1]["data"]["total"] == 2
+    assert summarize[-1]["data"]["unit"] == "entities"
+    assert summarize[-1]["data"]["current_path"] in ("app.php", "lib/util.php")
+    # Two modules + their subsystems + the repo summary.
+    assert fold[-1]["data"]["done"] == fold[-1]["data"]["total"]
+    assert fold[-1]["data"]["unit"] == "summaries"
+    assert fold[-1]["data"]["total"] >= 4

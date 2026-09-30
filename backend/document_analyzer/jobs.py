@@ -59,9 +59,23 @@ removed_file_count (worker/diff.py's per-job diff, tasks.md Phase 5) — the
 count the "distinguish a fresh ingestion from a cached/incremental one"
 frontend task needed exposed, and the last piece of design.md §4's contract
 that wasn't already live before this pass.
+
+GET /jobs/{job_id}/events is the live workflow run view's polling endpoint
+(design.md §2, §4, tasks.md "Live workflow run view") — cursor-paged reads of
+`workflow_events` for this job (`workflow_kind="agent1_ingestion"`), oldest
+first, on the request-scoped (RLS) client. `next_cursor` is always usable as
+the next call's `?after=` — the last returned event's id, or the caller's own
+`after` unchanged when nothing new has landed yet, so a client never has to
+special-case an empty page. `server_time` is returned alongside so the
+frontend's elapsed-run timer can correct for its own clock skew rather than
+trusting the browser's clock outright. Doesn't gate on job status, same
+reasoning as the entities endpoints below — a run's event feed is exactly as
+meaningful while `running` as it is once the job is `done`/`failed`.
 """
 
+import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -75,13 +89,18 @@ from .github_token import store_github_token
 from .projects import get_project, resolve_or_create_project
 from .queue import enqueue_ingestion_job
 from .storage import store_upload
-from .supabase_client import insert_scoped
+from .supabase_client import get_service_role_client, insert_scoped
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/agent1", tags=["jobs"])
 
 _JOB_STATUS_COLUMNS = (
-    "id, status, progress_stage, error, changed_file_count, unchanged_file_count, removed_file_count"
+    "id, project_id, status, progress_stage, error, changed_file_count, unchanged_file_count, removed_file_count"
 )
+_EVENT_COLUMNS = "id, event_type, stage, message, data, created_at"
+EVENTS_DEFAULT_LIMIT = 500
+EVENTS_MAX_LIMIT = 500
 
 
 class AskRequest(BaseModel):
@@ -121,7 +140,61 @@ async def get_job(job_id: str, auth: Annotated[AuthContext, Depends(get_auth_con
     job = get_job_status(auth.client, auth.org_id, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
+    job["queue_position"] = None
+    if job["status"] == "queued":
+        try:
+            job["queue_position"] = get_queue_position(get_service_role_client(), job_id)
+        except Exception:  # noqa: BLE001 - best effort; a poll must not fail over this
+            logger.warning("could not compute queue position for job %s", job_id, exc_info=True)
     return job
+
+
+QUEUE_SCAN_LIMIT = 1000
+
+
+def get_queue_position(client, job_id: str) -> int | None:
+    """Jobs ahead of a queued job: those running plus those queued earlier (oldest first, as the
+    worker takes them). `client` is the service-role client, because the queue spans every org;
+    only the count leaves this function. None if the job is not in the queue any more (a worker
+    picked it up between the caller's read and this one)."""
+    queued = (
+        client.table("ingestion_jobs").select("id").eq("status", "queued").order("created_at").limit(QUEUE_SCAN_LIMIT).execute().data
+    )
+    ids = [row["id"] for row in queued]
+    if job_id not in ids:
+        return None
+    running = client.table("ingestion_jobs").select("id").eq("status", "running").execute().data
+    return len(running) + ids.index(job_id)
+
+
+def cancel_job(client, org_id: str, job_id: str) -> bool:
+    """Sets status -> cancelled, but only while the job is still queued/running so a terminal
+    status is never overwritten. `client` is the service-role client (the API only reads with
+    the caller's); scoped by both `id` and `org_id`. Returns whether a row was changed."""
+    result = (
+        client.table("ingestion_jobs")
+        .update({"status": "cancelled"})
+        .eq("id", job_id)
+        .eq("org_id", org_id)
+        .in_("status", ["queued", "running"])
+        .execute()
+    )
+    return bool(result.data)
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_job_endpoint(job_id: str, auth: Annotated[AuthContext, Depends(get_auth_context)]):
+    job = get_job_status(auth.client, auth.org_id, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job["status"] in ("done", "failed"):
+        raise HTTPException(status_code=409, detail=f"job already {job['status']}; nothing to cancel")
+    if job["status"] != "cancelled" and not cancel_job(get_service_role_client(), auth.org_id, job_id):
+        # Lost a race: the job finished between the read above and the update.
+        current = get_job_status(auth.client, auth.org_id, job_id)
+        if current is None or current["status"] != "cancelled":
+            raise HTTPException(status_code=409, detail="job finished before it could be cancelled")
+    return {"job_id": job_id, "status": "cancelled"}
 
 
 @router.get("/jobs/{job_id}/summary")
@@ -179,6 +252,60 @@ async def get_job_coverage(job_id: str, auth: Annotated[AuthContext, Depends(get
     return {"job_id": rows[0]["id"], "status": rows[0]["status"], "coverage": rows[0].get("extraction_coverage")}
 
 
+@router.get("/jobs/{job_id}/events")
+async def get_job_events(
+    job_id: str,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    after: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=EVENTS_MAX_LIMIT)] = EVENTS_DEFAULT_LIMIT,
+):
+    rows = (
+        auth.client.table("ingestion_jobs")
+        .select("id, status")
+        .eq("org_id", auth.org_id)
+        .eq("id", job_id)
+        .limit(1)
+        .execute()
+    ).data
+    if not rows:
+        raise HTTPException(status_code=404, detail="job not found")
+
+    raw_events = (
+        auth.client.table("workflow_events")
+        .select(_EVENT_COLUMNS)
+        .eq("org_id", auth.org_id)
+        .eq("workflow_kind", "agent1_ingestion")
+        .eq("workflow_id", job_id)
+        .gt("id", after)
+        .order("id")
+        .limit(limit)
+        .execute()
+    ).data
+    # Rebuilt explicitly rather than trusting `.select(_EVENT_COLUMNS)` to have already
+    # projected the row — same FakeClient-doesn't-simulate-column-projection gap
+    # entities.py's `_entity_stub` and projects.py's `get_project` hit (org_id must
+    # never reach a response body regardless of what the client-side query claims).
+    events = [
+        {
+            "id": row["id"],
+            "event_type": row["event_type"],
+            "stage": row.get("stage"),
+            "message": row.get("message"),
+            "data": row.get("data", {}),
+            "created_at": row.get("created_at"),
+        }
+        for row in raw_events
+    ]
+
+    return {
+        "job_id": rows[0]["id"],
+        "status": rows[0]["status"],
+        "events": events,
+        "next_cursor": events[-1]["id"] if events else after,
+        "server_time": datetime.now(UTC).isoformat(),
+    }
+
+
 def _question_embedder():
     """The pinned local model (worker/embed.py), loaded lazily on the first question."""
     from .worker.embed import embed_text
@@ -234,6 +361,7 @@ def get_job_status(client, org_id: str, job_id: str) -> dict | None:
     row = result.data[0]
     return {
         "job_id": row["id"],
+        "project_id": row.get("project_id"),
         "status": row["status"],
         "progress_stage": row.get("progress_stage"),
         "error": row.get("error"),

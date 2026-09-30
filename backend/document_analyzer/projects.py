@@ -150,6 +150,16 @@ def _delete_in(client: Client, table: str, org_id: str, column: str, ids: list[s
         client.table(table).delete().eq("org_id", org_id).in_(column, chunk).execute()
 
 
+def _delete_workflow_events(client: Client, org_id: str, workflow_kind: str, workflow_ids: list[str]) -> None:
+    """`workflow_events` (design.md §2) has no FK to any job table — it's shared across
+    all three agents, keyed by (workflow_kind, workflow_id) — so it's cleaned up by that
+    pair explicitly rather than through `_delete_in`'s single-column filter."""
+    for chunk in _chunks(workflow_ids):
+        client.table("workflow_events").delete().eq("org_id", org_id).eq("workflow_kind", workflow_kind).in_(
+            "workflow_id", chunk
+        ).execute()
+
+
 def delete_project(client: Client, org_id: str, project_id: str) -> None:
     """Deletes a project and everything derived from it — design.md §4
     `DELETE /api/agent1/projects/{project_id}`. `client` is the service-role client;
@@ -159,7 +169,11 @@ def delete_project(client: Client, org_id: str, project_id: str) -> None:
 
     Agent 3 (design_agent3.md §13): also removes each job's `agent1-snapshots`
     source tarball, every execution job of the project with its unit rows, and
-    their `agent3-output` objects, and refuses while an execution job is active."""
+    their `agent3-output` objects, and refuses while an execution job is active.
+
+    Also removes `workflow_events` (design.md §2) for every ingestion, planning
+    and execution job of the project, keyed by (workflow_kind, workflow_id)
+    since the table has no FK to any job table."""
     jobs = (
         client.table("ingestion_jobs")
         .select("id, status, source_type, source_ref, source_snapshot_path")
@@ -192,12 +206,15 @@ def delete_project(client: Client, org_id: str, project_id: str) -> None:
     # Agent 3 first: unit_executions reference the plan's clusters and execution_jobs
     # reference its plans, and neither cascades from Agent 2's rows.
     execution_job_ids = [row["id"] for row in execution_jobs]
+    _delete_workflow_events(client, org_id, "agent3_execution", execution_job_ids)
     _delete_in(client, "unit_executions", org_id, "execution_job_id", execution_job_ids)
     client.table("execution_jobs").delete().eq("org_id", org_id).eq("project_id", project_id).execute()
 
     # Agent 2: plan rows first (no cascade from plans), then planning jobs, whose FKs
     # cascade to clusters, cluster_members, cluster_reports and cluster_edges.
     plan_ids = _ids(client, "migration_plans", org_id, "project_id", project_id)
+    planning_job_ids = [row["id"] for row in planning_jobs]
+    _delete_workflow_events(client, org_id, "agent2_planning", planning_job_ids)
     for table in ("plan_overrides", "phase_approvals", "migration_plan_items"):
         _delete_in(client, table, org_id, "plan_id", plan_ids)
     client.table("migration_plans").delete().eq("org_id", org_id).eq("project_id", project_id).execute()
@@ -205,6 +222,7 @@ def delete_project(client: Client, org_id: str, project_id: str) -> None:
 
     # Agent 1. latest_job_id points at one of the jobs being deleted.
     client.table("projects").update({"latest_job_id": None}).eq("org_id", org_id).eq("id", project_id).execute()
+    _delete_workflow_events(client, org_id, "agent1_ingestion", [job["id"] for job in jobs])
     for job in jobs:
         job_id = job["id"]
         # summary_cache is org-wide and has no job_id: drop the rows pointing at this

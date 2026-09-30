@@ -5,6 +5,7 @@ This file orients Claude / Claude Code whenever it works in this repo. Read it f
 - **Agent 1:** `docs/specs.md`, `docs/design.md`, `docs/tasks.md`
 - **Agent 2:** `docs/specs_agent2.md`, `docs/design_agent2.md`, `docs/tasks_agent2.md`
 - **Agent 3:** `docs/specs_agent3.md`, `docs/design_agent3.md`, `docs/tasks_agent3.md`
+- **Frontend redesign (Agent 1 run view, Agent 2 plan document):** `docs/tasks_frontend.md`, reference prototype in `playground/`
 
 `docs/skills.md` covers the tech stack for all three.
 
@@ -32,7 +33,8 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 │   ├── tasks_agent2.md      # Agent 2 phased tasks (backend paired with frontend)
 │   ├── specs_agent3.md      # Agent 3 spec
 │   ├── design_agent3.md     # Agent 3 architecture, data model, sandbox, target architecture, API
-│   └── tasks_agent3.md      # Agent 3 phased tasks (backend paired with frontend)
+│   ├── tasks_agent3.md      # Agent 3 phased tasks (backend paired with frontend)
+│   └── tasks_frontend.md    # Frontend redesign tasks (Agent 1 run view, Agent 2 plan document)
 ├── backend/document_analyzer/          # Python / FastAPI
 │   ├── (Agent 1 API modules), worker/  # Agent 1 worker: `uv run document-analyzer-worker`
 │   │   └── worker/graphify/            # Graphify extractor host side (container runner, validation, mapping)

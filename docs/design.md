@@ -149,6 +149,38 @@ For a secret found in source evidence (§5a) the row points at the chunk's first
 
 Both are written by the worker (service role) and read-only to authenticated users of the org, same RLS pattern as `extracted_entities`. `match_source_chunks(job_id, query vector, count)` is a `SECURITY INVOKER` SQL function (exact cosine distance), so the caller's RLS still decides which rows exist.
 
+### `workflow_events` (added 2026-09-28, tasks.md "Live workflow run view")
+An append-only stream of what a running workflow is doing, rendered live by the frontend's run view (§6). One table is shared by all three agents, keyed by `(workflow_kind, workflow_id)`. Each agent writes only its own rows, so no agent calls another. Agent 1 is the first producer.
+
+| column | type | notes |
+|---|---|---|
+| `id` | bigserial, PK | the read cursor (`?after=`); increases in insert order |
+| `org_id` | uuid | RLS scope, stamped from the job row (never from repo content) |
+| `workflow_kind` | text | check `agent1_ingestion`, `agent2_planning`, `agent3_execution` |
+| `workflow_id` | uuid | the job row's `id` (`ingestion_jobs.id` for Agent 1). No FK, since it can point at any agent's job table |
+| `event_type` | text | see below |
+| `stage` | text, nullable | a stage key the workflow declared in `workflow.started` |
+| `message` | text, nullable | a short human-readable line |
+| `data` | jsonb | per-type payload, below |
+| `created_at` | timestamptz | |
+
+Index on `(workflow_kind, workflow_id, id)`. RLS: authenticated users `select` their org's rows (`current_org_id()`). Writes are service-role only, with no user-facing insert/update/delete policy.
+
+**Event types:**
+- `workflow.started`: `data.stages = [{key, label}]`. The workflow declares its own stages, so the UI never hardcodes them. `workflow.completed`. `workflow.failed`: `data.error`. `workflow.cancelled` (added 2026-09-29, §4 cancel): tagged with the stage that was open; that stage did not complete.
+- `stage.started` / `stage.completed`: `stage` = the key.
+- `activity`: `message`, `data.level` (`info | warn | error`) and `data.refs = [{kind: file|repo|entity|id|commit, value}]`. The UI highlights the refs and doesn't parse free text.
+- **Warnings** are `activity` events with `data.level = warn`: the phase is the event's `stage`, the message is `message`, and the affected files are the `file` refs (capped at 10, with the total in the message). No separate event type. Agent 1 warns when Graphify is unavailable (non-PHP code not analysed), when Graphify only partly extracted some files, when files were skipped while building source evidence, and when an entity summary ends `unverified`. A phase that completes after a warning reads as "Completed with warning". Warnings never fail or block a job.
+- `output.created` / `output.updated`: `data = {output_id, kind, label, status}`.
+- `stats.updated`: `data` is a flat `{name: number}` map. The client merges maps as they arrive and renders whatever keys it has. **Discovered stats** (added 2026-09-29, `worker/discovery.py`), sent once right after the `filter` stage while the repo is on disk: `loc` (lines across recognised source files), `language.<Name>` (source files in that language), `framework.<Name>` (`1` per framework the extractors recognise: WordPress, Laravel) and `dependencies` (distinct packages in composer.json, package.json and requirements.txt). The map is flat, so names live in the key prefix rather than a nested object.
+- `progress.updated` (added 2026-09-29, `tasks_frontend.md` A1.6): `stage` = the stage it measures, `data = {done, total, unit, current_path}` (`unit` is a plural noun such as `entities` or `summaries`; `current_path` may be null). The latest event per stage wins; the client ignores one whose `done` is lower than what it already has for that stage, since the summarizer's threads can emit out of order. **Throttled at the emitter** to at most one event per second per workflow, except the closing one (`done >= total`), which is always sent. Agent 1 emits it for `summarize` (entities) and `fold` (module, subsystem and repo summaries). `fetch`, `filter`, `snapshot`, `extract` and `evidence` emit none, so they stay indeterminate: the extractors run as one call with no per-file hook.
+
+**Agent 1 stages:** `fetch → filter → snapshot → extract → evidence → summarize → fold`. These are finer than `ingestion_jobs.progress_stage`, which keeps its existing writes unchanged (§3).
+
+**Rules:**
+- Events are written by `shared/workflow_events.py::WorkflowEventEmitter`, which buffers and flushes in batches (the entity fan-out runs in a thread pool). An emit or flush failure is logged and dropped. It never fails the job, same as grounding failures.
+- Payloads are untrusted repository text (paths, entity names). The frontend renders them as React text only. No source excerpts or secret-scan content go into events.
+
 ### `knowledge_summaries`
 | column | type | notes |
 |---|---|---|
@@ -295,7 +327,9 @@ Poll job status.
 ```json
 {
   "job_id": "uuid",
-  "status": "queued | running | done | failed",
+  "project_id": "uuid | null",
+  "queue_position": "int | null",
+  "status": "queued | running | done | failed | cancelled",
   "progress_stage": "extracting | summarizing | grounding | null",
   "error": "string | null",
   "changed_file_count": "int | null",
@@ -303,7 +337,22 @@ Poll job status.
   "removed_file_count": "int | null"
 }
 ```
-The three counts are `null` until `worker/diff.py` runs (early in `extracting`, right after this job's own entities are persisted — see §3), and stay populated afterward regardless of how the job ends. tasks.md Phase 5's frontend task ("distinguishing a fresh ingestion from a cached/incremental one") is what actually reads these — `unchanged_file_count > 0` with `previous_job_id` having existed (implied by any file being `unchanged` at all) means at least some of this run reused prior work; a first-time ingestion for a project has `unchanged_file_count == 0` by construction (§3's "File diff" note).
+`queue_position` (added 2026-09-29) is how many jobs are ahead of this one while it is `queued` (jobs currently `running` plus jobs queued earlier), `0` meaning it is next; `null` in every other status. The worker takes one job at a time from a queue shared by every org, so the count is global: it is computed with the service-role client and only the number is returned, never anything about the other jobs. It is best effort: any failure to compute it returns `null` rather than failing the poll. `project_id` (added 2026-09-29) is the project this run belongs to, so a job page can reach the project's re-ingest action (`POST /projects/{project_id}/reingest`) and its plan flow without guessing; it is already a column on `ingestion_jobs`. It is `null` only for a job that predates projects. The three counts are `null` until `worker/diff.py` runs (early in `extracting`, right after this job's own entities are persisted — see §3), and stay populated afterward regardless of how the job ends. tasks.md Phase 5's frontend task ("distinguishing a fresh ingestion from a cached/incremental one") is what actually reads these — `unchanged_file_count > 0` with `previous_job_id` having existed (implied by any file being `unchanged` at all) means at least some of this run reused prior work; a first-time ingestion for a project has `unchanged_file_count == 0` by construction (§3's "File diff" note).
+
+### `POST /api/agent1/jobs/{job_id}/cancel`
+Stops a run the user no longer wants (added 2026-09-29, `tasks_frontend.md` A1.4). No body.
+```json
+{ "job_id": "uuid", "status": "cancelled" }
+```
+- `404` for a missing job or another org's job (indistinguishable, like `GET /jobs/{job_id}`).
+- `409` when the job is already `done` or `failed`; there is nothing to stop.
+- Idempotent: cancelling an already `cancelled` job returns `200` with the same body.
+
+**Semantics.** The API verifies the org with the caller's client, then sets `ingestion_jobs.status = cancelled` with the service-role client, filtered by `id`, `org_id` and `status in (queued, running)` so it can never overwrite a terminal status. If that update matches no row because the job finished a moment earlier, the response is `409`. `job_status` gains a `cancelled` value (migration `20260929000000_job_status_cancelled.sql`); the enum is shared with Agent 2 and Agent 3 jobs, which never write it.
+
+**Worker.** A `queued` job that is cancelled is skipped when dequeued (`cancelled` is a terminal status, like `done` and `failed`), and its queue message is deleted as for any skipped job. A `running` job checks `ingestion_jobs.status` at every stage boundary and before each entity summary (the check is throttled to about once a second and shared by the summarizer's threads). On seeing `cancelled` it raises `JobCancelled`, stops starting new work, lets calls already in flight finish, emits `workflow.cancelled` (tagged with the open stage) and writes nothing else: it does not set `failed`, and `mark_job_done_if_ready` and `mark_job_failed` only transition a job that is still `queued` or `running`, so a cancel is never overwritten. `projects.latest_job_id` only ever moves on `done`, so a cancelled run never becomes a project's current state, and file diffs only compare against `done` runs. Rows the run already wrote (entities, summaries, snapshot) are left in place and removed with the project; there is no partial-result cleanup.
+
+Pause and resume are out of scope: no endpoint, no `paused` status.
 
 ### `GET /api/agent1/jobs/{job_id}/summary`
 Only valid once `status == done`. Returns the repo-level summary plus counts, for a dashboard view.
@@ -389,6 +438,21 @@ The job's `extraction_coverage` report (§2), kept off the status-poll payload b
 {"job_id": "uuid", "status": "done", "coverage": {"graphify": {"status": "ran", "counts_by_status": {"extracted": 8}, "by_language": {"python": {"extracted": 6}}, "not_extracted_count": 0, "...": "..."}, "evidence": {"chunks": 11, "files_skipped_count": 0, "...": "..."}}}
 ```
 
+### `GET /api/agent1/jobs/{job_id}/events` (added 2026-09-28)
+The job's `workflow_events` (§2, `workflow_kind = agent1_ingestion`), for the live run view (§6). Cursor-paged: `?after=<id>` (default `0`) returns only events with a larger `id`, oldest first; `?limit=` defaults to 500 and is capped at 500. Uses the request-scoped client, so RLS decides visibility. `404` for a missing or other-org job, same as the other job routes. Doesn't gate on job status.
+```json
+{
+  "job_id": "uuid",
+  "status": "queued | running | done | failed",
+  "events": [
+    {"id": 42, "event_type": "activity", "stage": "extract", "message": "PhpExtractor: 120 entities, 310 edges", "data": {"level": "info", "refs": []}, "created_at": "timestamptz"}
+  ],
+  "next_cursor": 42,
+  "server_time": "timestamptz"
+}
+```
+`next_cursor` is the last returned event's `id`, or the request's `after` when no events are returned, so the client can always pass it straight back. `server_time` lets the client correct its own clock for the elapsed-time display. The client polls about every 1.5 s while `status` is `queued`/`running`, and once more after a terminal status to drain the tail. Supabase Realtime is an optional later replacement for the poll.
+
 ### `POST /api/agent1/jobs/{job_id}/ask` (added 2026-09-28)
 Cited Q&A over one job's knowledge base, merged in from Galvanise. Body `{"question": "..."}` (1–2000 chars). Retrieval (`ask/context.py`) runs on the caller's RLS-scoped client and is deterministic: semantic search over `source_chunks` (`match_source_chunks`, the question embedded with the pinned local model) plus symbol/path search over the job's entity names, fused by reciprocal rank; the top chunks' entities seed a bounded two-hop expansion over `entity_edges` in both directions (per-node cap for hubs, edge and node caps); excerpts of the discovered entities join the candidates; overlapping excerpts of a file are merged and admitted by priority into a 12k-token budget (a quarter reserved for relationships). Then one Azure OpenAI call (`ask/answer.py`) that sees the repository data only inside per-request random fences, must answer in a fixed JSON shape, and may cite only the supplied `E#` evidence and `R#` relationship IDs.
 ```json
@@ -472,5 +536,6 @@ The existing React app (`frontend/`) needs, at minimum:
 3. A results view calling `GET /api/agent1/jobs/{job_id}/summary` and `.../entities` for the knowledge base browser.
 4. A project detail view (`ProjectDetailPage`, `frontend/src/main.jsx`, tasks.md Phase 5) calling `GET /api/agent1/projects/{project_id}` for job history and `POST /api/agent1/projects/{project_id}/reingest` for the re-ingest action — the reachable home for `.../reingest` that `ProjectsList`'s rows link to by `project_id` (design.md §4's own "should generally query by project_id, not a bare job_id" guidance).
 5. On a `done` job: an extraction-coverage panel (`ExtractionCoverage`) calling `GET .../coverage`, and an "Ask the codebase" panel (`AskCodebase`) calling `POST .../ask`, with clickable `E#`/`R#` citations that show the exact excerpt (2026-09-28, §5a).
+6. While a job runs (and afterwards, as its history): a generic **workflow run view** on `JobStatusPage` that polls `GET .../events?after=<cursor>` and renders any workflow's `workflow_events` (§2): a header with status and a live elapsed timer (corrected by `server_time`), a stepper built from the stages declared in `workflow.started`, a timestamped activity feed with highlighted refs, an outputs list from `output.*` events, and a stats footer from merged `stats.updated` maps. It knows nothing Agent 1-specific, so Agents 2 and 3 reuse it by pointing it at their own events endpoint (2026-09-28).
 
 See `tasks.md` for the concrete, checkable steps — each backend milestone has a paired frontend milestone so the two stay in sync as you build.
