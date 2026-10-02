@@ -301,6 +301,14 @@ footer { margin-top: 76px; color: var(--muted-foreground); font-size: 12px; disp
 .danger-button:hover:not(:disabled) { background: rgba(255,120,100,.24); border-color: rgba(255,156,138,.8); }
 .secondary-button { border: 1px solid rgba(var(--neutral-rgb),.18); color: var(--emphasis); background: transparent; }
 .secondary-button:hover:not(:disabled) { border-color: rgba(var(--neutral-rgb),.4); }
+/* GitHub delivery connection panel (agent3/GithubConnectionPanel.jsx) */
+.github-connection { max-width: 560px; }
+.github-connection-form { display: grid; gap: 4px; }
+.github-connection-label { margin-top: 10px; color: var(--emphasis); font-size: 13px; font-weight: 700; }
+.github-connection-help { margin: 12px 0 4px; line-height: 1.5; }
+.deliver-prs { margin: 12px 0 0; padding-left: 22px; line-height: 1.7; }
+.deliver-prs a { color: var(--emphasis); }
+.github-connection-warnings { margin: 12px 0 0; padding: 10px 14px 10px 30px; border: 1px solid rgba(var(--neutral-rgb),.18); border-radius: 10px; color: var(--text); font-size: 13px; line-height: 1.5; }
 .danger-button:disabled, .secondary-button:disabled { opacity: .55; cursor: default; }
 .danger-button:focus-visible, .secondary-button:focus-visible { outline: 2px solid var(--danger-heading); outline-offset: 2px; }
 

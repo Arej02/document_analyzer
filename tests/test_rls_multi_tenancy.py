@@ -101,7 +101,11 @@ def _create_org_user(service_client, org_id: str, created_user_ids: list[str]) -
     )
     user_id = created.user.id
     created_user_ids.append(user_id)
-    service_client.table("org_members").insert({"user_id": user_id, "org_id": org_id}).execute()
+    # Upsert, not insert: the on_auth_user_created trigger (20260928020000_auto_org_on_signup.sql)
+    # has already given this user a membership in a random org, and user_id is the primary key.
+    # Re-pointing it at the test's org also means _delete_org removes the row, which is what
+    # lets the auth user be deleted afterwards.
+    service_client.table("org_members").upsert({"user_id": user_id, "org_id": org_id}, on_conflict="user_id").execute()
     return user_id, email, password
 
 
@@ -199,7 +203,14 @@ def _seed_org_a_chain(service_client, org_id: str, user_id: str) -> dict:
 
     agent2 = _seed_agent2_chain(service_client, org_id, user_id, project["id"], job["id"], entity["id"])
     agent3 = _seed_agent3_chain(
-        service_client, org_id, project["id"], job["id"], agent2["migration_plans"], agent2["clusters"], agent2["_phase_cluster_id"]
+        service_client,
+        org_id,
+        project["id"],
+        job["id"],
+        agent2["migration_plans"],
+        agent2["clusters"],
+        agent2["_phase_cluster_id"],
+        user_id,
     )
 
     report = _seed_report_chain(service_client, org_id, user_id, project["id"], job["id"])
@@ -318,7 +329,14 @@ def _seed_agent2_chain(service_client, org_id: str, user_id: str, project_id: st
 
 
 def _seed_agent3_chain(
-    service_client, org_id: str, project_id: str, job_id: str, plan_id: str, unit_cluster_id: str, phase_cluster_id: str
+    service_client,
+    org_id: str,
+    project_id: str,
+    job_id: str,
+    plan_id: str,
+    unit_cluster_id: str,
+    phase_cluster_id: str,
+    user_id: str,
 ) -> dict:
     """One row per Agent 3 table under org_id, FK-chained onto the Agent 1/2 rows above."""
     execution_job = insert_scoped(
@@ -341,7 +359,39 @@ def _seed_agent3_chain(
         },
     ).data[0]
 
-    return {"execution_jobs": execution_job["id"], "unit_executions": unit_execution["id"]}
+    # GitHub delivery (design_agent3.md §15.6). token_ref is a Vault secret id in real
+    # use; nothing here reads it, so a random uuid is enough for a row-level check.
+    connection = insert_scoped(
+        service_client,
+        "project_github_connections",
+        org_id,
+        {
+            "project_id": project_id,
+            "repo_full_name": "rls-smoke/target-repo",
+            "default_branch": "main",
+            "token_ref": str(uuid.uuid4()),
+            "created_by": user_id,
+        },
+    ).data[0]
+    delivery = insert_scoped(
+        service_client,
+        "deliveries",
+        org_id,
+        {
+            "execution_job_id": execution_job["id"],
+            "project_id": project_id,
+            "repo_full_name": "rls-smoke/target-repo",
+            "default_branch": "main",
+            "status": "done",
+        },
+    ).data[0]
+
+    return {
+        "execution_jobs": execution_job["id"],
+        "unit_executions": unit_execution["id"],
+        "project_github_connections": connection["project_id"],
+        "deliveries": delivery["id"],
+    }
 
 
 def _seed_report_chain(service_client, org_id: str, user_id: str, project_id: str, job_id: str) -> dict:
@@ -578,7 +628,7 @@ def test_org_members_rows_are_not_cross_readable(two_orgs):
 # --- Agent 3: writes are service-role only, and the agent3-output bucket -----
 
 
-@pytest.mark.parametrize("table", ["execution_jobs", "unit_executions"])
+@pytest.mark.parametrize("table", ["execution_jobs", "unit_executions", "project_github_connections", "deliveries"])
 def test_authenticated_users_cannot_insert_agent3_rows(two_orgs, table):
     """No insert policy on either table (design_agent3.md §2): only the worker and the
     API's service-role client write them, even into the user's own org."""

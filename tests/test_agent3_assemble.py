@@ -17,6 +17,7 @@ Four groups:
 
 import json
 import shutil
+import subprocess
 import zipfile
 from io import BytesIO
 
@@ -84,7 +85,15 @@ def _seed_unit_execution(client, cluster_id: str, *, status: str, attempts: int,
 
 
 def _execution_job() -> dict:
-    return {"id": JOB_ID, "org_id": ORG, "project_id": "p1", "plan_id": "plan-1", "source_job_id": "job-1", "params": PARAMS}
+    return {
+        "id": JOB_ID,
+        "org_id": ORG,
+        "project_id": "p1",
+        "plan_id": "plan-1",
+        "source_job_id": "job-1",
+        "params": PARAMS,
+        "created_at": "2026-10-01T12:00:00+00:00",
+    }
 
 
 @pytest.fixture
@@ -227,8 +236,9 @@ def test_final_test_writes_summary_counts_and_zip(monkeypatch, client, three_uni
     }
 
     bucket = client.storage.from_(assemble_module.OUTPUT_BUCKET)
-    [(path, contents, opts)] = bucket.uploads
-    assert path == f"{ORG}/{JOB_ID}/project.zip"
+    # project.zip, then the delivery manifest (design_agent3.md §15.3).
+    assert [path for path, _, _ in bucket.uploads] == [f"{ORG}/{JOB_ID}/project.zip", f"{ORG}/{JOB_ID}/manifest.json"]
+    path, contents, opts = bucket.uploads[0]
     assert opts["content-type"] == "application/zip"
     with zipfile.ZipFile(BytesIO(contents)) as archive:
         names = set(archive.namelist())
@@ -236,6 +246,81 @@ def test_final_test_writes_summary_counts_and_zip(monkeypatch, client, three_uni
         assert "README.md" in names
         assert "app/units/01_01_a/__init__.py" in names
         assert "tests/units/01_01_a/test_contract.py" in names
+
+
+def _zip_files(contents: bytes) -> dict[str, bytes]:
+    with zipfile.ZipFile(BytesIO(contents)) as archive:
+        return {name: archive.read(name) for name in archive.namelist()}
+
+
+def test_final_test_writes_a_manifest_the_commit_plan_accepts(monkeypatch, client, three_unit_state, tmp_path):
+    """design_agent3.md §15.3: the manifest plus the zip's own files are everything delivery
+    needs, and the plan built from them ends on exactly the zip's tree (§15.14)."""
+    from document_analyzer.agent3.commit_plan import build_commit_plan, tree_sha_of_files
+
+    run_assemble_stage(client, _execution_job(), three_unit_state)
+    monkeypatch.setattr(assemble_module, "run_pytest", lambda workspace, params: _sandbox_result(passed=3))
+    run_final_test_stage(client, _execution_job(), three_unit_state)
+
+    uploads = {path: contents for path, contents, _ in client.storage.from_(assemble_module.OUTPUT_BUCKET).uploads}
+    manifest = json.loads(uploads[f"{ORG}/{JOB_ID}/manifest.json"])
+    zip_files = _zip_files(uploads[f"{ORG}/{JOB_ID}/project.zip"])
+    # §15.5: the zip also carries a .git (when git is installed); the plan is built from the tree without it.
+    files = {name: data for name, data in zip_files.items() if not name.startswith(".git/")}
+
+    assert manifest["version"] == 1
+    assert manifest["created_at"] == "2026-10-01T12:00:00+00:00"
+    assert manifest["final_test_summary"]["passed"] == 3
+    assert [[u["unit_slug"] for u in phase["units"]] for phase in manifest["phases"]] == [["01_01_a", "01_02_b"], ["02_01_c"]]
+    assert [u["status"] for phase in manifest["phases"] for u in phase["units"]] == ["passed", "failed_verification", "error"]
+    assert manifest["phases"][1]["units"][0]["flags"] == ["stubbed"]
+    # The error unit never ran tests, so it owns only its stub file.
+    assert manifest["phases"][1]["units"][0]["files"] == ["app/units/02_01_c/__init__.py"]
+    # Scaffold = template + the fixed CI workflow, .gitignore and requirements; no README / units init.
+    assert ".github/workflows/ci.yml" in manifest["scaffold"]
+    assert ".gitignore" in manifest["scaffold"]
+    assert "requirements.txt" in manifest["scaffold"]
+    assert "README.md" not in manifest["scaffold"]
+    assert "app/units/__init__.py" not in manifest["scaffold"]
+
+    plan = build_commit_plan(manifest, files)
+
+    assert plan.final_tree_sha == tree_sha_of_files(files)
+    assert [c.kind for c in plan.commits] == ["baseline", "scaffold", "unit", "unit", "unit", "report"]
+    assert [g.key for g in plan.groups] == ["scaffold", "phase-1", "phase-2"]
+    assert not any(path.startswith(".git/") for path in manifest["scaffold"])
+    if shutil.which("git"):
+        # The zip's history is exactly this plan: extract it and ask git for HEAD.
+        extracted = tmp_path / "extracted"
+        with zipfile.ZipFile(BytesIO(uploads[f"{ORG}/{JOB_ID}/project.zip"])) as archive:
+            archive.extractall(extracted)
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=extracted, capture_output=True, check=True).stdout.decode().strip()
+        assert head == plan.commits[-1].commit_sha
+    else:
+        assert not any(name.startswith(".git/") for name in zip_files)
+
+
+def test_assembled_text_files_are_written_byte_exact_with_lf_endings(client, three_unit_state):
+    """`Path.write_text` would turn "\n" into "\r\n" on Windows (design_agent3.md §5, §15.14),
+    making the zip and every git blob depend on the host OS."""
+    run_assemble_stage(client, _execution_job(), three_unit_state)
+    project = three_unit_state.project_dir
+
+    for relative in ("app/units/__init__.py", "README.md", "requirements.txt", "app/units/01_01_a/__init__.py"):
+        assert b"\r" not in (project / relative).read_bytes(), relative
+
+
+def test_the_zip_ships_the_fixed_ci_workflow_with_pinned_actions(client, three_unit_state):
+    run_assemble_stage(client, _execution_job(), three_unit_state)
+    workflow = (three_unit_state.project_dir / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    for line in workflow.splitlines():
+        if "uses:" in line:
+            # Pinned by a full 40-hex commit SHA, never a movable tag (design_agent3.md §15.2).
+            assert "@" in line and len(line.split("@")[1].split()[0]) == 40, line
+    assert "contents: read" in workflow
+    assert "secrets." not in workflow
+    assert "pull_request" in workflow
 
 
 def test_final_test_does_not_raise_on_a_failing_suite(monkeypatch, client, three_unit_state):

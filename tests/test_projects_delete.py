@@ -36,13 +36,29 @@ WORKFLOW_EVENTS_TABLE = ("workflow_events",)
 @pytest.fixture
 def fake_client(monkeypatch):
     client = FakeClient(org_id="org-123")
-    client.cascades = {"planning_jobs": [("clusters", "planning_job_id")]}
+    # project_github_connections.project_id is `on delete cascade` (20261001100000_agent3_github_delivery.sql).
+    client.cascades = {
+        "planning_jobs": [("clusters", "planning_job_id")],
+        "projects": [("project_github_connections", "project_id")],
+    }
     monkeypatch.setattr(projects_router_module, "get_service_role_client", lambda: client)
     return client
 
 
 @pytest.fixture
-def api(fake_client):
+def vault_deleted(monkeypatch):
+    """Records the Vault secrets the router deletes; never touches a real database."""
+    deleted: list[str] = []
+
+    async def delete_secret(ref):
+        deleted.append(ref)
+
+    monkeypatch.setattr(projects_router_module.vault_secrets, "delete_secret", delete_secret)
+    return deleted
+
+
+@pytest.fixture
+def api(fake_client, vault_deleted):
     app = create_app()
 
     async def fake_auth():

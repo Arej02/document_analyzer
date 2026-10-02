@@ -795,7 +795,8 @@ function DeleteProjectAction({ project, onDeleted }) {
           <p className="reingest-hint">
             This permanently deletes all {project.jobs.length} run{project.jobs.length === 1 ? '' : 's'} of{' '}
             <code>{project.source_ref}</code>, their summaries, source snapshots, every migration plan built
-            from them, and the code generated from those plans. It can't be undone.
+            from them, the code generated from those plans, and the GitHub connection and stored token used for delivery.
+            Pull requests already opened on GitHub are not touched. It can't be undone.
           </p>
           <div className="delete-confirm-row">
             <button type="button" className="danger-button" onClick={remove} disabled={deleting}>
@@ -888,6 +889,11 @@ function ProjectDetailPage({ projectId, onSelectJob, onSelectPlanningJob, onSele
       )}
       {project && <PlansList projectId={projectId} onSelectPlan={onSelectPlan} />}
       {project && <ReportsSection projectId={projectId} onOpenReport={onOpenReport} />}
+      {project && (
+        <section className="job-history" aria-label="GitHub delivery settings">
+          <GithubConnectionPanel projectId={projectId} />
+        </section>
+      )}
       {project && (
         <section className="job-history" aria-label="Danger zone">
           <DeleteProjectAction project={project} onDeleted={onBackToList} />
@@ -1519,6 +1525,7 @@ function ExecutionResultsPage({ executionJobId, job, selectedUnitId, onSelectUni
         )}
         <PrimaryButton label="Back to plan" type="button" onClick={onBackToPlan} style={{ marginTop: 8 }} />
         <DownloadProjectButton executionJobId={executionJobId} hasOutput={Boolean(job?.has_output)} />
+        <DeliverToGithubAction executionJobId={executionJobId} projectId={job?.project_id} hasOutput={Boolean(job?.has_output)} />
       </section>
     </main>
   )

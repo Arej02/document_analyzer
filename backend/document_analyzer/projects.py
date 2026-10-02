@@ -163,7 +163,7 @@ def _delete_workflow_events(client: Client, org_id: str, workflow_kind: str, wor
         ).execute()
 
 
-def delete_project(client: Client, org_id: str, project_id: str) -> None:
+def delete_project(client: Client, org_id: str, project_id: str) -> list[str]:
     """Deletes a project and everything derived from it — design.md §4
     `DELETE /api/agent1/projects/{project_id}`. `client` is the service-role client;
     every query is filtered by `org_id`. Children go before parents because Agent 1's
@@ -180,7 +180,16 @@ def delete_project(client: Client, org_id: str, project_id: str) -> None:
 
     Also removes `workflow_events` (design.md §2) for every ingestion, planning
     and execution job of the project, keyed by (workflow_kind, workflow_id)
-    since the table has no FK to any job table."""
+    since the table has no FK to any job table.
+
+    GitHub delivery (design_agent3.md §15.11): refuses while a delivery is queued
+    or running, deletes the project's `deliveries`, and lets the project's
+    `project_github_connections` row go with the project (its FK cascades). The
+    connection's Vault secret can't be deleted from here (Vault is reached over an
+    async Postgres connection and this module stays free of Agent 3 and I/O
+    frameworks), so its reference is read BEFORE anything is deleted and returned:
+    the caller deletes those secrets once this has succeeded. A failed delete leaves
+    the connection row, and so the reference, in place for the retry."""
     jobs = (
         client.table("ingestion_jobs")
         .select("id, status, source_type, source_ref, source_snapshot_path")
@@ -217,6 +226,16 @@ def delete_project(client: Client, org_id: str, project_id: str) -> None:
         raise ProjectBusyError(
             "an ingestion, planning, code generation or report job for this project is still queued or running"
         )
+    token_refs = [
+        row["token_ref"]
+        for row in client.table("project_github_connections")
+        .select("token_ref")
+        .eq("org_id", org_id)
+        .eq("project_id", project_id)
+        .execute()
+        .data
+        if row.get("token_ref")
+    ]
 
     # Reports first: they reference the plans and ingestion jobs deleted below. Share links
     # and internal estimates are children of a report, and a report points at its job.
@@ -233,6 +252,8 @@ def delete_project(client: Client, org_id: str, project_id: str) -> None:
     execution_job_ids = [row["id"] for row in execution_jobs]
     _delete_workflow_events(client, org_id, "agent3_execution", execution_job_ids)
     _delete_in(client, "unit_executions", org_id, "execution_job_id", execution_job_ids)
+    # deliveries reference the execution job (cascade) and the project (no cascade).
+    client.table("deliveries").delete().eq("org_id", org_id).eq("project_id", project_id).execute()
     client.table("execution_jobs").delete().eq("org_id", org_id).eq("project_id", project_id).execute()
 
     # Agent 2: plan rows first (no cascade from plans), then planning jobs, whose FKs
@@ -300,6 +321,8 @@ def delete_project(client: Client, org_id: str, project_id: str) -> None:
                 bucket.remove(chunk)
         except Exception:  # noqa: BLE001 — the rows are gone; orphaned output isn't worth failing over
             logger.warning("project %s deleted but its generated code could not be removed", project_id, exc_info=True)
+
+    return token_refs
 
 
 def _list_objects(bucket, prefix: str) -> list[str]:
