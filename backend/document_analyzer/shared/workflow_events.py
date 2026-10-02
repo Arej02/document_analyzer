@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Same three values as the workflow_events.workflow_kind check constraint
 # (supabase/migrations/20260928030000_workflow_events.sql).
-VALID_WORKFLOW_KINDS = ("agent1_ingestion", "agent2_planning", "agent3_execution")
+VALID_WORKFLOW_KINDS = ("agent1_ingestion", "agent2_planning", "agent3_execution", "report_generation")
 
 FLUSH_BATCH_SIZE = 50
 FLUSH_INTERVAL_SECONDS = 1.0

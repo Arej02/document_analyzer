@@ -55,8 +55,15 @@ def job_ready_for_completion(client: Client, job_id: str, org_id: str) -> bool:
     knowledge_summaries row — see module docstring for why that's equivalent to "every
     summary has been through grounding + retry and resolved to verified/unverified"."""
     entities = (
-        client.table("extracted_entities").select("id").eq("job_id", job_id).eq("org_id", org_id).execute().data
+        client.table("extracted_entities")
+        .select("id, entity_type")
+        .eq("job_id", job_id)
+        .eq("org_id", org_id)
+        .execute()
+        .data
     )
+    # Declared packages are never summarized (design.md section 5), so they can't gate completion.
+    entities = [entity for entity in entities if entity.get("entity_type") != "dependency"]
     entity_summaries = (
         client.table("knowledge_summaries")
         .select("entity_id")

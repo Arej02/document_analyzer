@@ -31,7 +31,7 @@ import os
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
-from openai import AzureOpenAI
+from document_analyzer.shared.llm import LLMClient
 
 from document_analyzer.worker.ground import GroundingResult, check_grounding
 from document_analyzer.worker.summarize import RiskLevel, get_azure_openai_client
@@ -64,7 +64,7 @@ def check_grounding_with_retry(
     facts: dict,
     generate: Callable[[], SummaryLike],
     max_retries: int | None = None,
-    client: AzureOpenAI | None = None,
+    client: LLMClient | None = None,
 ) -> GroundingRetryResult:
     """Generates a summary via `generate()`, checks it against `facts`, and — while the
     verdict is "ungrounded" and the cap isn't exhausted — calls `generate()` again for a

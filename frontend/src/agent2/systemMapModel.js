@@ -16,6 +16,10 @@ const PAD_X = 28
 const PAD_TOP = 52
 const PAD_BOTTOM = 28
 const OUTER_GAP = 120
+// A dependency level with more phases than this wraps into side-by-side columns. One column of 46
+// single-unit phases (the sparse-graph case in design_agent2.md §15) is ~5,700px tall, and fit-to-view
+// cannot shrink that below the minimum zoom, so the bottom of the map would fall outside the canvas.
+export const MAX_ROWS = 8
 
 const RISK_RANK = { low: 1, medium: 2, high: 3 }
 const RISK_BY_RANK = [null, 'low', 'medium', 'high']
@@ -47,11 +51,21 @@ export function buildSystemMap({ plan, phaseGraph, routes = [], schemaTotal = nu
   })
   const maxDepth = Math.max(0, ...depth.values())
   // Callers on the left, what they call on the right.
-  const column = new Map(phases.map((p) => [p.phase_cluster_id, maxDepth - depth.get(p.phase_cluster_id)]))
+  const level = new Map(phases.map((p) => [p.phase_cluster_id, maxDepth - depth.get(p.phase_cluster_id)]))
+  // Each level takes ceil(count / MAX_ROWS) visual columns, so `col` below is a drawn column, not a level.
+  const levelCount = []
+  phases.forEach((p) => { const l = level.get(p.phase_cluster_id); levelCount[l] = (levelCount[l] ?? 0) + 1 })
+  const firstCol = []
+  let nextCol = 0
+  levelCount.forEach((n, l) => { firstCol[l] = nextCol; nextCol += Math.ceil((n ?? 0) / MAX_ROWS) })
 
+  const seenInLevel = []
   const rowsIn = []
   const nodes = phases.map((p) => {
-    const col = column.get(p.phase_cluster_id)
+    const l = level.get(p.phase_cluster_id)
+    const k = seenInLevel[l] ?? 0
+    seenInLevel[l] = k + 1
+    const col = (firstCol[l] ?? 0) + Math.floor(k / MAX_ROWS)
     const row = rowsIn[col] ?? 0
     rowsIn[col] = row + 1
     const units = p.units ?? []
@@ -68,7 +82,7 @@ export function buildSystemMap({ plan, phaseGraph, routes = [], schemaTotal = nu
     }
   })
 
-  const cols = maxDepth + 1
+  const cols = Math.max(1, nextCol)
   const tallest = Math.max(1, ...rowsIn.map((n) => n ?? 0))
   const innerH = tallest * NODE_H + (tallest - 1) * ROW_GAP
   const boundary = {

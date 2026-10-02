@@ -74,6 +74,7 @@ RLS is enforced on every table below via the authenticated session for reads. Wr
 | `source_commit_sha` | text, nullable | Agent 3 prerequisite (`design_agent3.md` §13) — the cloned commit's full SHA, from `git rev-parse HEAD` right after `fetch.py`'s `--depth 1` clone; null for archive uploads (no commit to record) and for jobs predating this column |
 | `source_snapshot_path` | text, nullable | Agent 3 prerequisite (`design_agent3.md` §13) — object path in the `agent1-snapshots` bucket for this job's post-boilerplate-strip source tarball, written by `worker/snapshot.py`; null for a job predating this column |
 | `extraction_coverage` | jsonb, nullable | (added 2026-09-28, §5a) what extraction and evidence actually covered: `graphify` (status `ran`/`unavailable`/`no_candidate_files`/`no_analysable_files`, per-status and per-language file counts, a capped sample of files not fully extracted, files claimed by the PHP extractors or with no code extractor, how Graphify relations were mapped/dropped) and `evidence` (chunks, files skipped, range basis, redactions). Bounded: counts plus capped samples, never the full file list. Null for jobs predating it |
+| `discovery_stats` | jsonb, nullable | (added 2026-10-01, Assessment Report prerequisite) the flat map `worker/discovery.py::discover_repo` returns and sends as `stats.updated`: `loc`, `dependencies`, `language.<Name>` (file counts), `framework.<Name>` (1 each). Written by the worker right after discovery. Null for jobs predating it, or if discovery failed (best effort) |
 
 ### `extracted_entities`
 | column | type | notes |
@@ -156,7 +157,7 @@ An append-only stream of what a running workflow is doing, rendered live by the 
 |---|---|---|
 | `id` | bigserial, PK | the read cursor (`?after=`); increases in insert order |
 | `org_id` | uuid | RLS scope, stamped from the job row (never from repo content) |
-| `workflow_kind` | text | check `agent1_ingestion`, `agent2_planning`, `agent3_execution` |
+| `workflow_kind` | text | check `agent1_ingestion`, `agent2_planning`, `agent3_execution`, `report_generation` (added 2026-10-01, Assessment Report) |
 | `workflow_id` | uuid | the job row's `id` (`ingestion_jobs.id` for Agent 1). No FK, since it can point at any agent's job table |
 | `event_type` | text | see below |
 | `stage` | text, nullable | a stage key the workflow declared in `workflow.started` |
@@ -191,6 +192,7 @@ Index on `(workflow_kind, workflow_id, id)`. RLS: authenticated users `select` t
 | `entity_id` | uuid, FK → `extracted_entities`, nullable | null for module/subsystem/repo level |
 | `summary_text` | text | |
 | `risk_level` | enum(`low`, `medium`, `high`) | |
+| `risk_factors` | jsonb, default `[]` | rubric signals the summarizer named (entity level), or the rolled-up factors (module and above). Cache hits copy it forward. Rows from before this column read `[]` ("signal not recorded") |
 | `embedding` | vector | pgvector column, dimension = pinned model's output size |
 | `grounding_status` | enum(`verified`, `unverified`) | |
 
@@ -285,7 +287,7 @@ Per job, in order: `mark_job_running` → resolve `github_token_ref` (if any) �
 
 `progress_stage` while `status = running`: `extracting` (fetch/detect/boilerplate/parse/persist — no LLM calls) → `summarizing` (the concurrent entity-level fan-out; grounding's regenerate-on-failure retry is itself part of generating an entity's final summary, not a separate phase) → `grounding` (the module → subsystem → repo fold). A pipeline failure (bad URL, unparseable archive, malformed LLM response after retries are exhausted at the *check* level — not to be confused with a normal `ungrounded`→retry→`unverified` outcome, which is not a failure) sets `status = failed` with `ingestion_jobs.error`, matching the stage the job died at.
 
-Deliberately out of scope for the first version, flagged rather than silently worked around: only one job processed at a time (no worker concurrency yet — revisit only if Phase 6 load testing shows it's a bottleneck, same call as pgmq itself above); a `summary_cache` hit's reconstructed `EntitySummary.risk_factors` is `[]` (the schema has no column for it, so a cached row can't recover the original list — only used for a rollup's explanatory naming, never the `risk_level` value itself).
+Deliberately out of scope for the first version, flagged rather than silently worked around: only one job processed at a time (no worker concurrency yet — revisit only if Phase 6 load testing shows it's a bottleneck, same call as pgmq itself above); a `summary_cache` hit copies `risk_factors` forward from the cached row (`[]` for rows written before the column existed).
 
 **Bugs found and fixed running an actual live job through this loop** (tasks.md Phase 4, "verify a real end-to-end run"):
 - `worker/run.py` never called `load_dotenv()` — only `app.py` did. The worker is a separate process from `uvicorn` (this section's whole premise), so it needs its own `.env` load; without it, every `os.environ[...]` read (`SUPABASE_DB_URL` first) raised `KeyError` before the loop could even start. Fixed by loading `.env` at the top of `run.py`, same pattern as `app.py`.
@@ -334,10 +336,12 @@ Poll job status.
   "error": "string | null",
   "changed_file_count": "int | null",
   "unchanged_file_count": "int | null",
-  "removed_file_count": "int | null"
+  "removed_file_count": "int | null",
+  "discovery_stats": "object | null",
+  "source_commit_sha": "string | null"
 }
 ```
-`queue_position` (added 2026-09-29) is how many jobs are ahead of this one while it is `queued` (jobs currently `running` plus jobs queued earlier), `0` meaning it is next; `null` in every other status. The worker takes one job at a time from a queue shared by every org, so the count is global: it is computed with the service-role client and only the number is returned, never anything about the other jobs. It is best effort: any failure to compute it returns `null` rather than failing the poll. `project_id` (added 2026-09-29) is the project this run belongs to, so a job page can reach the project's re-ingest action (`POST /projects/{project_id}/reingest`) and its plan flow without guessing; it is already a column on `ingestion_jobs`. It is `null` only for a job that predates projects. The three counts are `null` until `worker/diff.py` runs (early in `extracting`, right after this job's own entities are persisted — see §3), and stay populated afterward regardless of how the job ends. tasks.md Phase 5's frontend task ("distinguishing a fresh ingestion from a cached/incremental one") is what actually reads these — `unchanged_file_count > 0` with `previous_job_id` having existed (implied by any file being `unchanged` at all) means at least some of this run reused prior work; a first-time ingestion for a project has `unchanged_file_count == 0` by construction (§3's "File diff" note).
+`source_commit_sha` (added 2026-10-02, Agent 2 plan-document provenance line) is the `ingestion_jobs` column from §2, exposed as-is: the full SHA of the cloned commit, `null` for archive uploads, for jobs predating the column, and until the worker has fetched the source. `discovery_stats` (added 2026-10-01) is the flat discovery map described in §2 (`loc`, `dependencies`, `language.*`, `framework.*`); `null` until discovery has run and for jobs predating it. `queue_position` (added 2026-09-29) is how many jobs are ahead of this one while it is `queued` (jobs currently `running` plus jobs queued earlier), `0` meaning it is next; `null` in every other status. The worker takes one job at a time from a queue shared by every org, so the count is global: it is computed with the service-role client and only the number is returned, never anything about the other jobs. It is best effort: any failure to compute it returns `null` rather than failing the poll. `project_id` (added 2026-09-29) is the project this run belongs to, so a job page can reach the project's re-ingest action (`POST /projects/{project_id}/reingest`) and its plan flow without guessing; it is already a column on `ingestion_jobs`. It is `null` only for a job that predates projects. The three counts are `null` until `worker/diff.py` runs (early in `extracting`, right after this job's own entities are persisted — see §3), and stay populated afterward regardless of how the job ends. tasks.md Phase 5's frontend task ("distinguishing a fresh ingestion from a cached/incremental one") is what actually reads these — `unchanged_file_count > 0` with `previous_job_id` having existed (implied by any file being `unchanged` at all) means at least some of this run reused prior work; a first-time ingestion for a project has `unchanged_file_count == 0` by construction (§3's "File diff" note).
 
 ### `POST /api/agent1/jobs/{job_id}/cancel`
 Stops a run the user no longer wants (added 2026-09-29, `tasks_frontend.md` A1.4). No body.
@@ -507,6 +511,12 @@ Verified against a live Laravel repo (`hospital_test`, `tasks.md` §15's own dry
 
 **`raw_facts["end_line"]` (added 2026-09-25 — Agent 3 prerequisite, `design_agent3.md` §13):** every `function`/`class` entity from `PhpExtractor`, and every hook-occurrence/CPT/meta record from `WordPressExtractor`, now carries `end_line` alongside the existing `line` (`getEndLine()` in `backend/php/extract.php`/`wp_extract.php`, wherever the underlying AST node is still in scope) — Agent 3 needs the full source span of an entity to translate it, not just its start line. Since `content_hash` (§2) hashes the whole `raw_facts` dict, this changed every entity's hash once; the first re-ingestion of an already-ingested project after this change misses `summary_cache` and re-summarizes everything, same effect as the 2026-09-24 `calls` field addition (tasks.md Phase 6).
 
+**`DependencyExtractor` (added 2026-10-02 — tasks_agent2.md Phase 7, `design_agent2.md` §16):** persists the packages a repo declares as `dependency` entities, so the plan document's dependency inventory has a source. Before this, Agent 1 only had the transient `dependencies` count in `stats.updated` (`worker/discovery.py`).
+- **Source.** `composer.json` (`require`, `require-dev`), `package.json` (`dependencies`, `devDependencies`) and `requirements.txt`, parsed by `worker/discovery.py` (`declared_packages`), which `count_dependencies` now also uses, so the count and the entities cannot disagree. Composer's `php` and `ext-*` platform requirements are skipped. Pure parsing, nothing is executed.
+- **Shape.** One entity per package per manifest: `name` is the package name, `file_path` is the manifest path (repo-relative, `/` separators), `raw_facts` is `{ecosystem: composer|npm|pip, version_spec, manifest_path, dev}`. `version_spec` is the declared string as written (`^3`, `>=3.2`, `==2.31`), or `null` when none is given. No edges.
+- **Not summarized.** A dependency is a declared fact, so it gets no LLM summary, no grounding, and no evidence chunk. Entity summarization and `job_ready_for_completion` skip `dependency` entities, otherwise a job could never complete. Agent 2's graph stage also skips them (read-only workaround, `design_agent2.md` §13): a package is not code to cluster into a migration unit.
+- **Visible elsewhere.** They appear in the entity browser and Q&A like any other entity, and in the file diff against the previous job.
+
 ## 5a. Graphify extraction and source evidence (merged from Galvanise, 2026-09-28)
 
 Agent 1 had two gaps that a parallel build ("Galvanise") had already solved: it parsed only PHP, and it kept only structural facts and LLM paraphrases of the code — so a summary could only be checked against what the extractor chose to record, search depended on summary quality, and Agent 3 had to dig the source out of a tarball. The merge keeps Agent 1's data model, queue, RLS and pipeline and adds Galvanise's extraction, evidence and Q&A pieces behind them.
@@ -539,3 +549,55 @@ The existing React app (`frontend/`) needs, at minimum:
 6. While a job runs (and afterwards, as its history): a generic **workflow run view** on `JobStatusPage` that polls `GET .../events?after=<cursor>` and renders any workflow's `workflow_events` (§2): a header with status and a live elapsed timer (corrected by `server_time`), a stepper built from the stages declared in `workflow.started`, a timestamped activity feed with highlighted refs, an outputs list from `output.*` events, and a stats footer from merged `stats.updated` maps. It knows nothing Agent 1-specific, so Agents 2 and 3 reuse it by pointing it at their own events endpoint (2026-09-28).
 
 See `tasks.md` for the concrete, checkable steps — each backend milestone has a paired frontend milestone so the two stay in sync as you build.
+## 7. Cost accounting (added 2026-10-01, all agents)
+
+Every Azure OpenAI call is recorded (tokens, estimated cost, latency) so we can see cost per job, stage, unit and entity, report gross margin, and later predict migration cost. This section is the shared design. `design_agent2.md` §17 and `design_agent3.md` §15 add only what is agent-specific. Tasks are in `tasks.md` ("LLM cost accounting").
+
+**Principles**
+- **Internal only.** Org members never see cost. Only operators do (`COST_OPERATOR_USER_IDS`, §7.4). Cost is therefore kept out of `ingestion_jobs`, `planning_jobs`, `execution_jobs`, `workflow_events` and every API response those tables feed, because job rows and events are org-readable through RLS/PostgREST.
+- **Best effort, never blocking.** Cost logging must never fail, slow or cancel a job or a request. A failed insert or flush logs a warning (with the dropped row count) and is swallowed. A hard kill loses only the unflushed buffer (at most N rows or N seconds of calls, §7.3).
+- **One choke point.** Only `shared/llm.py` may import `openai` or construct `AzureOpenAI`. A guard test (AST scan of `backend/document_analyzer/`) enforces it.
+- **No content stored.** Prompts and responses are never recorded, only metadata. Errors store the exception class name only.
+- **`cost_usd` is a list-price estimate.** It is computed from `shared/llm_pricing.toml`, not from the invoice. It ignores negotiated discounts, provisioned-throughput commitments and rounding on Azure's side. Reconcile with the Azure invoice for real margin. Every row stores `pricing_version` so old rows stay explainable after prices change.
+
+### 7.1 Data model
+
+Both tables are `org_id`-scoped, have RLS **enabled with no anon/authenticated policies** (deny by default: they hold internal cost data, so no tenant may read them, not even for their own org), and are written only by the service-role connection. `org_id` is stamped from the job row (or `AuthContext` for Q&A), never from repository content.
+
+**`llm_invocations`** (append-only, one row per API call, retries included): `id, org_id, created_at, agent` (`agent1|agent2|agent3|report`), `job_type` (`ingestion|planning|execution|qa|report`), `job_id` (null for Q&A; no FK because it points at three tables), `source_job_id` (Q&A's ingestion job), `requested_by` (Q&A caller), `run_id` (one per worker pickup, so a pgmq redelivery that runs a job twice stays separable), `stage`, `purpose` (`entity_summary`, `grounding_check`, `module_summary`, `subsystem_summary`, `repo_summary`, `cluster_report`, `phase_report`, `code_generation`, `behaviour_tests`, `qa_answer`, `executive_summary`), `entity_id`, `cluster_id` (the unit, for Agent 3), `attempt` (inner parse/validation attempt), `round` (Agent 3's outer sandbox-feedback round), `retry_reason` (`parse|grounding|sandbox_feedback`), `deployment`, `response_model`, `prompt_tokens, completion_tokens, cached_prompt_tokens, reasoning_tokens, total_tokens` (nullable when unknown), `cost_usd numeric(12,6)` (nullable: unknown model), `pricing_version`, `latency_ms`, `status` (`ok|error`), `error_class`. A CHECK ties `agent` to `job_type`. Indexes: `(job_type, job_id)`, `(org_id, created_at)`, `(purpose)`, `(org_id, job_type, job_id)`.
+
+**`llm_job_costs`** (internal rollup, unique `(job_type, job_id)`): `org_id, agent, job_type, job_id, tokens, cost_usd, calls, error_calls, updated_at`. Each agent upserts only its own `job_type`, from in-memory totals at flush time. Read-only views with `security_invoker = true` (the repo has none yet) give cost per job, per job and stage, per job and purpose, and per execution unit (calls, rounds, attempts). `select` is revoked from anon and authenticated on the tables and views.
+
+`ingestion_jobs` also gets `summary_cache_hits` / `summary_cache_misses` integers. These are counts, not money, so they may live on the org-readable row. They explain why a re-ingestion was cheap.
+
+### 7.2 Pricing (`shared/llm_pricing.toml`, `shared/llm_pricing.py`)
+
+Entries are keyed by **model-id prefix** (matched against `response.model`, because deployment names are arbitrary, e.g. `AGENT3_MODEL_DEPLOYMENT`), with an optional per-deployment override and an `effective_from` date. Each has per-million-token input, cached-input and output prices, and `pricing_version` is the entry id. Math is `Decimal`: cached prompt tokens at the cached rate, the remaining prompt tokens at the input rate, completion tokens at the output rate. Reasoning tokens are already inside `completion_tokens`, so they are recorded but not charged twice. An unknown model gives `cost_usd = null` and one warning, never an error.
+
+### 7.3 Wrapper (`shared/llm.py`)
+
+- `get_azure_openai_client()` moves here (re-exported from `worker/summarize.py` so existing imports keep working) and sets `max_retries` explicitly (2, the previous SDK default). The SDK's own 429/5xx retries are invisible to us and their backoff counts toward `latency_ms`. That is deliberate and documented: making them visible would mean `max_retries=0` plus a retry loop of our own.
+- `LLMClient` is a protocol for type hints, replacing `AzureOpenAI` in annotations elsewhere.
+- `MeteredLLMClient(base, ctx, recorder)` exposes the same `.chat.completions.create` shape. `bind(purpose=, entity_id=, cluster_id=, attempt=, round=, retry_reason=)` returns a new immutable client. Context lives on the client object, not in contextvars, because the summary and report fan-outs use `ThreadPoolExecutor` and contextvars don't cross into pool threads. For each call it measures latency, reads `usage`, computes cost, and records error calls (class name only) before re-raising the original exception. All current call sites are non-streaming JSON-mode, so `usage` is always present on success.
+- `LLMCostRecorder` is a thread-safe buffer. It flushes every N rows / N seconds, at the end of each stage, in a `finally` on success, failure and `JobCancelled`, and via `atexit`. A flush never raises.
+- Three retry layers exist and are recorded as separate rows: inner parse/validation attempts (`attempt`), the grounding retry (`purpose=grounding_check`, `retry_reason=grounding`), and Agent 3's outer rounds (`round`).
+- Agent 2 reuses Agent 1's grounding helper, so `agent` comes from the caller's client context, never from the helper.
+- MiniLM embeddings are local and are not recorded.
+- Q&A runs in the API process: it uses a per-request recorder with the service-role client, flushed in a `finally`, with `job_type='qa'`, `source_job_id` and `requested_by`. It must never fail or slow the request.
+
+### 7.4 Operator access and endpoints
+
+`shared/` gets a helper on top of `get_auth_context` that checks the caller's user id against `COST_OPERATOR_USER_IDS` (comma-separated env var, empty by default, so nobody has access unless configured). Every cost endpoint uses it. **A non-operator gets `404`**, the same as a missing or other-org job, so the endpoint's existence isn't revealed. Reads use the service-role client filtered by the caller's `org_id` **and** the job id (RLS doesn't apply to the service role, so both filters are mandatory).
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/agent1/jobs/{job_id}/cost` | Ingestion job: `{total: {cost_usd, tokens, calls, error_calls, unpriced_calls}, by_stage, by_purpose, cache: {hits, misses}}` |
+| `GET /api/agent1/jobs/{job_id}/qa-cost` | Q&A spend against this ingestion job (`job_type='qa'`, `source_job_id = job_id`), same shape without `cache` |
+| `GET /api/agent2/planning-jobs/{planning_job_id}/cost` | Planning job, same shape without `cache` |
+| `GET /api/agent3/executions/{execution_job_id}/cost` | Execution job, same shape without `cache`, plus `by_unit: [{cluster_id, calls, rounds, attempts, cost_usd}]` |
+
+`total.cost_usd` is `null` when any contributing row has an unknown price (`unpriced_calls` says how many), never a silently low sum. The frontend shows a total cost chip and a by-stage table (by unit on Agent 3) to operators on each run view. On `404` it renders nothing.
+
+### 7.5 Not decided here
+
+Predicting migration cost from Agent 1 / 2 facts, and a margin report against the Azure invoice, are later work. This section only guarantees the data they will need.

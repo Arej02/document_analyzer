@@ -34,7 +34,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable
 
-from openai import AzureOpenAI
 from supabase import Client
 
 from document_analyzer.agent2.worker.cluster import ClusterResult, Unit
@@ -44,6 +43,7 @@ from document_analyzer.worker.embed import embed_text
 from document_analyzer.worker.ground_retry import check_grounding_with_retry
 from document_analyzer.worker.grounding_status import grounding_status_for
 from document_analyzer.worker.risk_rollup import rollup_risk
+from document_analyzer.shared.llm import LLMClient, attempt_numbered, bind_if_metered
 from document_analyzer.worker.summarize import RiskLevel, get_azure_openai_client
 
 # design_agent2.md §12 — only bounds throughput, never changes results, so it is
@@ -205,14 +205,18 @@ def _generate(
     system_prompt: str,
     facts: dict,
     risk: tuple[RiskLevel, list[str]],
-    llm_client: AzureOpenAI,
+    llm_client: LLMClient,
     what: str,
+    regenerated: bool = False,
 ) -> ClusterReport:
     """One report attempt; malformed responses are retried up to REPORT_PARSE_RETRIES times."""
     deployment = os.environ["AZURE_OPENAI_DEPLOYMENT"]
     problem = ""
-    for _ in range(REPORT_PARSE_RETRIES + 1):
-        response = llm_client.chat.completions.create(
+    for attempt in range(1, REPORT_PARSE_RETRIES + 2):
+        # Cost accounting: every parse retry is its own row; the first attempt of a
+        # grounding regeneration is tagged 'grounding'.
+        retry_reason = "parse" if attempt > 1 else ("grounding" if regenerated else None)
+        response = bind_if_metered(llm_client, attempt=attempt, retry_reason=retry_reason).chat.completions.create(
             model=deployment,
             response_format={"type": "json_object"},
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": json.dumps(facts)}],
@@ -238,11 +242,24 @@ def _generate(
 
 
 def _report_with_grounding(
-    cluster_id: str, system_prompt: str, facts: dict, risk, llm_client: AzureOpenAI, what: str
+    cluster_id: str,
+    system_prompt: str,
+    facts: dict,
+    risk,
+    llm_client: LLMClient,
+    what: str,
+    purpose: str = "cluster_report",
 ) -> _Outcome:
-    retry = check_grounding_with_retry(
-        facts, generate=lambda: _generate(system_prompt, facts, risk, llm_client, what), client=llm_client
-    )
+    generate_client = bind_if_metered(llm_client, purpose=purpose, cluster_id=cluster_id)
+    check_client = attempt_numbered(bind_if_metered(llm_client, purpose="grounding_check", cluster_id=cluster_id))
+    generations = 0
+
+    def generate() -> ClusterReport:
+        nonlocal generations
+        generations += 1
+        return _generate(system_prompt, facts, risk, generate_client, what, regenerated=generations > 1)
+
+    retry = check_grounding_with_retry(facts, generate=generate, client=check_client)
     return _Outcome(cluster_id=cluster_id, report=retry.summary, grounding_status=grounding_status_for(retry))
 
 
@@ -251,7 +268,7 @@ def build_reports(
     result: ClusterResult,
     summaries: dict[str, dict],
     params: dict,
-    llm_client: AzureOpenAI,
+    llm_client: LLMClient,
     max_workers: int | None = None,
 ) -> list[_Outcome]:
     """Unit reports, then phase reports, through the bounded pool. No DB access."""
@@ -261,7 +278,9 @@ def build_reports(
     def unit_job(unit: Unit) -> _Outcome:
         facts = unit_payload(graph, unit, summaries, degrees, max_unit_size)
         risk = _unit_risk(graph, unit, summaries)
-        return _report_with_grounding(unit.id, _UNIT_SYSTEM_PROMPT, facts, risk, llm_client, f"unit {unit.id}")
+        return _report_with_grounding(
+            unit.id, _UNIT_SYSTEM_PROMPT, facts, risk, llm_client, f"unit {unit.id}", "cluster_report"
+        )
 
     unit_by_id = {u.id: u for u in result.units}
 
@@ -269,7 +288,9 @@ def build_reports(
         members = [(unit_by_id[uid], report_by_unit[uid]) for uid in phase.unit_ids]
         facts = phase_payload(members)
         risk = rollup_risk([(r.label, r.risk_level) for _, r in members])
-        return _report_with_grounding(phase.id, _PHASE_SYSTEM_PROMPT, facts, risk, llm_client, f"phase {phase.id}")
+        return _report_with_grounding(
+            phase.id, _PHASE_SYSTEM_PROMPT, facts, risk, llm_client, f"phase {phase.id}", "phase_report"
+        )
 
     # Phases only depend on their own units' reports, so once every unit is done they
     # fan out through the same bounded pool.
@@ -312,7 +333,7 @@ def run_report_stage(
     planning_job: dict,
     graph: CanonicalGraph,
     result: ClusterResult,
-    llm_client: AzureOpenAI | None = None,
+    llm_client: LLMClient | None = None,
     embed: Callable[[str], list[float]] = embed_text,
     max_workers: int | None = None,
 ) -> list[_Outcome]:

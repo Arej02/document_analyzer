@@ -79,6 +79,7 @@ def persist_summary(
         "entity_id": entity_id,
         "summary_text": summary.summary_text,
         "risk_level": summary.risk_level,
+        "risk_factors": list(summary.risk_factors),
         "embedding": embedding,
     }
     return insert_scoped(client, "knowledge_summaries", org_id, row).data[0]

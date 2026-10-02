@@ -82,6 +82,19 @@ def persist_source_snapshot_path(client: Client, job_id: str, org_id: str, sourc
     )
 
 
+def persist_discovery_stats(client: Client, job_id: str, org_id: str, stats: dict) -> None:
+    """Records the flat discovery map (design.md §2 `ingestion_jobs.discovery_stats`): loc,
+    dependencies, language.<Name> and framework.<Name> counts, the same map the live
+    `stats.updated` event carries."""
+    (
+        client.table("ingestion_jobs")
+        .update({"discovery_stats": stats})
+        .eq("id", job_id)
+        .eq("org_id", org_id)
+        .execute()
+    )
+
+
 def persist_extraction_coverage(client: Client, job_id: str, org_id: str, coverage: dict) -> None:
     """Records what extraction and evidence actually covered (design.md §2
     `ingestion_jobs.extraction_coverage`): Graphify's per-status/per-language file counts

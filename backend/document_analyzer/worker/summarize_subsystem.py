@@ -33,7 +33,7 @@ import os
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from openai import AzureOpenAI
+from document_analyzer.shared.llm import LLMClient
 
 from document_analyzer.worker.risk_rollup import rollup_risk
 from document_analyzer.worker.summarize import RiskLevel, SummarizationError, get_azure_openai_client
@@ -95,7 +95,7 @@ def _summarize_children(
     level: str,
     child_level: str,
     children: list[ChildSummary],
-    client: AzureOpenAI | None,
+    client: LLMClient | None,
 ) -> tuple[str, RiskLevel, list[str]]:
     """Shared fold: one LLM call for summary_text (scoped to only `children`'s own
     summaries) plus the shared deterministic risk_level rollup. Returns raw fields so
@@ -131,7 +131,7 @@ def _summarize_children(
 
 
 def summarize_subsystem(
-    subsystem_name: str, module_summaries: list[ChildSummary], client: AzureOpenAI | None = None
+    subsystem_name: str, module_summaries: list[ChildSummary], client: LLMClient | None = None
 ) -> SubsystemSummary:
     """Folds one subsystem's (already-generated) module summaries into a subsystem
     summary. One LLM call, scoped only to this subsystem's modules."""
@@ -141,7 +141,7 @@ def summarize_subsystem(
     return SubsystemSummary(summary_text=summary_text, risk_level=risk_level, risk_factors=risk_factors)
 
 
-def summarize_repo(subsystem_summaries: list[ChildSummary], client: AzureOpenAI | None = None) -> RepoSummary:
+def summarize_repo(subsystem_summaries: list[ChildSummary], client: LLMClient | None = None) -> RepoSummary:
     """Folds every subsystem summary into the single repo-level summary. One LLM call,
     scoped only to subsystem summaries — never skips straight from modules to repo
     (specs.md FR4)."""

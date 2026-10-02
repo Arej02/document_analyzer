@@ -5,6 +5,7 @@ This file orients Claude / Claude Code whenever it works in this repo. Read it f
 - **Agent 1:** `docs/specs.md`, `docs/design.md`, `docs/tasks.md`
 - **Agent 2:** `docs/specs_agent2.md`, `docs/design_agent2.md`, `docs/tasks_agent2.md`
 - **Agent 3:** `docs/specs_agent3.md`, `docs/design_agent3.md`, `docs/tasks_agent3.md`
+- **Assessment Report (X-ray / Full Assessment, read-only consumer of Agents 1–3):** `docs/specs_report.md`, `docs/design_report.md`, `docs/tasks_report.md`
 - **Frontend redesign (Agent 1 run view, Agent 2 plan document):** `docs/tasks_frontend.md`, reference prototype in `playground/`
 
 `docs/skills.md` covers the tech stack for all three.
@@ -34,14 +35,18 @@ An agentic system that migrates legacy codebases (starting with PHP / WordPress)
 │   ├── specs_agent3.md      # Agent 3 spec
 │   ├── design_agent3.md     # Agent 3 architecture, data model, sandbox, target architecture, API
 │   ├── tasks_agent3.md      # Agent 3 phased tasks (backend paired with frontend)
-│   └── tasks_frontend.md    # Frontend redesign tasks (Agent 1 run view, Agent 2 plan document)
+│   ├── tasks_frontend.md    # Frontend redesign tasks (Agent 1 run view, Agent 2 plan document)
+│   ├── specs_report.md      # Assessment Report spec
+│   ├── design_report.md     # Assessment Report architecture, data model, estimator, rendering, sharing, API
+│   └── tasks_report.md      # Assessment Report phased tasks
 ├── backend/document_analyzer/          # Python / FastAPI
 │   ├── (Agent 1 API modules), worker/  # Agent 1 worker: `uv run document-analyzer-worker`
 │   │   └── worker/graphify/            # Graphify extractor host side (container runner, validation, mapping)
 │   ├── graphify_worker/                # stdlib-only code that runs *inside* the Graphify image
 │   ├── ask/                            # cited Q&A over a job (POST /api/agent1/jobs/{id}/ask)
 │   ├── agent2/                         # Agent 2 API router + worker: `uv run document-analyzer-planner`
-│   └── agent3/                         # Agent 3 API router + worker: `uv run document-analyzer-executor` (planned)
+│   ├── agent3/                         # Agent 3 API router + worker: `uv run document-analyzer-executor` (planned)
+│   └── report/                         # Assessment Report router + worker: `uv run document-analyzer-reporter` (planned)
 ├── backend/graphify_runner/ # Graphify image: `uv run document-analyzer-build-graphify-image`
 ├── supabase/migrations/     # every table/queue/RLS change goes here
 └── frontend/                # existing React app

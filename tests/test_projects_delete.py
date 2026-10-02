@@ -28,7 +28,8 @@ AGENT2_TABLES = (
     "phase_approvals",
     "plan_overrides",
 )
-AGENT3_TABLES = ("execution_jobs", "unit_executions", "deliveries", "project_github_connections")
+AGENT3_TABLES = ("execution_jobs", "unit_executions")
+REPORT_TABLES = ("report_generation_jobs", "assessment_reports", "report_share_links", "report_internal_estimates")
 WORKFLOW_EVENTS_TABLE = ("workflow_events",)
 
 
@@ -118,18 +119,22 @@ def _seed_project(client, org_id="org-123", source_type="github", source_ref="ht
     )
     _insert(client, "unit_executions", org_id, {"execution_job_id": execution_job["id"], "cluster_id": unit["id"]})
     _insert(client, "workflow_events", org_id, {"workflow_kind": "agent3_execution", "workflow_id": execution_job["id"], "event_type": "activity"})
-    _insert(
+
+    report_job = _insert(
         client,
-        "deliveries",
+        "report_generation_jobs",
         org_id,
-        {"project_id": project["id"], "execution_job_id": execution_job["id"], "repo_full_name": "acme/target", "default_branch": "main", "status": "done"},
+        {"project_id": project["id"], "tier": "full", "source_job_id": job["id"], "plan_id": plan["id"], "status": "done"},
     )
-    _insert(
+    report = _insert(
         client,
-        "project_github_connections",
+        "assessment_reports",
         org_id,
-        {"project_id": project["id"], "repo_full_name": "acme/target", "default_branch": "main", "token_ref": f"secret-{project['id']}", "created_by": "user-1"},
+        {"project_id": project["id"], "generation_job_id": report_job["id"], "source_job_id": job["id"], "plan_id": plan["id"]},
     )
+    _insert(client, "report_share_links", org_id, {"report_id": report["id"], "token_hash": f"hash-{report['id']}"})
+    _insert(client, "report_internal_estimates", org_id, {"report_id": report["id"]})
+    _insert(client, "workflow_events", org_id, {"workflow_kind": "report_generation", "workflow_id": report_job["id"], "event_type": "activity"})
     return project, job, planning_job
 
 
@@ -144,7 +149,7 @@ def test_delete_removes_the_project_and_everything_derived_from_it(api, fake_cli
 
     assert response.status_code == 204
     assert _rows(fake_client, "projects") == []
-    for table in AGENT1_TABLES + AGENT2_TABLES + AGENT3_TABLES + WORKFLOW_EVENTS_TABLE + ("summary_cache",):
+    for table in AGENT1_TABLES + AGENT2_TABLES + AGENT3_TABLES + REPORT_TABLES + WORKFLOW_EVENTS_TABLE + ("summary_cache",):
         assert _rows(fake_client, table) == [], table
 
 
@@ -154,7 +159,7 @@ def test_delete_leaves_other_projects_and_other_orgs_untouched(api, fake_client)
     foreign, _, _ = _seed_project(fake_client, org_id="org-999", source_ref="https://github.com/org/repo")
     before = {
         t: len(_rows(fake_client, t))
-        for t in AGENT1_TABLES + AGENT2_TABLES + AGENT3_TABLES + WORKFLOW_EVENTS_TABLE + ("summary_cache",)
+        for t in AGENT1_TABLES + AGENT2_TABLES + AGENT3_TABLES + REPORT_TABLES + WORKFLOW_EVENTS_TABLE + ("summary_cache",)
     }
 
     assert api.delete(f"/api/agent1/projects/{target['id']}").status_code == 204
@@ -308,88 +313,72 @@ def test_list_objects_pages_through_large_folders(fake_client, monkeypatch):
     assert sorted(projects._list_objects(bucket, "org-123/job")) == [f"org-123/job/units/u{n}/log.txt" for n in range(5)]
 
 
-# --- GitHub delivery (design_agent3.md §15.11) ---------------------------------
+# --- Assessment Report data (design_report.md §13) ---------------------------------------------------------
 
 
-def test_delete_removes_deliveries_and_the_connection_and_its_vault_secret(api, fake_client, vault_deleted):
+def _report_of(client, project):
+    return next(row for row in _rows(client, "assessment_reports") if row["project_id"] == project["id"])
+
+
+def test_delete_removes_reports_share_links_estimates_jobs_and_their_events(api, fake_client):
     project, _, _ = _seed_project(fake_client)
     other, _, _ = _seed_project(fake_client, source_ref="https://github.com/org/other")
+    kept_report = _report_of(fake_client, other)["id"]
 
     assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
 
-    assert [r["project_id"] for r in _rows(fake_client, "deliveries")] == [other["id"]]
-    assert [r["project_id"] for r in _rows(fake_client, "project_github_connections")] == [other["id"]]
-    assert vault_deleted == [f"secret-{project['id']}"]  # only this project's secret, never the other's
-
-
-def test_a_project_without_a_connection_deletes_no_secret(api, fake_client, vault_deleted):
-    project, _, _ = _seed_project(fake_client)
-    fake_client.table("project_github_connections").rows.clear()
-
-    assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
-
-    assert vault_deleted == []
+    assert [r["id"] for r in _rows(fake_client, "assessment_reports")] == [kept_report]
+    assert [r["report_id"] for r in _rows(fake_client, "report_share_links")] == [kept_report]
+    assert [r["report_id"] for r in _rows(fake_client, "report_internal_estimates")] == [kept_report]
+    assert [r["project_id"] for r in _rows(fake_client, "report_generation_jobs")] == [other["id"]]
+    kinds = [r["workflow_kind"] for r in _rows(fake_client, "workflow_events")]
+    assert kinds.count("report_generation") == 1
 
 
 @pytest.mark.parametrize("status", ["queued", "running"])
-def test_delete_is_refused_while_a_github_delivery_is_active(api, fake_client, vault_deleted, status):
+def test_delete_is_refused_while_a_report_job_is_active(api, fake_client, status):
     project, _, _ = _seed_project(fake_client)
-    next(r for r in _rows(fake_client, "deliveries") if r["project_id"] == project["id"])["status"] = status
+    next(r for r in _rows(fake_client, "report_generation_jobs") if r["project_id"] == project["id"])["status"] = status
 
     response = api.delete(f"/api/agent1/projects/{project['id']}")
 
-    assert response.status_code == 409 and "GitHub delivery" in response.json()["detail"]
-    assert len(_rows(fake_client, "projects")) == 1
-    assert len(_rows(fake_client, "deliveries")) == 1 and len(_rows(fake_client, "project_github_connections")) == 1
-    assert vault_deleted == []
+    assert response.status_code == 409
+    assert "report" in response.json()["detail"]
+    for table in ("assessment_reports", "report_share_links", "report_generation_jobs", "migration_plans"):
+        assert len(_rows(fake_client, table)) == 1, table
 
 
-@pytest.mark.parametrize("status", ["done", "failed"])
-def test_a_finished_delivery_does_not_block_delete(api, fake_client, status):
-    project, _, _ = _seed_project(fake_client)
-    next(r for r in _rows(fake_client, "deliveries") if r["project_id"] == project["id"])["status"] = status
-
-    assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
-
-
-def test_another_projects_active_delivery_does_not_block_delete(api, fake_client):
+def test_delete_removes_report_files_and_keeps_other_reports(api, fake_client):
     project, _, _ = _seed_project(fake_client)
     other, _, _ = _seed_project(fake_client, source_ref="https://github.com/org/other")
-    next(r for r in _rows(fake_client, "deliveries") if r["project_id"] == other["id"])["status"] = "running"
+    mine = _report_of(fake_client, project)["id"]
+    kept = f"org-123/{_report_of(fake_client, other)['id']}/report.html"
+    bucket = fake_client.storage.from_("reports")
+    for path in (f"org-123/{mine}/report.html", f"org-123/{mine}/report.pdf", kept):
+        bucket.upload(path, b"x")
 
     assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
 
+    assert set(bucket._objects) == {kept}
 
-def test_a_vault_failure_does_not_fail_a_delete_whose_rows_are_gone(api, fake_client, monkeypatch):
+
+def test_delete_tolerates_a_storage_failure_on_report_files(api, fake_client, monkeypatch):
     project, _, _ = _seed_project(fake_client)
+    bucket = fake_client.storage.from_("reports")
 
-    async def broken(ref):
-        raise RuntimeError("vault is down")
+    def broken_list(*args, **kwargs):
+        raise Exception("storage unavailable")
 
-    monkeypatch.setattr(projects_router_module.vault_secrets, "delete_secret", broken)
+    monkeypatch.setattr(bucket, "list", broken_list)
 
     assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
-    assert _rows(fake_client, "projects") == [] and _rows(fake_client, "project_github_connections") == []
+    assert _rows(fake_client, "assessment_reports") == []
+    assert _rows(fake_client, "projects") == []
 
 
-def test_a_failed_delete_keeps_the_connection_so_a_retry_still_removes_the_secret(fake_client, vault_deleted):
-    from document_analyzer.projects import delete_project
-
+def test_a_share_link_of_a_deleted_project_is_gone(api, fake_client):
     project, _, _ = _seed_project(fake_client)
-    projects_table = fake_client.table("projects")  # the fake hands back the same table object every time
-    real_delete, state = projects_table.delete, {"fail": True}
 
-    def delete():
-        if state["fail"]:
-            state["fail"] = False
-            raise RuntimeError("database went away")
-        return real_delete()
+    assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
 
-    projects_table.delete = delete
-
-    with pytest.raises(RuntimeError):
-        delete_project(fake_client, "org-123", project["id"])
-    assert len(_rows(fake_client, "project_github_connections")) == 1  # the reference survived the failure
-
-    assert delete_project(fake_client, "org-123", project["id"]) == [f"secret-{project['id']}"]
-    assert _rows(fake_client, "project_github_connections") == []
+    assert _rows(fake_client, "report_share_links") == []

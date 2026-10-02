@@ -52,7 +52,10 @@ export function buildRepoOverview({ stats, summary, routes } = {}) {
       loc: numberOr(stats?.loc),
       sourceFiles: languages.length ? sourceFiles : null,
       dependencies: numberOr(stats?.dependencies),
-      entities: entityCounts ? Object.values(entityCounts).reduce((n, c) => n + (Number.isFinite(c) ? c : 0), 0) : null,
+      // Declared packages are entities too (design.md §5) but have their own `dependencies` figure here.
+      entities: entityCounts
+        ? Object.entries(entityCounts).reduce((n, [type, c]) => (type === 'dependency' || !Number.isFinite(c) ? n : n + c), 0)
+        : null,
     },
     entityCounts,
     entryPoints: (routes ?? []).map((r) => ({ id: r.id, name: r.name, filePath: r.file_path })),

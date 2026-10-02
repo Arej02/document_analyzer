@@ -30,7 +30,8 @@ const PILL_STATUS = { queued: 'queued', running: 'in_progress', done: 'completed
 const PILL_LABEL = { queued: 'Queued', running: 'Running', done: 'Completed', failed: 'Failed', cancelled: 'Cancelled' }
 
 /**
- * slots: { diffSummary(job), liveTree(), restart(projectId), results(), browse() }
+ * slots: { diffSummary(job), liveTree(), restart(projectId), results(), browse(), cost?(job) }
+ * `cost` is the operator-only LLM cost panel; it renders nothing for non-operators.
  * onViewProject(projectId) navigates to the project page (where Generate plan lives).
  */
 export function RunView({ jobId, onBackToForm, onViewProject, slots }) {
@@ -98,6 +99,7 @@ export function RunView({ jobId, onBackToForm, onViewProject, slots }) {
           </CompletedState>
         ) : null}
         {body}
+        {job && status !== 'queued' && slots.cost ? slots.cost(job) : null}
         {active ? slots.liveTree() : null}
 
         <div className="a1-foot">

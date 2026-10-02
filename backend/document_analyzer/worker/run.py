@@ -37,12 +37,10 @@ raw generation.
 
 Known, deliberately out-of-scope-here limitations (flag, don't silently work
 around, per CLAUDE.md's own convention in this codebase):
-- `knowledge_summaries` has no `risk_factors` column (persist_summary.py) and
-  no column naming which module/subsystem a level=module/subsystem row is for
-  (cascade.py's documented schema gap) — a `summary_cache` hit reconstructs an
-  entity's `risk_factors` as `[]` (only used for a rollup's own explanatory
-  naming, never for the risk_level value itself, so this is lossy but not
-  incorrect) since the original in-memory value isn't the cached row.
+- `knowledge_summaries` has no column naming which module/subsystem a
+  level=module/subsystem row is for (cascade.py's documented schema gap).
+  `risk_factors` is persisted and copied forward on a `summary_cache` hit
+  (`[]` only for rows written before that column existed).
 - One job is processed at a time, serially, by one worker process — Phase 6's
   concurrency/throughput hardening is explicitly future work (design.md §3:
   "revisit only if load testing shows it's an actual bottleneck").
@@ -86,6 +84,7 @@ from document_analyzer.worker.graphify.extractor import GraphifyExtractionError,
 from document_analyzer.worker.ground_retry import GroundingRetryResult, check_grounding_with_retry
 from document_analyzer.worker.grounding_status import grounding_status_for, persist_grounding_status
 from document_analyzer.worker.cancellation import JobCancelled, forget_job, raise_if_cancelled
+from document_analyzer.worker.dependency_extractor import DependencyExtractor
 from document_analyzer.worker.discovery import discover_repo
 from document_analyzer.worker.job_completion import mark_job_done_if_ready
 from document_analyzer.worker.laravel_extractor import LaravelExtractor
@@ -97,9 +96,18 @@ from document_analyzer.worker.status import (
     mark_job_failed,
     mark_job_running,
     mark_progress_stage,
+    persist_discovery_stats,
     persist_extraction_coverage,
     persist_source_commit_sha,
     persist_source_snapshot_path,
+)
+from document_analyzer.shared.llm import (
+    CallContext,
+    LLMCostRecorder,
+    MeteredLLMClient,
+    attempt_numbered as _attempting,
+    bind_if_metered as _bind,
+    new_run_id,
 )
 from document_analyzer.worker.summarize import (
     EntitySummary,
@@ -189,13 +197,45 @@ class _Counter:
             return self._value
 
 
+class _CacheCounts:
+    """Summary-cache hits and misses for one run, written to `ingestion_jobs` at the end of
+    the summarize stage. Thread-safe: entities are processed in a pool."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.hits = 0
+        self.misses = 0
+
+    def hit(self) -> None:
+        with self._lock:
+            self.hits += 1
+
+    def miss(self) -> None:
+        with self._lock:
+            self.misses += 1
+
+
+def _persist_cache_counts(client, job_id: str, org_id: str, counts: _CacheCounts) -> None:
+    """Best effort: cost accounting must never fail a job."""
+    try:
+        (
+            client.table("ingestion_jobs")
+            .update({"summary_cache_hits": counts.hits, "summary_cache_misses": counts.misses})
+            .eq("id", job_id)
+            .eq("org_id", org_id)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("could not record summary cache counts for job %s", job_id, exc_info=True)
+
+
 @dataclass(frozen=True)
 class _EntityOutcome:
     row: dict  # the persisted (or cache-hit) knowledge_summaries row
     file_path: str
     entity_type: str
     entity_name: str
-    risk_factors: list[str]  # [] for a cache hit — see module docstring
+    risk_factors: list[str]  # copied forward from the cached row on a hit ([] for pre-column rows)
 
 
 def _fetch_job_row(client, job_id: str, org_id: str) -> dict:
@@ -215,7 +255,7 @@ def _fetch_job_row(client, job_id: str, org_id: str) -> dict:
 def _extractors(job_id: str) -> tuple:
     """PHP first (nikic + the framework-wiring extractors), then Graphify for every other
     code language — GraphifyExtractor never takes a `.php` file (graphify/extractor.py)."""
-    return (PhpExtractor(), WordPressExtractor(), LaravelExtractor(), GraphifyExtractor(job_id=job_id))
+    return (PhpExtractor(), WordPressExtractor(), LaravelExtractor(), GraphifyExtractor(job_id=job_id), DependencyExtractor())
 
 
 def _run_extractors(
@@ -318,11 +358,14 @@ def _warn_on_evidence_gaps(emitter: WorkflowEventEmitter, report: dict) -> None:
         _warn(emitter, f"{count} {noun} skipped when building source evidence", paths)
 
 
-def _emit_discovered_stats(emitter: WorkflowEventEmitter, repo_path: Path) -> None:
-    """Live "discovered so far" stats (languages, lines, frameworks, dependencies). Best effort:
-    a failure here is logged and the job carries on, like every other progress signal."""
+def _emit_discovered_stats(emitter: WorkflowEventEmitter, repo_path: Path, client, job_id: str, org_id: str) -> None:
+    """Live "discovered so far" stats (languages, lines, frameworks, dependencies), also stored
+    on the job (`discovery_stats`). Best effort: a failure here is logged and the job carries
+    on, like every other progress signal."""
     try:
-        emitter.stats(**discover_repo(repo_path))
+        stats = discover_repo(repo_path)
+        emitter.stats(**stats)
+        persist_discovery_stats(client, job_id, org_id, stats)
     except Exception:  # noqa: BLE001
         logger.warning("could not compute discovered stats", exc_info=True)
 
@@ -370,6 +413,7 @@ def _process_one_entity(
     emitter: WorkflowEventEmitter,
     counter: _Counter,
     total: int,
+    cache_counts: _CacheCounts | None = None,
 ) -> _EntityOutcome:
     raise_if_cancelled(client, job_id, org_id)
     entity = ExtractedEntity(
@@ -382,6 +426,8 @@ def _process_one_entity(
 
     cached = lookup_cached_summary(client, org_id, entity_row["content_hash"])
     if cached is not None:
+        if cache_counts:
+            cache_counts.hit()
         row = copy_cached_summary_forward(client, job_id, org_id, entity_row["id"], cached)
         _emit_entity_progress(emitter, entity, row["grounding_status"], cache_hit=True, counter=counter, total=total)
         return _EntityOutcome(
@@ -389,15 +435,19 @@ def _process_one_entity(
             file_path=entity.file_path,
             entity_type=entity.entity_type,
             entity_name=entity.name,
-            risk_factors=[],
+            risk_factors=row.get("risk_factors") or [],
         )
 
+    if cache_counts:
+        cache_counts.miss()
     facts = _entity_facts_payload(entity, excerpt)
+    summary_client = _attempting(_bind(llm_client, purpose="entity_summary", entity_id=entity_row["id"]))
+    check_client = _attempting(_bind(llm_client, purpose="grounding_check", entity_id=entity_row["id"]))
     if excerpt:
-        generate = lambda: summarize_entity(entity, client=llm_client, excerpt=excerpt)  # noqa: E731
+        generate = lambda: summarize_entity(entity, client=summary_client, excerpt=excerpt)  # noqa: E731
     else:  # no stored evidence for this entity (no line info, unreadable file): facts only
-        generate = lambda: summarize_entity(entity, client=llm_client)  # noqa: E731
-    retry_result: GroundingRetryResult = check_grounding_with_retry(facts, generate=generate, client=llm_client)
+        generate = lambda: summarize_entity(entity, client=summary_client)  # noqa: E731
+    retry_result: GroundingRetryResult = check_grounding_with_retry(facts, generate=generate, client=check_client)
     row = persist_summary(client, job_id, org_id, retry_result.summary, entity_id=entity_row["id"])
     persist_grounding_status(client, row["id"], org_id, retry_result)
     write_through_cache(client, org_id, entity_row["content_hash"], row["id"])
@@ -415,7 +465,13 @@ def _process_one_entity(
 
 
 def _summarize_entities(
-    client, job_id: str, org_id: str, llm_client, excerpts: dict[str, dict] | None, emitter: WorkflowEventEmitter
+    client,
+    job_id: str,
+    org_id: str,
+    llm_client,
+    excerpts: dict[str, dict] | None,
+    emitter: WorkflowEventEmitter,
+    cache_counts: _CacheCounts | None = None,
 ) -> list[_EntityOutcome]:
     entity_rows = (
         client.table("extracted_entities")
@@ -425,6 +481,8 @@ def _summarize_entities(
         .execute()
         .data
     )
+    # Declared packages are facts, not code: no summary, no grounding (design.md section 5).
+    entity_rows = [row for row in entity_rows if row["entity_type"] != "dependency"]
     if not entity_rows:
         return []
 
@@ -443,6 +501,7 @@ def _summarize_entities(
                     emitter,
                     counter,
                     total,
+                    cache_counts,
                 ),
                 entity_rows,
             )
@@ -471,8 +530,12 @@ def _fold_module(
         for e in entities
     ]
     facts = _module_facts_payload(file_path, entity_summaries)
+    summary_client = _attempting(_bind(llm_client, purpose="module_summary"))
+    check_client = _attempting(_bind(llm_client, purpose="grounding_check"))
     retry_result = check_grounding_with_retry(
-        facts, generate=lambda: summarize_module(file_path, entity_summaries, client=llm_client), client=llm_client
+        facts,
+        generate=lambda: summarize_module(file_path, entity_summaries, client=summary_client),
+        client=check_client,
     )
     row = persist_summary(client, job_id, org_id, retry_result.summary, entity_id=None)
     persist_grounding_status(client, row["id"], org_id, retry_result)
@@ -498,8 +561,10 @@ def _fold_children(
     summarize_fn = summarize_subsystem if level == "subsystem" else summarize_repo
     args = (name, children) if level == "subsystem" else (children,)
     facts = _children_payload(name, children)
+    summary_client = _attempting(_bind(llm_client, purpose=f"{level}_summary"))
+    check_client = _attempting(_bind(llm_client, purpose="grounding_check"))
     retry_result = check_grounding_with_retry(
-        facts, generate=lambda: summarize_fn(*args, client=llm_client), client=llm_client
+        facts, generate=lambda: summarize_fn(*args, client=summary_client), client=check_client
     )
     row = persist_summary(client, job_id, org_id, retry_result.summary, entity_id=None)
     persist_grounding_status(client, row["id"], org_id, retry_result)
@@ -573,6 +638,7 @@ def process_job(job_id: str, org_id: str) -> None:
     client = get_service_role_client()
     github_token_ref: str | None = None
     emitter = WorkflowEventEmitter(client, WORKFLOW_KIND, job_id, org_id)
+    cost_recorder: LLMCostRecorder | None = None
 
     try:
         job_row = _fetch_job_row(client, job_id, org_id)
@@ -604,7 +670,7 @@ def process_job(job_id: str, org_id: str) -> None:
 
             _enter_stage(emitter, client, job_id, org_id, "filter")
             _strip_boilerplate(repo_path, client, job_id, org_id, emitter)
-            _emit_discovered_stats(emitter, repo_path)
+            _emit_discovered_stats(emitter, repo_path, client, job_id, org_id)
 
             _enter_stage(emitter, client, job_id, org_id, "snapshot")
             snapshot_path = archive_source_snapshot(client, job_id, org_id, repo_path)
@@ -621,16 +687,29 @@ def process_job(job_id: str, org_id: str) -> None:
             removed_files=diff.removed_file_count,
         )
 
-        llm_client = get_azure_openai_client()
+        # Cost accounting (design.md section 7): one recorder and one run_id per pickup, so a
+        # pgmq redelivery that runs this job twice stays separable. org_id is the job row's.
+        cost_recorder = LLMCostRecorder(client, org_id)
+        llm_client = MeteredLLMClient(
+            get_azure_openai_client(),
+            CallContext(agent="agent1", job_type="ingestion", job_id=job_id, run_id=new_run_id()),
+            cost_recorder,
+        )
 
         mark_progress_stage(client, job_id, org_id, "summarizing")
         _enter_stage(emitter, client, job_id, org_id, "summarize")
-        entity_outcomes = _summarize_entities(client, job_id, org_id, llm_client, excerpts, emitter)
+        cache_counts = _CacheCounts()
+        entity_outcomes = _summarize_entities(
+            client, job_id, org_id, _bind(llm_client, stage="summarize"), excerpts, emitter, cache_counts
+        )
+        _persist_cache_counts(client, job_id, org_id, cache_counts)
+        cost_recorder.flush()
 
         if entity_outcomes:
             mark_progress_stage(client, job_id, org_id, "grounding")
             _enter_stage(emitter, client, job_id, org_id, "fold")
-            _fold_ancestors(client, job_id, org_id, entity_outcomes, llm_client, emitter)
+            _fold_ancestors(client, job_id, org_id, entity_outcomes, _bind(llm_client, stage="fold"), emitter)
+            cost_recorder.flush()
 
         # Unthrottled checks around the done transition: a cancel that lands here must not
         # be reported as a completed run.
@@ -652,6 +731,8 @@ def process_job(job_id: str, org_id: str) -> None:
         _record_job_failure(client, job_id, org_id, f"unexpected error: {exc}")
         emitter.fail(f"unexpected error: {exc}")
     finally:
+        if cost_recorder is not None:
+            cost_recorder.close()  # never raises; runs on success, failure and JobCancelled
         forget_job(job_id)
         if github_token_ref:
             asyncio.run(delete_github_token(github_token_ref))

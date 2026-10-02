@@ -179,3 +179,18 @@ def test_mark_job_done_if_ready_does_not_update_another_orgs_project():
     [project_row] = client.table("projects").rows
     assert project_row["org_id"] == "org-A"
     assert project_row.get("latest_job_id") is None  # the org-A project was never touched by org-B's job
+
+
+def test_unsummarized_dependency_entities_do_not_block_completion():
+    # Declared packages are facts and are never summarized (design.md section 5).
+    client = FakeClient(org_id="org-123")
+    function = _entity(client, "org-123", "job-1")
+    insert_scoped(
+        client,
+        "extracted_entities",
+        "org-123",
+        {"job_id": "job-1", "entity_type": "dependency", "name": "monolog/monolog", "file_path": "composer.json", "raw_facts": {}},
+    )
+    _entity_summary(client, "org-123", "job-1", function["id"], "verified")
+
+    assert job_ready_for_completion(client, "job-1", "org-123") is True

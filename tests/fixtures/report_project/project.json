@@ -1,0 +1,604 @@
+{
+ "cluster_edges": [
+  {
+   "flag": "needs_facade",
+   "from_cluster_id": "u3",
+   "id": "ce1",
+   "level": "unit",
+   "org_id": "org-1",
+   "planning_job_id": "pjob-1",
+   "scc_id": 1,
+   "to_cluster_id": "u4"
+  },
+  {
+   "flag": "needs_facade",
+   "from_cluster_id": "u4",
+   "id": "ce2",
+   "level": "unit",
+   "org_id": "org-1",
+   "planning_job_id": "pjob-1",
+   "scc_id": 1,
+   "to_cluster_id": "u3"
+  },
+  {
+   "flag": "none",
+   "from_cluster_id": "ph2",
+   "id": "ce3",
+   "level": "phase",
+   "org_id": "org-1",
+   "planning_job_id": "pjob-1",
+   "scc_id": null,
+   "to_cluster_id": "ph1"
+  }
+ ],
+ "cluster_members": [
+  {
+   "canonical_entity_id": "e01",
+   "cluster_id": "u1",
+   "entity_id": "e01",
+   "org_id": "org-1"
+  },
+  {
+   "canonical_entity_id": "e03",
+   "cluster_id": "u1",
+   "entity_id": "e03",
+   "org_id": "org-1"
+  }
+ ],
+ "cluster_reports": [
+  {
+   "cluster_id": "u1",
+   "grounding_status": "verified",
+   "org_id": "org-1",
+   "risk_factors": [],
+   "risk_level": "low",
+   "summary_text": "x"
+  },
+  {
+   "cluster_id": "u2",
+   "grounding_status": "verified",
+   "org_id": "org-1",
+   "risk_factors": [],
+   "risk_level": "high",
+   "summary_text": "x"
+  },
+  {
+   "cluster_id": "u3",
+   "grounding_status": "verified",
+   "org_id": "org-1",
+   "risk_factors": [],
+   "risk_level": "low",
+   "summary_text": "x"
+  },
+  {
+   "cluster_id": "u4",
+   "grounding_status": "unverified",
+   "org_id": "org-1",
+   "risk_factors": [],
+   "risk_level": "medium",
+   "summary_text": "x"
+  }
+ ],
+ "clusters": [
+  {
+   "id": "ph1",
+   "kind": "community",
+   "label": "Foundation",
+   "level": "phase",
+   "org_id": "org-1",
+   "planning_job_id": "pjob-1",
+   "size": 0
+  },
+  {
+   "id": "ph2",
+   "kind": "community",
+   "label": "Shop",
+   "level": "phase",
+   "org_id": "org-1",
+   "planning_job_id": "pjob-1",
+   "size": 0
+  },
+  {
+   "id": "u1",
+   "kind": "foundation",
+   "label": "Core helpers",
+   "level": "unit",
+   "org_id": "org-1",
+   "planning_job_id": "pjob-1",
+   "size": 3
+  },
+  {
+   "id": "u2",
+   "kind": "community",
+   "label": "Database layer",
+   "level": "unit",
+   "org_id": "org-1",
+   "planning_job_id": "pjob-1",
+   "size": 14
+  },
+  {
+   "id": "u3",
+   "kind": "community",
+   "label": "Cart",
+   "level": "unit",
+   "org_id": "org-1",
+   "planning_job_id": "pjob-1",
+   "size": 6
+  },
+  {
+   "id": "u4",
+   "kind": "community",
+   "label": "Checkout",
+   "level": "unit",
+   "org_id": "org-1",
+   "planning_job_id": "pjob-1",
+   "size": 4
+  }
+ ],
+ "entity_edges": [
+  {
+   "edge_type": "calls",
+   "from_entity_id": "e01",
+   "id": "g01",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "provenance": {},
+   "to_entity_id": "e03"
+  },
+  {
+   "edge_type": "calls",
+   "from_entity_id": "e03",
+   "id": "g02",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "provenance": {},
+   "to_entity_id": "e02"
+  },
+  {
+   "edge_type": "calls",
+   "from_entity_id": "e06",
+   "id": "g03",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "provenance": {
+    "confidence": "EXTRACTED"
+   },
+   "to_entity_id": "e05"
+  },
+  {
+   "edge_type": "calls",
+   "from_entity_id": "e06",
+   "id": "g04",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "provenance": {
+    "confidence": "INFERRED"
+   },
+   "to_entity_id": "e04"
+  },
+  {
+   "edge_type": "hook_binding",
+   "from_entity_id": "e01",
+   "id": "g05",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "provenance": {},
+   "to_entity_id": "e07"
+  },
+  {
+   "edge_type": "calls",
+   "from_entity_id": "e08",
+   "id": "g06",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "provenance": {},
+   "to_entity_id": "e09"
+  },
+  {
+   "edge_type": "include",
+   "from_entity_id": "e01",
+   "id": "g07",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "provenance": {},
+   "to_entity_id": "e02"
+  },
+  {
+   "edge_type": "calls",
+   "from_entity_id": "e06",
+   "id": "g08",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "provenance": {},
+   "to_entity_id": "e02"
+  },
+  {
+   "edge_type": "global",
+   "from_entity_id": "e04",
+   "id": "g09",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "provenance": {},
+   "to_entity_id": null
+  }
+ ],
+ "extracted_entities": [
+  {
+   "entity_type": "function",
+   "file_path": "index.php",
+   "id": "e01",
+   "job_id": "job-1",
+   "name": "bootstrap",
+   "org_id": "org-1",
+   "raw_facts": {}
+  },
+  {
+   "entity_type": "function",
+   "file_path": "includes/db.php",
+   "id": "e02",
+   "job_id": "job-1",
+   "name": "db_query",
+   "org_id": "org-1",
+   "raw_facts": {
+    "literal": "AKIAFAKEKEYVALUE123"
+   }
+  },
+  {
+   "entity_type": "function",
+   "file_path": "includes/view.php",
+   "id": "e03",
+   "job_id": "job-1",
+   "name": "render_page",
+   "org_id": "org-1",
+   "raw_facts": {}
+  },
+  {
+   "entity_type": "function",
+   "file_path": "includes/mail.php",
+   "id": "e04",
+   "job_id": "job-1",
+   "name": "send_mail",
+   "org_id": "org-1",
+   "raw_facts": {}
+  },
+  {
+   "entity_type": "class",
+   "file_path": "shop/cart.php",
+   "id": "e05",
+   "job_id": "job-1",
+   "name": "Cart",
+   "org_id": "org-1",
+   "raw_facts": {}
+  },
+  {
+   "entity_type": "function",
+   "file_path": "shop/checkout.php",
+   "id": "e06",
+   "job_id": "job-1",
+   "name": "checkout",
+   "org_id": "org-1",
+   "raw_facts": {}
+  },
+  {
+   "entity_type": "hook",
+   "file_path": "shop/hooks.php",
+   "id": "e07",
+   "job_id": "job-1",
+   "name": "init_shop",
+   "org_id": "org-1",
+   "raw_facts": {}
+  },
+  {
+   "entity_type": "route",
+   "file_path": "admin/routes.php",
+   "id": "e08",
+   "job_id": "job-1",
+   "name": "admin_dashboard",
+   "org_id": "org-1",
+   "raw_facts": {}
+  },
+  {
+   "entity_type": "function",
+   "file_path": "admin/tools.php",
+   "id": "e09",
+   "job_id": "job-1",
+   "name": "unserialize_blob",
+   "org_id": "org-1",
+   "raw_facts": {}
+  }
+ ],
+ "filtered_files": [
+  {
+   "file_path": "vendor/a.php",
+   "id": "f0",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "reason": "composer_vendor_directory"
+  },
+  {
+   "file_path": "vendor/b.php",
+   "id": "f1",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "reason": "composer_vendor_directory"
+  },
+  {
+   "file_path": "node_modules/x.js",
+   "id": "f2",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "reason": "node_modules_directory"
+  },
+  {
+   "file_path": ".git/config",
+   "id": "f3",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "reason": "vcs_directory"
+  }
+ ],
+ "ingestion_jobs": [
+  {
+   "discovery_stats": {
+    "dependencies": 12,
+    "framework.WordPress": 1,
+    "language.JavaScript": 3,
+    "language.PHP": 9,
+    "loc": 4820
+   },
+   "extraction_coverage": {
+    "evidence": {
+     "excerpt": "internal only"
+    },
+    "graphify": {
+     "by_language": {
+      "JavaScript": 3
+     },
+     "counts_by_status": {
+      "extracted": 3,
+      "failed": 1
+     },
+     "not_extracted_count": 1,
+     "not_extracted_sample": [
+      {
+       "path": "assets/app.js",
+       "reason": "syntax_error",
+       "status": "failed"
+      }
+     ],
+     "status": "ok"
+    }
+   },
+   "id": "job-1",
+   "org_id": "org-1"
+  }
+ ],
+ "knowledge_summaries": [
+  {
+   "entity_id": "e01",
+   "grounding_status": "verified",
+   "id": "s-e01",
+   "job_id": "job-1",
+   "level": "entity",
+   "org_id": "org-1",
+   "risk_factors": [],
+   "risk_level": "low",
+   "summary_text": "Starts the application."
+  },
+  {
+   "entity_id": "e02",
+   "grounding_status": "verified",
+   "id": "s-e02",
+   "job_id": "job-1",
+   "level": "entity",
+   "org_id": "org-1",
+   "risk_factors": [
+    "sql_concatenation",
+    "superglobal_get"
+   ],
+   "risk_level": "high",
+   "summary_text": "Builds a SQL query from request input."
+  },
+  {
+   "entity_id": "e03",
+   "grounding_status": "verified",
+   "id": "s-e03",
+   "job_id": "job-1",
+   "level": "entity",
+   "org_id": "org-1",
+   "risk_factors": [],
+   "risk_level": "low",
+   "summary_text": "Renders a page template."
+  },
+  {
+   "entity_id": "e04",
+   "grounding_status": "verified",
+   "id": "s-e04",
+   "job_id": "job-1",
+   "level": "entity",
+   "org_id": "org-1",
+   "risk_factors": [
+    "outbound_network_call"
+   ],
+   "risk_level": "medium",
+   "summary_text": "Sends an email through a remote service."
+  },
+  {
+   "entity_id": "e05",
+   "grounding_status": "verified",
+   "id": "s-e05",
+   "job_id": "job-1",
+   "level": "entity",
+   "org_id": "org-1",
+   "risk_factors": [],
+   "risk_level": "low",
+   "summary_text": "Holds the shopping cart."
+  },
+  {
+   "entity_id": "e06",
+   "grounding_status": "unverified",
+   "id": "s-e06",
+   "job_id": "job-1",
+   "level": "entity",
+   "org_id": "org-1",
+   "risk_factors": [
+    "file_write"
+   ],
+   "risk_level": "medium",
+   "summary_text": "Writes an order file."
+  },
+  {
+   "entity_id": "e07",
+   "grounding_status": "verified",
+   "id": "s-e07",
+   "job_id": "job-1",
+   "level": "entity",
+   "org_id": "org-1",
+   "risk_factors": [],
+   "risk_level": "low",
+   "summary_text": "Registers shop hooks."
+  },
+  {
+   "entity_id": "e08",
+   "grounding_status": "verified",
+   "id": "s-e08",
+   "job_id": "job-1",
+   "level": "entity",
+   "org_id": "org-1",
+   "risk_factors": [],
+   "risk_level": "medium",
+   "summary_text": "Serves the admin dashboard."
+  },
+  {
+   "entity_id": "e09",
+   "grounding_status": "unverified",
+   "id": "s-e09",
+   "job_id": "job-1",
+   "level": "entity",
+   "org_id": "org-1",
+   "risk_factors": [
+    "unserialize_on_input",
+    "eval_call"
+   ],
+   "risk_level": "high",
+   "summary_text": "Unserializes uploaded data and evaluates it."
+  },
+  {
+   "entity_id": null,
+   "grounding_status": "verified",
+   "id": "m1",
+   "job_id": "job-1",
+   "level": "module",
+   "org_id": "org-1",
+   "risk_factors": [],
+   "risk_level": "high",
+   "summary_text": "A module summary."
+  },
+  {
+   "entity_id": null,
+   "grounding_status": "unverified",
+   "id": "sub1",
+   "job_id": "job-1",
+   "level": "subsystem",
+   "org_id": "org-1",
+   "risk_factors": [],
+   "risk_level": "high",
+   "summary_text": "A subsystem summary."
+  },
+  {
+   "entity_id": null,
+   "grounding_status": "verified",
+   "id": "r1",
+   "job_id": "job-1",
+   "level": "repo",
+   "org_id": "org-1",
+   "risk_factors": [],
+   "risk_level": "high",
+   "summary_text": "A repo summary."
+  }
+ ],
+ "migration_plan_items": [
+  {
+   "cluster_id": "u1",
+   "org_id": "org-1",
+   "phase_cluster_id": "ph1",
+   "phase_order": 1,
+   "plan_id": "plan-1",
+   "test_contract": {},
+   "unit_order": 1
+  },
+  {
+   "cluster_id": "u2",
+   "org_id": "org-1",
+   "phase_cluster_id": "ph1",
+   "phase_order": 1,
+   "plan_id": "plan-1",
+   "test_contract": {},
+   "unit_order": 2
+  },
+  {
+   "cluster_id": "u3",
+   "org_id": "org-1",
+   "phase_cluster_id": "ph2",
+   "phase_order": 2,
+   "plan_id": "plan-1",
+   "test_contract": {},
+   "unit_order": 1
+  },
+  {
+   "cluster_id": "u4",
+   "org_id": "org-1",
+   "phase_cluster_id": "ph2",
+   "phase_order": 2,
+   "plan_id": "plan-1",
+   "test_contract": {},
+   "unit_order": 2
+  }
+ ],
+ "migration_plans": [
+  {
+   "id": "plan-1",
+   "open_facade_flags": 0,
+   "org_id": "org-1",
+   "planning_job_id": "pjob-1",
+   "source_job_id": "job-1",
+   "status": "approved",
+   "version": 3
+  }
+ ],
+ "planning_jobs": [
+  {
+   "id": "pjob-1",
+   "org_id": "org-1",
+   "params": {
+    "max_unit_size": 10
+   }
+  }
+ ],
+ "secret_findings": [
+  {
+   "entity_id": "e02",
+   "field_path": "raw_facts.literal",
+   "id": "x0",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "reason": "aws_access_key"
+  },
+  {
+   "entity_id": "e04",
+   "field_path": "raw_facts.password",
+   "id": "x1",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "reason": "generic_password"
+  },
+  {
+   "entity_id": "e02",
+   "field_path": "raw_facts.token",
+   "id": "x2",
+   "job_id": "job-1",
+   "org_id": "org-1",
+   "reason": "generic_password"
+  }
+ ]
+}

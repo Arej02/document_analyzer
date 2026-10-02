@@ -74,6 +74,7 @@ meaningful while `running` as it is once the job is `done`/`failed`.
 """
 
 import logging
+import threading
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Literal
@@ -84,6 +85,9 @@ from pydantic import BaseModel, ValidationError
 from .ask.answer import AnswerError, generate_answer
 from .ask.context import QuestionError, retrieve
 from .auth import AuthContext, get_auth_context
+from .shared.cost_access import get_cost_operator
+from .shared.cost_report import build_job_cost_report, build_qa_cost_report
+from .shared.llm import CallContext, LLMCostRecorder, MeteredLLMClient, new_run_id
 from .entities import DEFAULT_LIMIT, MAX_LIMIT, get_entity_detail, list_job_entities
 from .github_token import store_github_token
 from .projects import get_project, resolve_or_create_project
@@ -96,7 +100,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agent1", tags=["jobs"])
 
 _JOB_STATUS_COLUMNS = (
-    "id, project_id, status, progress_stage, error, changed_file_count, unchanged_file_count, removed_file_count"
+    "id, project_id, status, progress_stage, error, changed_file_count, unchanged_file_count, removed_file_count, discovery_stats, "
+    "source_commit_sha"
 )
 _EVENT_COLUMNS = "id, event_type, stage, message, data, created_at"
 EVENTS_DEFAULT_LIMIT = 500
@@ -313,6 +318,24 @@ def _question_embedder():
     return embed_text
 
 
+def _qa_cost_recorder(auth: AuthContext) -> LLMCostRecorder | None:
+    """Per-request recorder on the service-role client (the cost tables are service-role
+    only), org_id from the caller's auth context. Cost logging must never fail the request,
+    so any problem building it just means this question goes unrecorded."""
+    try:
+        return LLMCostRecorder(get_service_role_client(), auth.org_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("could not set up Q&A cost recording", exc_info=True)
+        return None
+
+
+def _flush_in_background(recorder: LLMCostRecorder | None) -> None:
+    """The flush is a few DB writes: do them off the request thread so they never add to
+    the answer's latency. A daemon thread, so it can never hold the process open."""
+    if recorder is not None:
+        threading.Thread(target=recorder.close, name="qa-cost-flush", daemon=True).start()
+
+
 @router.post("/jobs/{job_id}/ask")
 def ask_job(job_id: str, body: AskRequest, auth: Annotated[AuthContext, Depends(get_auth_context)]):
     rows = (
@@ -336,10 +359,56 @@ def ask_job(job_id: str, body: AskRequest, auth: Annotated[AuthContext, Depends(
         )
     except QuestionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    recorder = _qa_cost_recorder(auth)
+    wrap = None
+    if recorder is not None:
+        ctx = CallContext(
+            agent="agent1",
+            job_type="qa",
+            run_id=new_run_id(),
+            source_job_id=job_id,
+            requested_by=auth.user_id,
+            purpose="qa_answer",
+        )
+        wrap = lambda base: MeteredLLMClient(base, ctx, recorder)  # noqa: E731
     try:
-        return generate_answer(context)
+        return generate_answer(context, wrap_client=wrap)
     except AnswerError as exc:
         raise HTTPException(status_code=502, detail={"code": exc.code, "message": str(exc), **exc.details}) from exc
+    finally:
+        _flush_in_background(recorder)  # success, bad answer and LLM error alike
+
+
+def _cost_job_row(auth: AuthContext, job_id: str) -> dict:
+    """The caller's own ingestion job (RLS-scoped read), or 404."""
+    rows = (
+        auth.client.table("ingestion_jobs")
+        .select("id, summary_cache_hits, summary_cache_misses")
+        .eq("org_id", auth.org_id)
+        .eq("id", job_id)
+        .limit(1)
+        .execute()
+    ).data
+    if not rows:
+        raise HTTPException(status_code=404, detail="job not found")
+    return rows[0]
+
+
+@router.get("/jobs/{job_id}/cost")
+def get_job_cost(job_id: str, auth: Annotated[AuthContext, Depends(get_cost_operator)]):
+    """Operator-only (404 for everyone else): LLM spend of one ingestion run, design.md §7.4.
+    A list-price estimate, not the Azure invoice."""
+    job = _cost_job_row(auth, job_id)
+    report = build_job_cost_report(get_service_role_client(), auth.org_id, "ingestion", job_id)
+    report["cache"] = {"hits": job["summary_cache_hits"], "misses": job["summary_cache_misses"]}
+    return report
+
+
+@router.get("/jobs/{job_id}/qa-cost")
+def get_job_qa_cost(job_id: str, auth: Annotated[AuthContext, Depends(get_cost_operator)]):
+    """Operator-only (404 for everyone else): LLM spend of the Q&A asked against this job."""
+    _cost_job_row(auth, job_id)
+    return build_qa_cost_report(get_service_role_client(), auth.org_id, job_id)
 
 
 def get_job_status(client, org_id: str, job_id: str) -> dict | None:
@@ -368,6 +437,8 @@ def get_job_status(client, org_id: str, job_id: str) -> dict | None:
         "changed_file_count": row.get("changed_file_count"),
         "unchanged_file_count": row.get("unchanged_file_count"),
         "removed_file_count": row.get("removed_file_count"),
+        "discovery_stats": row.get("discovery_stats"),
+        "source_commit_sha": row.get("source_commit_sha"),
     }
 
 

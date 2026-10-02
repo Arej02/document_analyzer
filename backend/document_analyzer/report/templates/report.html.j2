@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="generator" content="assessment-report-template-{{ template_version }}">
+<title>{{ tier_label }}: {{ r.cover.project_name }}</title>
+<style>
+{{ css|safe }}
+</style>
+</head>
+<body>
+{% macro risk(level) %}{% if level %}<span class="pill pill-{{ level }}">{{ level|capitalize }} risk</span>{% else %}<span class="pill pill-none">Risk not recorded</span>{% endif %}{% endmacro %}
+{% macro unverified() %}<span class="pill pill-unverified" title="This text could not be fact-checked against the analysed data">Unverified</span>{% endmacro %}
+{% set has_plan = r.get('plan') is not none %}
+{% set draft = r.cover.watermark == 'draft_plan' %}
+
+{% if draft %}<div class="watermark" aria-hidden="true">Draft</div>{% endif %}
+
+<header class="cover">
+  <p class="eyebrow">{{ tier_label }}</p>
+  <h1>{{ r.cover.project_name }}</h1>
+  <dl class="cover-facts">
+    <div><dt>Snapshot</dt><dd>{{ r.cover.snapshot_date }}</dd></div>
+    {% if has_plan %}
+    <div><dt>Migration plan</dt><dd>Version {{ r.plan.version }}, {{ r.plan.status|words }}</dd></div>
+    {% endif %}
+  </dl>
+  {% if draft %}
+  <p class="draft-note">Draft: this report is based on a plan that has not been approved, so its plan and estimate may change.</p>
+  {% endif %}
+</header>
+
+<main>
+
+<section id="summary" aria-labelledby="h-summary">
+  <h2 id="h-summary">Executive summary</h2>
+  {% set es = r.executive_summary %}
+  {% if es.status == 'withheld' %}
+  <p class="muted">{{ withheld_text }}</p>
+  {% else %}
+    {% if es.status == 'unverified' %}
+    <p>{{ unverified() }} <span class="muted">{{ es.note or 'This summary could not be fully fact-checked against the report data.' }}</span></p>
+    {% endif %}
+    {% for paragraph in es.text|paragraphs %}
+    <p>{{ paragraph }}</p>
+    {% endfor %}
+  {% endif %}
+</section>
+
+<section id="glance" aria-labelledby="h-glance">
+  <h2 id="h-glance">Codebase at a glance</h2>
+  {% set g = r.glance %}
+  <table class="kv">
+    <tbody>
+      <tr><th scope="row">Lines of code</th><td>{{ g.loc|num }}</td></tr>
+      <tr><th scope="row">Files analysed</th><td>{{ g.files_analysed|num }}</td></tr>
+      <tr><th scope="row">Dependencies</th><td>{{ g.dependencies|num }}</td></tr>
+      <tr><th scope="row">Frameworks</th><td>{% if g.frameworks %}{{ g.frameworks|join(', ') }}{% else %}None detected or not recorded{% endif %}</td></tr>
+    </tbody>
+  </table>
+
+  <div class="cols">
+    <div>
+      <h3>Languages</h3>
+      {% if g.languages %}
+      <table><thead><tr><th scope="col">Language</th><th scope="col" class="n">Files</th></tr></thead><tbody>
+      {% for lang in g.languages %}<tr><td>{{ lang.name }}</td><td class="n">{{ lang.files|num }}</td></tr>{% endfor %}
+      </tbody></table>
+      {% else %}<p class="muted">{{ 'Not recorded for this run' }}</p>{% endif %}
+    </div>
+    <div>
+      <h3>Code elements</h3>
+      {% if g.entities_by_type %}
+      <table><thead><tr><th scope="col">Type</th><th scope="col" class="n">Count</th></tr></thead><tbody>
+      {% for kind, count in g.entities_by_type.items() %}<tr><td>{{ kind }}</td><td class="n">{{ count|num }}</td></tr>{% endfor %}
+      </tbody></table>
+      {% else %}<p class="muted">None found.</p>{% endif %}
+    </div>
+  </div>
+
+  {% if g.files_filtered %}
+  <h3>Files left out</h3>
+  <p class="muted">Files that were skipped on purpose, by reason.</p>
+  <table><thead><tr><th scope="col">Reason</th><th scope="col" class="n">Files</th></tr></thead><tbody>
+  {% for item in g.files_filtered %}<tr><td>{{ item.reason|words }}</td><td class="n">{{ item.count|num }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% endif %}
+
+  {% set cov = g.coverage %}
+  <h3>Parse coverage</h3>
+  {% if cov %}
+  <p>Multi-language parser: <strong>{{ (cov.graphify_status or 'not recorded')|words }}</strong>.
+    {% if cov.counts_by_status %}Files by outcome:
+    {% for status, count in cov.counts_by_status.items() %}{{ count|num }} {{ status|words }}{% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}
+    {% if cov.not_extracted_count %}{{ cov.not_extracted_count|num }} file(s) were not fully parsed.{% endif %}
+  </p>
+  {% if cov.by_language %}
+  <p class="muted">By language:
+    {% for lang, counts in cov.by_language.items() %}{{ lang }}
+      {% if counts is mapping %}({% for status, count in counts.items() %}{{ count|num }} {{ status|words }}{% if not loop.last %}, {% endif %}{% endfor %}){% else %}{{ counts|num }}{% endif %}{% if not loop.last %}; {% endif %}{% endfor %}.</p>
+  {% endif %}
+  {% if cov.not_extracted_sample %}
+  <table><thead><tr><th scope="col">Example file not parsed</th><th scope="col">Outcome</th><th scope="col">Reason</th></tr></thead><tbody>
+  {% for item in cov.not_extracted_sample %}<tr><td class="mono">{{ item.path }}</td><td>{{ (item.status or '')|words }}</td><td>{{ (item.reason or '')|words }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% endif %}
+  {% else %}<p class="muted">Parse coverage is not recorded for this run.</p>{% endif %}
+</section>
+
+<section id="architecture" aria-labelledby="h-architecture">
+  <h2 id="h-architecture">Architecture map</h2>
+  {% for s in r.architecture.subsystems %}
+  <article class="card">
+    <h3>{{ s.name }} {{ risk(s.risk_level) }}</h3>
+    {% if s.summary %}
+    <p>{{ s.summary }} {% if s.summary_grounding != 'verified' %}{{ unverified() }}{% endif %}</p>
+    {% else %}
+    <p class="muted">No summary is recorded for this subsystem; its risk is rolled up from its code elements.</p>
+    {% endif %}
+    <p class="muted">{{ s.modules|length|num }} file(s){% if s.modules %}: <span class="mono">{{ s.modules|join(', ') }}</span>{% endif %}</p>
+  </article>
+  {% else %}
+  <p class="muted">No subsystems were found.</p>
+  {% endfor %}
+
+  <div class="cols">
+    <div>
+      <h3>Hub code elements</h3>
+      <p class="muted">The most connected parts of the code.</p>
+      {% if r.architecture.hubs %}
+      <table><thead><tr><th scope="col">Name</th><th scope="col">File</th><th scope="col" class="n">Links</th></tr></thead><tbody>
+      {% for hub in r.architecture.hubs %}<tr><td>{{ hub.name }}</td><td class="mono">{{ hub.file_path }}</td><td class="n">{{ hub.degree|num }}</td></tr>{% endfor %}
+      </tbody></table>
+      {% else %}<p class="muted">None found.</p>{% endif %}
+    </div>
+    <div>
+      <h3>Most connected areas</h3>
+      {% if r.architecture.connectivity %}
+      <table><thead><tr><th scope="col">From</th><th scope="col">To</th><th scope="col" class="n">Links</th></tr></thead><tbody>
+      {% for c in r.architecture.connectivity %}<tr><td>{{ c.from }}</td><td>{{ c.to }}</td><td class="n">{{ c.edges|num }}</td></tr>{% endfor %}
+      </tbody></table>
+      {% else %}<p class="muted">No links between subsystems were found.</p>{% endif %}
+    </div>
+  </div>
+</section>
+
+<section id="risk" aria-labelledby="h-risk">
+  <h2 id="h-risk">Risk hotspots</h2>
+  <h3>Risk by subsystem</h3>
+  <p class="muted">Number of code elements at each risk level.</p>
+  <table class="heat"><thead><tr><th scope="col">Subsystem</th><th scope="col" class="n">Low</th><th scope="col" class="n">Medium</th><th scope="col" class="n">High</th></tr></thead><tbody>
+  {% for row in r.risk.heat_map %}
+  <tr><td>{{ row.subsystem }}</td><td class="n">{{ row.low|num }}</td><td class="n">{{ row.medium|num }}</td><td class="n">{{ row.high|num }}</td></tr>
+  {% else %}
+  <tr><td colspan="4" class="muted">No risk levels recorded.</td></tr>
+  {% endfor %}
+  </tbody></table>
+
+  {% for h in r.risk.hotspots %}
+  <h3>{{ h.subsystem }}</h3>
+  <ul class="hotspots">
+    {% for e in h.entities %}
+    <li>
+      <p><strong>{{ e.name }}</strong> {{ risk(e.risk_level) }} <span class="mono muted">{{ e.file_path }}</span></p>
+      <p class="muted">Signal: {% if e.signal %}{{ e.signal }}{% else %}not recorded for this run{% endif %}</p>
+      <p>{{ e.explanation }}</p>
+    </li>
+    {% endfor %}
+  </ul>
+  {% if h.more %}<p class="muted">+{{ h.more|num }} more in this subsystem.</p>{% endif %}
+  {% else %}
+  <p class="muted">No high or medium risk code elements were found.</p>
+  {% endfor %}
+</section>
+
+<section id="security" aria-labelledby="h-security">
+  <h2 id="h-security">Security findings</h2>
+  {% if r.security.secrets_by_reason %}
+  <h3>Possible hard-coded secrets</h3>
+  <p class="muted">Counts and locations only. The values are never stored or shown.</p>
+  <table><thead><tr><th scope="col">Kind</th><th scope="col" class="n">Findings</th><th scope="col">Locations</th></tr></thead><tbody>
+  {% for item in r.security.secrets_by_reason %}
+  <tr><td>{{ item.reason|words }}</td><td class="n">{{ item.count|num }}</td>
+    <td class="mono">{% for loc in item.locations %}{{ loc.file_path or 'unknown file' }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td></tr>
+  {% endfor %}
+  </tbody></table>
+  {% else %}<p>No possible secrets were found.</p>{% endif %}
+
+  <h3>High-risk patterns</h3>
+  {% if r.security.risky_patterns %}
+  <table><thead><tr><th scope="col">Pattern</th><th scope="col" class="n">Code elements</th></tr></thead><tbody>
+  {% for item in r.security.risky_patterns %}<tr><td>{{ item.pattern|words }}</td><td class="n">{{ item.count|num }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% else %}<p>No high-risk patterns were recorded.</p>{% endif %}
+  <p class="caveat">{{ r.security.caveat }}</p>
+</section>
+
+{% if has_plan %}
+<section id="plan" aria-labelledby="h-plan">
+  <h2 id="h-plan">Migration plan</h2>
+  {% set p = r.plan %}
+  <p>Plan version {{ p.version }}, <strong>{{ p.status|words }}</strong>: {{ p.phases|length|num }} phase(s), {{ p.units|num }} unit(s).</p>
+  <ol class="phases">
+    {% for phase in p.phases %}
+    <li class="card">
+      <h3>Phase {{ phase.order }}: {{ phase.label }}</h3>
+      <table><thead><tr><th scope="col">Unit</th><th scope="col" class="n">Size</th><th scope="col">Risk</th><th scope="col">Checked</th></tr></thead><tbody>
+      {% for u in phase.units %}
+      <tr><td>{{ u.label }}</td><td class="n">{{ u.size|num }}</td><td>{{ risk(u.risk_level) }}</td>
+        <td>{% if u.grounding_status == 'unverified' %}{{ unverified() }}{% else %}Verified{% endif %}</td></tr>
+      {% endfor %}
+      </tbody></table>
+    </li>
+    {% endfor %}
+  </ol>
+
+  <h3>Phase order</h3>
+  {% if p.phase_dependencies %}
+  <ul>{% for d in p.phase_dependencies %}<li>Phase {{ d.from }} depends on phase {{ d.to }}.</li>{% endfor %}</ul>
+  {% else %}<p class="muted">No dependencies between phases.</p>{% endif %}
+
+  <h3>Cycles that need a facade</h3>
+  {% if p.cycles_needing_facades %}
+  <ul>{% for c in p.cycles_needing_facades %}<li>{{ c.units|join(' and ') }}</li>{% endfor %}</ul>
+  {% else %}<p class="muted">None.</p>{% endif %}
+
+  <h3>Oversized units</h3>
+  {% if p.oversized_units %}
+  <p class="muted">Larger than the plan's limit of {{ p.max_unit_size|num }} code elements.</p>
+  <ul>{% for o in p.oversized_units %}<li>{{ o.label }} ({{ o.size|num }})</li>{% endfor %}</ul>
+  {% else %}<p class="muted">None.</p>{% endif %}
+</section>
+
+{% set est = r.get('estimate') %}
+{% if est %}
+<section id="estimate" aria-labelledby="h-estimate">
+  <h2 id="h-estimate">Estimate</h2>
+  <p>Ranges, not single numbers: the first figure is the median case and the second a cautious case<sup><a href="#fn-method">1</a></sup>.</p>
+  <table class="kv"><tbody>
+    <tr><th scope="row">Units estimated</th><td>{{ est.units|num }}</td></tr>
+    <tr><th scope="row">Basis</th><td>
+      {% if est.basis == 'defaults' %}Default assumptions, no comparable past work{% else %}{{ est.units_from_history|num }} unit(s) from {{ est.n|num }} comparable past unit(s), {{ est.units_from_defaults|num }} from defaults{% endif %}<sup><a href="#fn-basis">2</a></sup></td></tr>
+    <tr><th scope="row">Generation time</th><td>{{ est.runtime_s.p50|duration }} to {{ est.runtime_s.p90|duration }}<sup><a href="#fn-runtime">3</a></sup></td></tr>
+    <tr><th scope="row">Units likely to need rework</th><td>{{ est.failed_units.p50|num }} to {{ est.failed_units.p90|num }}</td></tr>
+    <tr><th scope="row">Rework effort</th><td>{{ est.rework_hours.p50|num }} to {{ est.rework_hours.p90|num }} hours<sup><a href="#fn-rework">4</a></sup></td></tr>
+    {% set manual = est.get('manual_effort') %}
+    {% if manual %}
+    <tr><th scope="row">Manual migration effort <span class="pill pill-heuristic">Heuristic</span></th>
+      <td>{{ manual.developer_days.p50|num }} to {{ manual.developer_days.p90|num }} developer-days<sup><a href="#fn-manual">5</a></sup></td></tr>
+    {% endif %}
+    {% set quote = est.get('quote') %}
+    {% if quote %}
+    <tr><th scope="row">Price range</th><td>{{ quote.low|money(quote.currency) }} to {{ quote.high|money(quote.currency) }}</td></tr>
+    {% endif %}
+  </tbody></table>
+
+  <div class="footnotes">
+    <h3>Footnotes</h3>
+    <ol>
+      <li id="fn-method">Figures come from a seeded simulation over the plan's units, so the same inputs give the same range.</li>
+      <li id="fn-basis">A group of units with fewer than the minimum number of comparable past units uses default assumptions instead of history.
+        {% if est.buckets %}Units by size and risk:
+        {% for b in est.buckets %}{{ b.size }}/{{ b.risk }}: {{ b.units|num }} ({{ b.source }}, {{ b.n|num }} past){% if not loop.last %}; {% endif %}{% endfor %}.{% endif %}</li>
+      <li id="fn-runtime">Assumes {{ est.concurrency|num }} unit(s) are generated at a time.</li>
+      <li id="fn-rework">Hours added per unit that fails verification:
+        {% for level in ['low', 'medium', 'high'] %}{% if est.rework_hours_per_failed_unit.get(level) is not none %}{{ level }} {{ est.rework_hours_per_failed_unit[level]|num }} h{% if not loop.last %}, {% endif %}{% endif %}{% endfor %}.</li>
+      {% if manual %}
+      <li id="fn-manual">A rough developer-day heuristic, not a quote. Coefficients used, in developer-days per item:
+        {% for kind, value in manual.coefficients.per_entity.items() %}{{ kind }} {{ value|num }}{% if not loop.last %}, {% endif %}{% endfor %};
+        risk multipliers
+        {% for level, value in manual.coefficients.risk_multiplier.items() %}{{ level }} {{ value|num }}{% if not loop.last %}, {% endif %}{% endfor %}
+        (applied {{ manual.coefficients.applied_risk_multiplier|num }});
+        {{ manual.coefficients.per_facade_cycle|num }} per facade cycle, {{ manual.coefficients.per_oversized_unit|num }} per oversized unit; the cautious case is {{ manual.coefficients.p90_factor|num }} times the median.
+        {% for note in manual.limitations %}{{ note }} {% endfor %}</li>
+      {% endif %}
+    </ol>
+  </div>
+</section>
+{% endif %}
+{% endif %}
+
+<section id="limitations" aria-labelledby="h-limitations">
+  <h2 id="h-limitations">Assumptions and limitations</h2>
+  {% if r.limitations %}
+  <ul>{% for item in r.limitations %}<li>{{ item.text }}</li>{% endfor %}</ul>
+  {% else %}<p class="muted">None recorded.</p>{% endif %}
+</section>
+
+<section id="next" aria-labelledby="h-next">
+  <h2 id="h-next">{{ r.next_steps.heading }}</h2>
+  {% for paragraph in r.next_steps.body|paragraphs %}<p>{{ paragraph }}</p>{% endfor %}
+  {% if r.next_steps.contact %}<p>{{ r.next_steps.contact }}</p>{% endif %}
+</section>
+
+</main>
+
+<footer class="foot">
+  <p>{{ tier_label }} for {{ r.cover.project_name }}, snapshot of {{ r.cover.snapshot_date }}. Report format {{ r.schema_version }}, template {{ template_version }}, estimator {{ r.inputs.estimator_version }}.</p>
+</footer>
+</body>
+</html>

@@ -21,6 +21,7 @@ import ExecutiveSummary from './ExecutiveSummary.jsx'
 import MigrationPlan from './MigrationPlan.jsx'
 import OpenQuestions from './OpenQuestions.jsx'
 import PlanDocument from './PlanDocument.jsx'
+import Provenance from './Provenance.jsx'
 import Rail from './Rail.jsx'
 import RepositoryOverview, { OVERVIEW_SUBS } from './RepositoryOverview.jsx'
 import RiskAssessment from './RiskAssessment.jsx'
@@ -31,10 +32,12 @@ import { useCollapsed } from './collapse.js'
 import { buildExecutiveSummary, buildRepoOverview } from './overviewModel.js'
 import { migrationSubs } from './migrationModel.js'
 import { openQuestions } from './openQuestionsModel.js'
+import { provenance } from './provenance.js'
 import { reviewProgress } from './railModel.js'
 import { riskItems } from './riskModel.js'
 import { toMarkdown } from './toMarkdown.js'
 import { useOutline } from './useOutline.js'
+import { useDependencies } from './useDependencies.js'
 import { useRepoOverview } from './useRepoOverview.js'
 import { useRiskDetails } from './useRiskDetails.js'
 import { useSchemaEntities } from './useSchemaEntities.js'
@@ -47,6 +50,7 @@ import './agent2.css'
 export default function PlanDocumentView({ plan, planId, selectedUnitId, onSelectUnit, slots, intro = null, outro = null }) {
   const repo = useRepoOverview(plan.source_job_id)
   const schema = useSchemaEntities(plan.source_job_id)
+  const dependencies = useDependencies(planId)
   const unitGraph = useUnitGraph(planId, 'unit')
   const phaseGraph = useUnitGraph(planId, 'phase')
   const risks = useMemo(() => riskItems(plan), [plan])
@@ -107,7 +111,7 @@ export default function PlanDocumentView({ plan, planId, selectedUnitId, onSelec
         }}
       />
     ),
-    dependencies: <DependencyInventory rows={null} declaredCount={Number.isFinite(repo.stats.dependencies) ? repo.stats.dependencies : null} />,
+    dependencies: <DependencyInventory rows={dependencies.rows} declaredCount={Number.isFinite(repo.stats.dependencies) ? repo.stats.dependencies : null} />,
     data: <DataLayer state={schema} />,
     risks: <RiskAssessment plan={plan} details={riskDetails.byId} detailedIds={riskDetails.detailedIds} onSelectUnit={onSelectUnit} />,
     plan: (
@@ -149,6 +153,9 @@ export default function PlanDocumentView({ plan, planId, selectedUnitId, onSelec
       extras={extras}
       open={outline.tocOpen}
       onOpen={outline.toggleTocOpen}
+      footer={provenance({ commitSha: repo.commitSha, generatedAt: plan.created_at })
+        ? <Provenance commitSha={repo.commitSha} generatedAt={plan.created_at} />
+        : null}
     />
   )
 

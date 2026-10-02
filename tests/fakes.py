@@ -92,6 +92,23 @@ class FakeInsert:
         return FakeResult(inserted)
 
 
+class FakeUpsert:
+    """`table.upsert(row, on_conflict="a,b")`: updates the row matching on the conflict
+    columns, else inserts. Enough for `llm_job_costs`."""
+
+    def __init__(self, table, row, on_conflict):
+        self._table = table
+        self._row = dict(row)
+        self._keys = [k.strip() for k in on_conflict.split(",")] if on_conflict else ["id"]
+
+    def execute(self):
+        for existing in self._table.rows:
+            if all(existing.get(k) == self._row.get(k) for k in self._keys):
+                existing.update(self._row)
+                return FakeResult([existing])
+        return FakeInsert(self._table, self._row).execute()
+
+
 class FakeUpdate:
     def __init__(self, table, values):
         self._table = table
@@ -164,6 +181,9 @@ class FakeTable:
 
     def update(self, values):
         return FakeUpdate(self, values)
+
+    def upsert(self, row, on_conflict=None):
+        return FakeUpsert(self, row, on_conflict)
 
     def delete(self):
         return FakeDelete(self, self._client)

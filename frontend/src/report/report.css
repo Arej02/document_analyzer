@@ -1,0 +1,28 @@
+/* Assessment Report section of the project page (tasks_report.md Phase 4 frontend pair). Reuses the
+   existing tokens, .plan-status, .unverified-badge and .job-stage* styles; only layout lives here. */
+.report-generate { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; margin-top: 14px; }
+.report-generate-item { display: flex; flex-direction: column; gap: 6px; max-width: 320px; }
+.report-reason { margin: 0; }
+.report-progress { box-sizing: border-box; width: 100%; max-width: 520px; /* same column as .projects-list */  margin-top: 18px; padding: 14px 16px; border: 1px solid var(--border, rgba(142,163,201,.25)); border-radius: 12px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.report-progress-title { margin: 0; font-weight: 600; }
+.report-note { margin: 0; }
+.report-list-title { margin: 22px 0 6px; font-size: 14px; color: var(--muted-foreground); }
+.report-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+.report-row-main { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }
+/* Seven steps do not fit one row in the project column: wrap them (the shared stepper only wraps below 720px). */
+.report-progress .job-stages { flex-wrap: wrap; gap: 10px 4px; margin: 0; max-width: 100%; }
+
+/* Report page (?report=<id>). */
+.report-progress-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.report-banner { margin: 14px 0; padding: 12px 16px; max-width: 760px; border: 1px solid var(--warning, #b7791f); border-left-width: 5px; border-radius: 8px; background: rgba(255, 207, 122, .12); }
+.report-flags { margin: 6px 0 0; justify-content: flex-start; }
+.report-pdf { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 18px; }
+.report-pdf .report-reason { flex-basis: 100%; margin: 0; }
+.report-document { margin: 24px 0 40px; }
+.report-frame { display: block; width: 100%; height: 80vh; min-height: 480px; border: 1px solid var(--border, rgba(142, 163, 201, .3)); border-radius: 10px; background: #fff; }
+
+.report-share { margin-top: 28px; }
+.report-share h2 { margin: 0 0 12px; font-size: 16px; }
+.report-share-new { margin-top: 12px; }
+.report-share-new input { width: 100%; max-width: 640px; font: 12px "Geist Mono", monospace; }
+.report-share-list { margin: 16px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; font-size: 13px; }
