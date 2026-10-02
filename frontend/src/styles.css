@@ -155,6 +155,14 @@ h1 em { display: inline-block; padding: 3px 0 10px; color: var(--ring); font-sty
 .entity-pagination button { border: 1px solid rgba(var(--neutral-rgb),.18); border-radius: 6px; padding: 5px 12px; color: var(--text); background: transparent; font-size: 12px; font-weight: 700; }
 .entity-pagination button:disabled { opacity: .4; cursor: not-allowed; }
 .entity-pagination button:not(:disabled):hover { border-color: rgba(var(--neutral-rgb),.4); }
+.entity-name-link { padding: 0; border: 0; background: none; color: var(--emphasis); font: inherit; text-align: left; cursor: pointer; text-decoration: underline; }
+.entity-detail { max-width: 980px; margin-top: 24px; padding: 18px; border: 1px solid rgba(var(--neutral-rgb),.14); border-radius: 12px; }
+.entity-detail h3 { margin: 0 0 10px; color: var(--text); font-size: 16px; }
+.entity-detail h4 { margin: 16px 0 6px; color: var(--muted-foreground); font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+.entity-detail-close { float: right; }
+.entity-raw-facts { max-height: 260px; overflow: auto; margin: 0; padding: 10px; border-radius: 8px; background: rgba(var(--neutral-rgb),.06); font: 12px/1.5 'Geist Mono', monospace; color: var(--text); }
+.entity-edge-group ul { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text); }
+.entity-edge-type { font: 700 11px/1 'Geist Mono', monospace; color: var(--muted-foreground); }
 @media (max-width: 720px) { .entity-table { display: block; overflow-x: auto; } }
 .projects h2 { margin: 44px 0 16px; color: var(--text); font-size: 20px; font-weight: 700; letter-spacing: -.6px; }
 .projects-list { list-style: none; margin: 0; padding: 0; max-width: 520px; }

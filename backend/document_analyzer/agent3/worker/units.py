@@ -62,6 +62,7 @@ from pathlib import Path, PurePosixPath
 
 from supabase import Client
 
+from document_analyzer.shared.llm import CallContext, LLMCostRecorder, MeteredLLMClient, bind_if_metered, new_run_id
 from document_analyzer.worker.summarize import get_azure_openai_client
 
 from .context import ContextError, build_unit_context
@@ -424,9 +425,18 @@ def _run_one_unit(client: Client, execution_job: dict, state, item: dict, items_
     last: dict = {}
 
     for attempt in range(1, max_attempts + 1):
+        # Cost accounting: this outer round's calls. Round 2+ exists only because the sandbox
+        # rejected the previous round, so its first inner attempt is tagged 'sandbox_feedback'.
+        round_fields = {
+            "cluster_id": cluster_id,
+            "round": attempt,
+            "retry_reason": "sandbox_feedback" if attempt > 1 else None,
+        }
+        code_client = bind_if_metered(llm_client, purpose="code_generation", **round_fields)
+        tests_client = bind_if_metered(llm_client, purpose="behaviour_tests", **round_fields)
         try:
             generated = generate_unit_code(
-                context, unit_slug, llm_client, params["model_deployment"], max_attempts, extra_feedback=feedback
+                context, unit_slug, code_client, params["model_deployment"], max_attempts, extra_feedback=feedback
             )
         except GenerationError as exc:
             _finish_as_error(client, execution_job, state, item, flags, attempts=attempt, error=str(exc))
@@ -435,7 +445,7 @@ def _run_one_unit(client: Client, execution_job: dict, state, item: dict, items_
         own_files = ensure_package_init(generated.files, unit_slug)
         contract_files = generate_contract_tests(unit_slug, test_contract, generated.symbol_map, context.dependencies)
         behaviour_result = generate_behaviour_tests(
-            context, unit_slug, generated, llm_client, params["model_deployment"], max_attempts
+            context, unit_slug, generated, tests_client, params["model_deployment"], max_attempts
         )
         test_files = [*contract_files, *behaviour_result.files]
 
@@ -504,6 +514,19 @@ def run_units_stage(client: Client, execution_job: dict, state) -> None:
     if not pending:
         return
     items_by_cluster_id = {item["cluster_id"]: item for item in state.items}
-    llm_client = get_azure_openai_client()
-    for item in pending:
-        _run_one_unit(client, execution_job, state, item, items_by_cluster_id, llm_client)
+    # Cost accounting (design_agent3.md section 15): one recorder and one run_id per pickup
+    # (a pgmq redelivery gets a new one); org_id comes from the job row.
+    cost_recorder = LLMCostRecorder(client, execution_job["org_id"])
+    llm_client = MeteredLLMClient(
+        get_azure_openai_client(),
+        CallContext(
+            agent="agent3", job_type="execution", job_id=execution_job["id"], run_id=new_run_id(), stage="units"
+        ),
+        cost_recorder,
+    )
+    try:
+        for item in pending:
+            _run_one_unit(client, execution_job, state, item, items_by_cluster_id, llm_client)
+            cost_recorder.flush()  # after each unit, so a crash in a long run loses little
+    finally:
+        cost_recorder.close()  # never raises

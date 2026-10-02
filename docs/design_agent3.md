@@ -82,6 +82,8 @@ Partial unique index `execution_jobs_one_active_per_plan` on `(plan_id)` where `
 | `test_summary` | jsonb, nullable | `{contract: {passed, failed}, behaviour: {passed, failed}, duration_s}` for the last attempt |
 | `last_error` | text, nullable | truncated failure reason for the last attempt |
 | `storage_prefix` | text, nullable | `{org_id}/{execution_job_id}/units/{cluster_id}/` |
+| `started_at` | timestamptz, nullable | (added 2026-10-01, Assessment Report prerequisite) when the units stage first picked the unit up. Set once: kept across outer rounds and redeliveries. Null for units that predate it or never started |
+| `finished_at` | timestamptz, nullable | when the unit reached a terminal verdict (`passed`, `failed_verification`, `error`). Overwritten if the unit is re-run, so it is the latest verdict's time |
 
 Unique `(execution_job_id, cluster_id)`.
 
@@ -423,3 +425,13 @@ Agent 3 is read-only on Agent 1 and 2 tables. These gaps are fixed in their own 
 Out of the MVP (specs §7), but kept possible:
 - `test_summary` is keyed by suite (`contract`, `behaviour`), so a `differential` suite can be added without a schema change.
 - A future PHP sandbox would need its own network-isolated, resource-limited runner (with PHP, a WordPress core stub and a DB) and recorded I/O per `public_interface` entry. It would be a separate design section and separate tasks. It must never share the Python runner.
+
+## 15. Cost accounting (added 2026-10-01)
+
+The shared design is in `design.md` §7 (tables, wrapper, pricing, internal-only access, "cost logging never blocks a job", `cost_usd` is a list-price estimate to reconcile with the Azure invoice). Agent 3 specifics:
+
+- **Call sites:** `agent3/worker/generate.py::generate_unit_code` (`code_generation`) and `agent3/worker/tests_gen.py::generate_behaviour_tests` (`behaviour_tests`), both in the `units` stage. The worker (`units.py`) builds one `MeteredLLMClient` per pickup with `agent='agent3'`, `job_type='execution'`, `job_id = execution_job.id`, a fresh `run_id` (pgmq redelivery can run an execution twice), and `org_id` from the job row. The deployment comes from `AGENT3_MODEL_DEPLOYMENT`, which is arbitrary, so pricing keys on `response.model` (with the per-deployment override as an escape hatch).
+- **Retry dimensions** (Agent 3 has the most): `cluster_id` is the unit, `round` is the outer sandbox-feedback round in `units.py`, `attempt` is the inner parse/validation attempt in `generate.py` / `tests_gen.py`, and `retry_reason` is `parse` or `sandbox_feedback`. Together they answer "what did the retries of unit X cost".
+- **Isolation:** costs are never written to `execution_jobs`, `unit_executions`, the `agent3-output` bucket or the zip, all of which are org-readable or downloadable. A unit's `attempts` column stays as it is.
+- **Recorder lifecycle:** flushed after each unit (so a crash in a long run loses little), at the end of `units`, and in a `finally` on success, failure and `JobCancelled`. Sandbox runs make no LLM calls and record nothing.
+- **Endpoint (operator-only, `404` otherwise):** `GET /api/agent3/executions/{execution_job_id}/cost` (router convention of §9), returning the `design.md` §7.4 shape plus `by_unit` with calls, rounds, attempts and cost. Paired frontend: a total cost chip and a by-unit table on the execution run view, shown only on `200`.

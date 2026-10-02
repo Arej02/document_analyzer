@@ -1,0 +1,347 @@
+{
+  "architecture": {
+    "connectivity": [
+      {
+        "edges": 2,
+        "from": "(root)",
+        "to": "includes"
+      },
+      {
+        "edges": 2,
+        "from": "shop",
+        "to": "includes"
+      },
+      {
+        "edges": 1,
+        "from": "(root)",
+        "to": "shop"
+      }
+    ],
+    "hubs": [
+      {
+        "degree": 3,
+        "file_path": "index.php",
+        "name": "bootstrap"
+      },
+      {
+        "degree": 3,
+        "file_path": "shop/checkout.php",
+        "name": "checkout"
+      },
+      {
+        "degree": 3,
+        "file_path": "includes/db.php",
+        "name": "db_query"
+      },
+      {
+        "degree": 2,
+        "file_path": "includes/view.php",
+        "name": "render_page"
+      },
+      {
+        "degree": 2,
+        "file_path": "includes/mail.php",
+        "name": "send_mail"
+      },
+      {
+        "degree": 1,
+        "file_path": "shop/cart.php",
+        "name": "Cart"
+      },
+      {
+        "degree": 1,
+        "file_path": "admin/routes.php",
+        "name": "admin_dashboard"
+      },
+      {
+        "degree": 1,
+        "file_path": "shop/hooks.php",
+        "name": "init_shop"
+      },
+      {
+        "degree": 1,
+        "file_path": "admin/tools.php",
+        "name": "unserialize_blob"
+      }
+    ],
+    "subsystems": [
+      {
+        "modules": [
+          "index.php"
+        ],
+        "name": "(root)",
+        "risk_level": "low",
+        "summary": null,
+        "summary_grounding": null
+      },
+      {
+        "modules": [
+          "admin/routes.php",
+          "admin/tools.php"
+        ],
+        "name": "admin",
+        "risk_level": "high",
+        "summary": null,
+        "summary_grounding": null
+      },
+      {
+        "modules": [
+          "includes/db.php",
+          "includes/mail.php",
+          "includes/view.php"
+        ],
+        "name": "includes",
+        "risk_level": "high",
+        "summary": null,
+        "summary_grounding": null
+      },
+      {
+        "modules": [
+          "shop/cart.php",
+          "shop/checkout.php",
+          "shop/hooks.php"
+        ],
+        "name": "shop",
+        "risk_level": "medium",
+        "summary": null,
+        "summary_grounding": null
+      }
+    ]
+  },
+  "cover": {
+    "project_name": "Fixture Shop",
+    "snapshot_date": "2026-10-01",
+    "watermark": null
+  },
+  "executive_summary": {
+    "note": "The executive summary was not generated.",
+    "status": "withheld",
+    "text": ""
+  },
+  "glance": {
+    "coverage": {
+      "by_language": {
+        "JavaScript": 3
+      },
+      "counts_by_status": {
+        "extracted": 3,
+        "failed": 1
+      },
+      "graphify_status": "ok",
+      "not_extracted_count": 1,
+      "not_extracted_sample": [
+        {
+          "path": "assets/app.js",
+          "reason": "syntax_error",
+          "status": "failed"
+        }
+      ]
+    },
+    "dependencies": 12,
+    "entities_by_type": {
+      "class": 1,
+      "function": 6,
+      "hook": 1,
+      "route": 1
+    },
+    "files_analysed": 9,
+    "files_filtered": [
+      {
+        "count": 2,
+        "reason": "composer_vendor_directory"
+      },
+      {
+        "count": 1,
+        "reason": "node_modules_directory"
+      },
+      {
+        "count": 1,
+        "reason": "vcs_directory"
+      }
+    ],
+    "frameworks": [
+      "WordPress"
+    ],
+    "languages": [
+      {
+        "files": 9,
+        "name": "PHP"
+      },
+      {
+        "files": 3,
+        "name": "JavaScript"
+      }
+    ],
+    "loc": 4820
+  },
+  "inputs": {
+    "calibration_snapshot_id": "snap-fixture",
+    "estimator_config_hash": "fixture-hash",
+    "estimator_version": "1",
+    "plan_id": null,
+    "plan_status": null,
+    "plan_version": null,
+    "pricing_version": null,
+    "source_job_id": "job-1",
+    "template_version": "1"
+  },
+  "limitations": [
+    {
+      "code": "files_not_parsed",
+      "text": "1 file(s) could not be fully parsed."
+    },
+    {
+      "code": "inferred_edges",
+      "text": "50% of relationships found by the multi-language parser were inferred rather than read directly (1 of 2)."
+    },
+    {
+      "code": "signal_not_recorded",
+      "text": "The risk signal was not recorded for 1 flagged entit(ies) of this run."
+    },
+    {
+      "code": "summaries_not_attributable",
+      "text": "Module and subsystem summaries are not linked to a named module in the stored data, so subsystems are listed with a risk level rolled up from their entities rather than a summary."
+    },
+    {
+      "code": "unverified_summaries",
+      "text": "Summaries that could not be fact-checked, by level: entity 22% (2 of 9), subsystem 100% (1 of 1)."
+    }
+  ],
+  "next_steps": {
+    "body": "Talk to us.",
+    "contact": "hello@example.com",
+    "heading": "Next steps"
+  },
+  "risk": {
+    "heat_map": [
+      {
+        "high": 0,
+        "low": 1,
+        "medium": 0,
+        "subsystem": "(root)"
+      },
+      {
+        "high": 1,
+        "low": 0,
+        "medium": 1,
+        "subsystem": "admin"
+      },
+      {
+        "high": 1,
+        "low": 1,
+        "medium": 1,
+        "subsystem": "includes"
+      },
+      {
+        "high": 0,
+        "low": 2,
+        "medium": 1,
+        "subsystem": "shop"
+      }
+    ],
+    "hotspots": [
+      {
+        "entities": [
+          {
+            "explanation": "Unserializes uploaded data and evaluates it.",
+            "file_path": "admin/tools.php",
+            "name": "unserialize_blob",
+            "risk_level": "high",
+            "signal": "unserialize_on_input, eval_call"
+          },
+          {
+            "explanation": "Serves the admin dashboard.",
+            "file_path": "admin/routes.php",
+            "name": "admin_dashboard",
+            "risk_level": "medium",
+            "signal": null
+          }
+        ],
+        "more": 0,
+        "subsystem": "admin"
+      },
+      {
+        "entities": [
+          {
+            "explanation": "Builds a SQL query from request input.",
+            "file_path": "includes/db.php",
+            "name": "db_query",
+            "risk_level": "high",
+            "signal": "sql_concatenation, superglobal_get"
+          },
+          {
+            "explanation": "Sends an email through a remote service.",
+            "file_path": "includes/mail.php",
+            "name": "send_mail",
+            "risk_level": "medium",
+            "signal": "outbound_network_call"
+          }
+        ],
+        "more": 0,
+        "subsystem": "includes"
+      },
+      {
+        "entities": [
+          {
+            "explanation": "Writes an order file.",
+            "file_path": "shop/checkout.php",
+            "name": "checkout",
+            "risk_level": "medium",
+            "signal": "file_write"
+          }
+        ],
+        "more": 0,
+        "subsystem": "shop"
+      }
+    ]
+  },
+  "schema_version": 1,
+  "security": {
+    "caveat": "This is a static scan with known false negatives, not a penetration test. Findings are counts and locations only; no secret values are stored or shown.",
+    "risky_patterns": [
+      {
+        "count": 1,
+        "pattern": "dynamic_code_execution"
+      },
+      {
+        "count": 1,
+        "pattern": "sql_built_by_concatenation"
+      },
+      {
+        "count": 1,
+        "pattern": "superglobal_input"
+      },
+      {
+        "count": 1,
+        "pattern": "unserialize_on_input"
+      }
+    ],
+    "secrets_by_reason": [
+      {
+        "count": 1,
+        "locations": [
+          {
+            "field_path": "raw_facts.literal",
+            "file_path": "includes/db.php"
+          }
+        ],
+        "reason": "aws_access_key"
+      },
+      {
+        "count": 2,
+        "locations": [
+          {
+            "field_path": "raw_facts.token",
+            "file_path": "includes/db.php"
+          },
+          {
+            "field_path": "raw_facts.password",
+            "file_path": "includes/mail.php"
+          }
+        ],
+        "reason": "generic_password"
+      }
+    ]
+  },
+  "tier": "xray"
+}

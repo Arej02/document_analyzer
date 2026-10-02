@@ -186,6 +186,8 @@ def api(monkeypatch):
 
     app.dependency_overrides[get_auth_context] = fake_auth
     monkeypatch.setattr(jobs_module, "_question_embedder", lambda: None)
+    # Q&A cost recording writes through the service-role client: never the real project from a test.
+    monkeypatch.setattr(jobs_module, "get_service_role_client", lambda: FakeClient(org_id="org-1"))
     return TestClient(app), client
 
 

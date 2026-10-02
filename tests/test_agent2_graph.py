@@ -294,3 +294,18 @@ def test_graph_stats_write_is_scoped_by_org():
     rows = {r["org_id"]: r for r in client.table("planning_jobs").rows}
     assert rows["org-2"]["graph_stats"] is None
     assert rows["org-1"]["graph_stats"] is not None
+
+
+def test_run_graph_stage_ignores_dependency_entities():
+    # Declared packages (design.md section 5) are facts, not code: never clustered into a unit.
+    client = FakeClient()
+    _seed_source_job(client)
+    client.table("extracted_entities").insert(
+        {"id": "dep-1", "org_id": "org-1", "job_id": "job-1", "entity_type": "dependency", "name": "monolog/monolog",
+         "file_path": "composer.json", "raw_facts": {"ecosystem": "composer"}}
+    ).execute()
+
+    g = run_graph_stage(client, _planning_job(client))
+
+    assert "dep-1" not in g.nodes and "dep-1" not in g.isolated
+    assert g.stats["nodes"] == 3

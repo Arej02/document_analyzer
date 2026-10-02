@@ -36,3 +36,8 @@ test('repo overview: entities from counts, entry points from routes, and nothing
   assert.deepEqual([empty.languages, empty.frameworks, empty.entryPoints], [[], [], []])
   assert.equal(empty.size.loc, null)
 })
+
+test('declared packages are not counted again in the extracted-entity total', () => {
+  const o = buildRepoOverview({ summary: { entity_counts: { function: 5, route: 2, dependency: 40 } } })
+  assert.equal(o.size.entities, 7)
+})

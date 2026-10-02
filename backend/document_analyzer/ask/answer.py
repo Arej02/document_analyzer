@@ -14,9 +14,9 @@ import os
 import re
 import secrets
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Callable
 
-from openai import AzureOpenAI
+from document_analyzer.shared.llm import LLMClient
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from document_analyzer.ask.context import Context, render_relationship
@@ -174,8 +174,16 @@ def insufficient(context: Context, reason: str) -> dict[str, Any]:
     }
 
 
-def generate_answer(context: Context, client: AzureOpenAI | None = None) -> dict[str, Any]:
-    """One LLM call over the fenced context; returns the validated, cited answer."""
+def generate_answer(
+    context: Context,
+    client: LLMClient | None = None,
+    wrap_client: Callable[[Any], Any] | None = None,
+) -> dict[str, Any]:
+    """One LLM call over the fenced context; returns the validated, cited answer.
+
+    `wrap_client` is applied to the client once it is resolved (the default one is only
+    built when the model is actually called), which is how the endpoint meters the call
+    (design.md section 7.3) without this module knowing about cost accounting."""
     if not context.evidence:
         return insufficient(
             context, "No stored source evidence matched this question, so it cannot be answered from this job."
@@ -184,6 +192,8 @@ def generate_answer(context: Context, client: AzureOpenAI | None = None) -> dict
         from document_analyzer.worker.summarize import get_azure_openai_client
 
         client = get_azure_openai_client()
+    if wrap_client is not None:
+        client = wrap_client(client)
     response = client.chat.completions.create(
         model=os.environ["AZURE_OPENAI_DEPLOYMENT"],
         response_format={"type": "json_object"},

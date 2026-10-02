@@ -197,6 +197,65 @@ def test_same_snapshot_and_seed_give_the_same_plan(run):
     assert _plan_layout(client, "pj-1") == _plan_layout(client, "pj-2")
 
 
+def _snapshot(client, planning_job_id):
+    """Everything a planning job produced, keyed by member names instead of
+    generated ids: unit and phase clusters (member sets), which units sit in which
+    phase, cluster edges, and the ordered plan with its contracts."""
+    names = _names(client)
+    clusters = [c for c in client.table("clusters").rows if c["planning_job_id"] == planning_job_id]
+    members: dict[str, set] = {}
+    for m in client.table("cluster_members").rows:
+        members.setdefault(m["cluster_id"], set()).add(names[m["canonical_entity_id"]])
+    unit_key = {c["id"]: frozenset(members.get(c["id"], ())) for c in clusters if c["level"] == "unit"}
+    phase_key = {
+        c["id"]: frozenset(k for u in clusters if u["level"] == "unit" and u["parent_cluster_id"] == c["id"] for k in [unit_key[u["id"]]])
+        for c in clusters
+        if c["level"] == "phase"
+    }
+    key = {**unit_key, **phase_key}
+    label = {cid: "+".join(sorted(k)) for cid, k in unit_key.items()}
+
+    def relabel(value):
+        # Contracts reference other units by cluster id, which is minted per job.
+        if isinstance(value, dict):
+            return {k: relabel(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [relabel(v) for v in value]
+        return label.get(value, value) if isinstance(value, str) else value
+
+    [plan] = [p for p in client.table("migration_plans").rows if p["planning_job_id"] == planning_job_id]
+    return {
+        "units": {(c["kind"], unit_key[c["id"]]) for c in clusters if c["level"] == "unit"},
+        "phases": {(c["kind"], phase_key[c["id"]]) for c in clusters if c["level"] == "phase"},
+        "edges": {
+            (e["level"], key[e["from_cluster_id"]], key[e["to_cluster_id"]], e["call_count"], e["hook_binding_count"], e["weight"], e["flag"])
+            for e in client.table("cluster_edges").rows
+            if e["planning_job_id"] == planning_job_id
+        },
+        "plan": sorted(
+            (i["phase_order"], i["unit_order"], unit_key[i["cluster_id"]], phase_key[i["phase_cluster_id"]], json.dumps(relabel(i["test_contract"]), sort_keys=True, default=str))
+            for i in client.table("migration_plan_items").rows
+            if i["plan_id"] == plan["id"]
+        ),
+        "open_facade_flags": plan["open_facade_flags"],
+    }
+
+
+def test_two_jobs_with_the_same_params_give_identical_clusters_and_order(run):
+    client = run(_client())
+    for pj in ("pj-2", "pj-3"):
+        client.table("planning_jobs").insert(
+            {"id": pj, "org_id": "org-1", "project_id": "project-1", "source_job_id": "job-1", "status": "queued",
+             "progress_stage": None, "params": PARAMS}
+        ).execute()
+        run_module.process_planning_job(pj, "org-1")
+
+    first = _snapshot(client, "pj-1")
+    assert first["units"] and first["phases"] and first["plan"]  # the comparison below isn't vacuous
+    assert _snapshot(client, "pj-2") == first
+    assert _snapshot(client, "pj-3") == first
+
+
 def test_override_recomputation_reproduces_the_worker_plan(run):
     # design_agent2.md §9.2: every version is rebuilt from version 1 with the stored
     # clusters, edges and contracts. With nothing to change, that rebuild must match
@@ -218,3 +277,53 @@ def test_override_recomputation_reproduces_the_worker_plan(run):
 
     assert layout(rows) == layout(client.table("migration_plan_items").rows)
     assert flags == plan["open_facade_flags"] == 2
+
+
+def _add_dependency(client):
+    client.table("extracted_entities").insert(
+        {"id": "dep-1", "org_id": "org-1", "job_id": "job-1", "entity_type": "dependency", "name": "monolog/monolog",
+         "file_path": "composer.json",
+         "raw_facts": {"ecosystem": "composer", "version_spec": "^3", "manifest_path": "composer.json", "dev": False}}
+    ).execute()
+
+
+class DependencyAwareLLM(FakeLLM):
+    def create(self, **kwargs):
+        if "PyPI" in kwargs["messages"][0]["content"]:
+            return _Resp(json.dumps({"targets": [
+                {"package": "monolog/monolog", "ecosystem": "composer", "target_name": "structlog", "rationale": "Logging, ^3."}]}))
+        return super().create(**kwargs)
+
+
+def test_pipeline_proposes_dependency_targets_for_the_v1_plan_and_keeps_packages_out_of_the_plan(run, monkeypatch):
+    client = _client()
+    _add_dependency(client)
+    monkeypatch.setattr(run_module, "get_azure_openai_client", DependencyAwareLLM)
+
+    client = run(client)
+
+    [plan] = client.table("migration_plans").rows
+    [target] = client.table("plan_dependency_targets").rows
+    assert (target["plan_id"], target["entity_id"], target["target_name"], target["grounding_status"]) == (
+        plan["id"], "dep-1", "structlog", "verified")
+    # A package is not code: it is in no unit, and the entity count is unchanged for the plan.
+    assert "dep-1" not in {m["entity_id"] for m in client.table("cluster_members").rows}
+
+
+def test_pipeline_still_finishes_when_dependency_targets_fail(run, monkeypatch):
+    client = _client()
+    _add_dependency(client)
+
+    class Boom(FakeLLM):
+        def create(self, **kwargs):
+            if "PyPI" in kwargs["messages"][0]["content"]:
+                raise RuntimeError("model down")
+            return super().create(**kwargs)
+
+    monkeypatch.setattr(run_module, "get_azure_openai_client", Boom)
+
+    client = run(client)
+
+    [job] = client.table("planning_jobs").rows
+    assert (job["status"], job.get("error")) == ("done", None)
+    assert client.table("migration_plans").rows and client.table("plan_dependency_targets").rows == []

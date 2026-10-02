@@ -9,6 +9,8 @@ from .agent3.router import router as agent3_router
 from .config_router import router as config_router
 from .jobs import router as jobs_router
 from .projects_router import router as projects_router
+from .report.public import router as report_public_router
+from .report.router import router as report_router
 
 
 def create_app() -> FastAPI:
@@ -18,6 +20,8 @@ def create_app() -> FastAPI:
     app.include_router(projects_router)
     app.include_router(agent2_router)
     app.include_router(agent3_router)
+    app.include_router(report_router)
+    app.include_router(report_public_router)
     return app
 
 

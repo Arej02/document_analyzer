@@ -79,14 +79,20 @@ def test_emit_discovered_stats_sends_the_map_and_never_raises(tmp_path, monkeypa
         def stats(self, **counts):
             self.calls.append(counts)
 
+    persisted = []
+    monkeypatch.setattr(
+        run_module, "persist_discovery_stats", lambda client, job_id, org_id, stats: persisted.append((job_id, org_id, stats))
+    )
     _write(tmp_path, "a.py", "print(1)\n")
     emitter = Emitter()
-    run_module._emit_discovered_stats(emitter, tmp_path)
-    assert emitter.calls == [{"loc": 1, "dependencies": 0, "language.Python": 1}]
+    run_module._emit_discovered_stats(emitter, tmp_path, None, "job-1", "org-1")
+    expected = {"loc": 1, "dependencies": 0, "language.Python": 1}
+    assert emitter.calls == [expected]
+    assert persisted == [("job-1", "org-1", expected)]
 
     def boom(_path):
         raise RuntimeError("disk gone")
 
     monkeypatch.setattr(run_module, "discover_repo", boom)
-    run_module._emit_discovered_stats(emitter, tmp_path)  # logs and carries on
+    run_module._emit_discovered_stats(emitter, tmp_path, None, "job-1", "org-1")  # logs and carries on
     assert len(emitter.calls) == 1

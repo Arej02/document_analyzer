@@ -13,9 +13,14 @@ import { ThemeProvider, ThemeToggle } from './theme/ThemeProvider'
 import { createBrowserThemeAdapter, createThemeStore } from './theme/themeStore.js'
 import { ProgressStages } from './ProgressStages'
 import { RunView } from './agent1/RunView.jsx'
+import { CostPanel } from './ui/CostPanel.jsx'
 import { AppSidebar } from './Sidebar'
 import { OutlineSlotContext } from './OutlineSlot.jsx'
 import PlanPage from './agent2/PlanPage.jsx'
+import { ReportsSection } from './report/ReportsSection.jsx'
+import ReportPage from './report/ReportPage.jsx'
+import PublicReportPage from './report/PublicReportPage.jsx'
+import { shareTokenFromSearch } from './report/publicReportModel.js'
 import PlanningProgress from './agent2/PlanningProgress.jsx'
 import {
   ConfidenceBadge, DEFAULT_RISK_NODE_STYLE, LIVE_TREE_NODE_CAP, RISK_NODE_STYLE, UnverifiedBadge, formatJobErrorMessage,
@@ -207,9 +212,9 @@ const ENTITIES_PAGE_SIZE = 20
 // the knowledge base browser, with filters for entity_type and risk_level" (design.md
 // §4). Filters reset the page back to the start — changing what's being browsed
 // without resetting `offset` could otherwise land on an empty/out-of-range page.
-// Per-entity detail (raw_facts, edges) is the separate, not-yet-built
-// GET .../entities/{entity_id} task — rows here are read-only summary rows.
+// Clicking a row's name opens EntityDetail (GET .../entities/{entity_id}) below the table.
 function EntityBrowser({ jobId }) {
+  const [selectedId, setSelectedId] = useState(null)
   const [entityType, setEntityType] = useState('')
   const [riskLevel, setRiskLevel] = useState('')
   const [offset, setOffset] = useState(0)
@@ -273,7 +278,7 @@ function EntityBrowser({ jobId }) {
               {page.entities.map((entity) => (
                 <tr key={entity.id}>
                   <td>{entity.entity_type}</td>
-                  <td>{entity.name}</td>
+                  <td><button type="button" className="entity-name-link" onClick={() => setSelectedId(entity.id)}>{entity.name}</button></td>
                   <td className="entity-file-path">{entity.file_path}</td>
                   <td>{entity.risk_level ? <span className={`risk-level risk-level-${entity.risk_level}`}>{entity.risk_level}</span> : '—'}</td>
                   <td>{entity.grounding_status === 'unverified' ? <span className="unverified-badge unverified-badge-warn">unverified</span> : (entity.grounding_status || '—')}</td>
@@ -289,7 +294,81 @@ function EntityBrowser({ jobId }) {
           </div>
         </>
       ))}
+      {selectedId && <EntityDetail jobId={jobId} entityId={selectedId} onSelect={setSelectedId} onClose={() => setSelectedId(null)} />}
     </section>
+  )
+}
+
+function EdgeList({ title, edges, otherKey, onSelect }) {
+  return (
+    <div className="entity-edge-group">
+      <h4>{title} ({edges.length})</h4>
+      {edges.length === 0 ? <p className="entity-table-empty">None.</p> : (
+        <ul>
+          {edges.map((edge) => {
+            const other = edge[otherKey]
+            return (
+              <li key={edge.id}>
+                <span className="entity-edge-type">{edge.edge_type}</span>{' '}
+                {other
+                  ? <><button type="button" className="entity-name-link" onClick={() => onSelect(other.id)}>{other.name}</button> <span className="entity-file-path">({other.entity_type}, {other.file_path})</span></>
+                  : <em>external target</em>}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+// tasks.md Phase 4 "GET .../entities/{entity_id} — detail view" (design.md §4): raw facts,
+// summary, grounding status and both edge directions. Following an edge swaps the detail
+// to that entity.
+function EntityDetail({ jobId, entityId, onSelect, onClose }) {
+  const [detail, setDetail] = useState(null)
+  const [error, setError] = useState(null)
+  const apiFetch = useApiFetch()
+
+  useEffect(() => {
+    let cancelled = false
+    setDetail(null)
+    setError(null)
+    apiFetch(`/api/agent1/jobs/${jobId}/entities/${entityId}`)
+      .then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}))
+          throw new Error(formatJobErrorMessage(response.status, body))
+        }
+        return response.json()
+      })
+      .then((data) => { if (!cancelled) setDetail(data) })
+      .catch((err) => { if (!cancelled) setError(err.message) })
+    return () => { cancelled = true }
+  }, [jobId, entityId])
+
+  return (
+    <div className="entity-detail" aria-label="Entity detail">
+      <button type="button" className="entity-detail-close" onClick={onClose}>Close</button>
+      {error && <p className="error">{error}</p>}
+      {!error && !detail && <p className="summary-loading">Loading entity…</p>}
+      {detail && (
+        <>
+          <h3>{detail.name} <span className="entity-file-path">{detail.entity_type} · {detail.file_path}</span></h3>
+          <div className="summary-badges">
+            {detail.risk_level && <span className={`risk-level risk-level-${detail.risk_level}`}>{detail.risk_level}</span>}
+            {detail.grounding_status === 'unverified'
+              ? <span className="unverified-badge unverified-badge-warn">unverified</span>
+              : (detail.grounding_status || null)}
+          </div>
+          <p className="repo-summary-text">{detail.summary_text || 'No summary is available for this entity yet.'}</p>
+          <h4>Raw facts</h4>
+          <pre className="entity-raw-facts">{JSON.stringify(detail.raw_facts, null, 2)}</pre>
+          <EdgeList title="Outgoing edges" edges={detail.edges.outgoing} otherKey="to_entity" onSelect={onSelect} />
+          <EdgeList title="Incoming edges" edges={detail.edges.incoming} otherKey="from_entity" onSelect={onSelect} />
+        </>
+      )}
+    </div>
   )
 }
 
@@ -610,7 +689,7 @@ function GeneratePlanAction({ project, onPlanningJobCreated }) {
         loading={submitting}
         style={{ marginTop: 14 }}
       />
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error" role="alert">{error}</p>}
     </form>
   )
 }
@@ -623,10 +702,13 @@ function GeneratePlanAction({ project, onPlanningJobCreated }) {
 function PlansList({ projectId, onSelectPlan }) {
   const [plans, setPlans] = useState(null)
   const [error, setError] = useState(null)
+  const [attempt, setAttempt] = useState(0)
   const apiFetch = useApiFetch()
 
   useEffect(() => {
     let cancelled = false
+    setPlans(null)
+    setError(null)
     apiFetch(`/api/agent2/projects/${projectId}/plans`)
       .then(async (response) => {
         if (!response.ok) {
@@ -638,13 +720,18 @@ function PlansList({ projectId, onSelectPlan }) {
       .then((data) => { if (!cancelled) setPlans(data.plans) })
       .catch((err) => { if (!cancelled) setError(err.message) })
     return () => { cancelled = true }
-  }, [projectId])
+  }, [projectId, attempt])
 
   return (
     <section className="job-history" aria-label="Plans">
       <h2>Plans</h2>
-      {error && <p className="error">{error}</p>}
-      {!error && !plans && <p className="summary-loading">Loading plans…</p>}
+      {error && (
+        <>
+          <p className="error" role="alert">{error}</p>
+          <button type="button" className="project-link" onClick={() => setAttempt((n) => n + 1)}>Retry</button>
+        </>
+      )}
+      {!error && !plans && <p className="summary-loading" role="status">Loading plans…</p>}
       {plans && plans.length === 0 && <p className="summary-loading">No plans yet — generate one above.</p>}
       {plans && plans.length > 0 && (
         <ul className="projects-list">
@@ -732,7 +819,7 @@ function DeleteProjectAction({ project, onDeleted }) {
   )
 }
 
-function ProjectDetailPage({ projectId, onSelectJob, onSelectPlanningJob, onSelectPlan, onBackToList }) {
+function ProjectDetailPage({ projectId, onSelectJob, onSelectPlanningJob, onSelectPlan, onOpenReport, onBackToList }) {
   const [project, setProject] = useState(null)
   const [error, setError] = useState(null)
   const apiFetch = useApiFetch()
@@ -800,6 +887,7 @@ function ProjectDetailPage({ projectId, onSelectJob, onSelectPlanningJob, onSele
         </section>
       )}
       {project && <PlansList projectId={projectId} onSelectPlan={onSelectPlan} />}
+      {project && <ReportsSection projectId={projectId} onOpenReport={onOpenReport} />}
       {project && (
         <section className="job-history" aria-label="Danger zone">
           <DeleteProjectAction project={project} onDeleted={onBackToList} />
@@ -1078,7 +1166,7 @@ function JobRestart({ projectId, onReingested }) {
   return <ReingestAction project={project} onReingested={onReingested} />
 }
 
-function JobStatusPage({ jobId, onBackToForm, onReingested, onViewProject, onPlanningJobCreated }) {
+function JobStatusPage({ jobId, onBackToForm, onReingested, onViewProject, onPlanningJobCreated, onOpenReport }) {
   return (
     <RunView
       jobId={jobId}
@@ -1086,14 +1174,30 @@ function JobStatusPage({ jobId, onBackToForm, onReingested, onViewProject, onPla
       onViewProject={onViewProject}
       slots={{
         diffSummary: (job) => <DiffSummary job={job} />,
+        cost: (job) => (
+          <CostPanel
+            endpoint={`/api/agent1/jobs/${jobId}/cost`}
+            qaEndpoint={`/api/agent1/jobs/${jobId}/qa-cost`}
+            active={job.status === 'running'}
+            refreshKey={job.status}
+          />
+        ),
         liveTree: () => <LiveEntityTree jobId={jobId} />,
         restart: (projectId) => <JobRestart projectId={projectId} onReingested={onReingested} />,
         // The plan is triggered by the user from here (a POST to Agent 2), not by Agent 1.
         nextStep: (job) => (
-          <GeneratePlanAction
-            project={{ id: job.project_id, latest_job_status: job.status }}
-            onPlanningJobCreated={onPlanningJobCreated}
-          />
+          <>
+            <GeneratePlanAction
+              project={{ id: job.project_id, latest_job_status: job.status }}
+              onPlanningJobCreated={onPlanningJobCreated}
+            />
+            <ReportsSection
+              projectId={job.project_id}
+              onOpenReport={onOpenReport}
+              tiers={['xray']}
+              intro="A read-only X-ray of this codebase: what is in it, how it fits together, and where the risk is. No plan needed."
+            />
+          </>
         ),
         results: () => (
           <>
@@ -1120,6 +1224,8 @@ function JobStatusPage({ jobId, onBackToForm, onReingested, onViewProject, onPla
 function PlanningJobStatusPage({ planningJobId, onBackToProject, onViewPlan, onBackToForm, onProjectId }) {
   const [job, setJob] = useState(null)
   const [error, setError] = useState(null)
+  // Bumped by Retry: a failed poll stops the loop, so the reader restarts it from here.
+  const [attempt, setAttempt] = useState(0)
   const apiFetch = useApiFetch()
 
   useEffect(() => {
@@ -1145,9 +1251,11 @@ function PlanningJobStatusPage({ planningJobId, onBackToProject, onViewPlan, onB
       }
     }
 
+    setJob(null)
+    setError(null)
     poll()
     return () => { cancelled = true; clearTimeout(timeoutId) }
-  }, [planningJobId])
+  }, [planningJobId, attempt])
 
   const failed = job?.status === 'failed'
   const done = job?.status === 'done'
@@ -1156,13 +1264,20 @@ function PlanningJobStatusPage({ planningJobId, onBackToProject, onViewPlan, onB
     <main className="page-shell">
 
       <section className="hero job-status" aria-label="Planning job status">
-        <p className="eyebrow">{job ? job.status.toUpperCase() : (error ? 'ERROR' : 'LOADING')}</p>
-        <h1>{job && (job.status === 'queued' || job.status === 'running') ? 'Creating a detailed migration plan…' : 'Planning job'}</h1>
+        <p className="eyebrow">{error ? 'ERROR' : (job ? job.status.toUpperCase() : 'LOADING')}</p>
+        <h1>{job && !error && (job.status === 'queued' || job.status === 'running') ? 'Creating a detailed migration plan…' : 'Planning job'}</h1>
         <p className="a1-sub">Job <code>{planningJobId}</code></p>
-        {error && <p className="error">{error}</p>}
-        {!error && !job && <p className="summary-loading">Loading planning job…</p>}
+        {error && <p className="error" role="alert">{error}</p>}
+        {!error && !job && <p className="summary-loading" role="status">Loading planning job…</p>}
         {job && (
           <PlanningProgress job={job} />
+        )}
+        {job && (
+          <CostPanel
+            endpoint={`/api/agent2/planning-jobs/${planningJobId}/cost`}
+            active={job.status === 'running'}
+            refreshKey={job.status}
+          />
         )}
         {failed && (
           <>
@@ -1181,7 +1296,10 @@ function PlanningJobStatusPage({ planningJobId, onBackToProject, onViewPlan, onB
           <p className="error">The planning job finished, but no plan was recorded for it.</p>
         ))}
         {error && (
-          <PrimaryButton label="Back" type="button" onClick={onBackToForm} style={{ marginTop: 8 }} />
+          <>
+            <PrimaryButton label="Retry" type="button" onClick={() => setAttempt((n) => n + 1)} style={{ marginTop: 8 }} />
+            <PrimaryButton label="Back" type="button" onClick={onBackToForm} style={{ marginTop: 8 }} />
+          </>
         )}
       </section>
     </main>
@@ -1291,6 +1409,12 @@ function ExecutionStatusPage({ executionJobId, selectedUnitId, onSelectUnit, onC
               </>
             )}
             {counts && counts.total === 0 && <p className="summary-loading">This execution has no units.</p>}
+            <CostPanel
+              endpoint={`/api/agent3/executions/${executionJobId}/cost`}
+              groupBy="unit"
+              active={job.status === 'running'}
+              refreshKey={`${job.status}:${counts?.done ?? 0}`}
+            />
           </>
         )}
         {failed && (
@@ -1628,7 +1752,7 @@ function ExecutionUnitPage({ executionJobId, clusterId, onClose }) {
 }
 
 // Query params that select a page (no router — see tasks_agent2.md conventions).
-const PAGE_PARAMS = ['job', 'project', 'planning_job', 'plan', 'execution']
+const PAGE_PARAMS = ['job', 'project', 'planning_job', 'plan', 'execution', 'report']
 // Params that refine a page: `unit` alongside `?plan=` (tasks_agent2.md),
 // and `unit` alongside `?execution=` too (tasks_agent3.md §12: "?execution=<id>
 // (optionally &unit=<cluster_id>)") — every other navigation clears them.
@@ -1689,6 +1813,7 @@ function App() {
   const navigateToPlanningJob = (planningJobId) => navigateToPage('planning_job', planningJobId)
   const navigateToPlan = (planId) => navigateToPage('plan', planId)
   const navigateToExecution = (executionJobId) => navigateToPage('execution', executionJobId)
+  const navigateToReport = (reportId) => navigateToPage('report', reportId)
   const backToForm = () => { navigateToPage(null); setActiveProjectId(null) }
   // page?.param === 'project' is authoritative even before any fetch resolves (the id
   // is right there in the URL); other pages rely on activeProjectId being reported
@@ -1742,7 +1867,7 @@ function App() {
 
   let content
   if (page?.param === 'job') {
-    content = <JobStatusPage jobId={page.id} onBackToForm={backToForm} onReingested={navigateToJobStatus} onViewProject={navigateToProject} onPlanningJobCreated={navigateToPlanningJob} />
+    content = <JobStatusPage jobId={page.id} onBackToForm={backToForm} onReingested={navigateToJobStatus} onViewProject={navigateToProject} onPlanningJobCreated={navigateToPlanningJob} onOpenReport={navigateToReport} />
   } else if (page?.param === 'planning_job') {
     content = (
       <PlanningJobStatusPage
@@ -1764,6 +1889,7 @@ function App() {
         onBackToForm={backToForm}
         onOpenPlan={navigateToPlan}
         onExecutionCreated={navigateToExecution}
+        onOpenReport={navigateToReport}
         onProjectId={setActiveProjectId}
       />
     )
@@ -1778,6 +1904,15 @@ function App() {
         onBackToForm={backToForm}
       />
     )
+  } else if (page?.param === 'report') {
+    content = (
+      <ReportPage
+        reportId={page.id}
+        onBackToProject={navigateToProject}
+        onBackToForm={backToForm}
+        onProjectId={setActiveProjectId}
+      />
+    )
   } else if (page?.param === 'project') {
     content = (
       <ProjectDetailPage
@@ -1785,6 +1920,7 @@ function App() {
         onSelectJob={navigateToJobStatus}
         onSelectPlanningJob={navigateToPlanningJob}
         onSelectPlan={navigateToPlan}
+        onOpenReport={navigateToReport}
         onBackToList={backToForm}
       />
     )
@@ -1883,11 +2019,19 @@ function Root() {
 
 const themeStore = createThemeStore(createBrowserThemeAdapter(window))
 
+// A share link (`?share=<token>`) is a public page: no sign-in, no sidebar, so it is rendered before
+// AuthProvider and the shell exist (design_report.md §9.4).
+const shareToken = shareTokenFromSearch(window.location.search)
+
 createRoot(document.getElementById('root')).render(
   <ThemeProvider store={themeStore}>
-    <AuthProvider>
-      <ThemeToggle />
-      <ProductShell><Root /></ProductShell>
-    </AuthProvider>
+    {shareToken ? (
+      <PublicReportPage token={shareToken} />
+    ) : (
+      <AuthProvider>
+        <ThemeToggle />
+        <ProductShell><Root /></ProductShell>
+      </AuthProvider>
+    )}
   </ThemeProvider>,
 )

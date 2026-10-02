@@ -13,7 +13,7 @@ The same as `tasks_agent2.md`:
 - Visual check: `vite build` plus a real browser pass.
 
 ### Prerequisites (outside this file)
-- [ ] **Agent 1 source snapshot** (`tasks.md`, "Agent 3 prerequisites"): commit SHA, snapshot upload, `end_line` in `raw_facts`. Nothing in Phase 2 onwards can run on real data without it.
+- [x] (2026-10-02: checked against the code; all four `tasks.md` "Agent 3 prerequisites" items exist and their tests pass) **Agent 1 source snapshot** (`tasks.md`, "Agent 3 prerequisites"): commit SHA, snapshot upload, `end_line` in `raw_facts`. Nothing in Phase 2 onwards can run on real data without it.
 - [ ] At least one plan reaches `approved` live, end to end, for a **WordPress** repo: ingest → plan → submit → clear every `needs_facade` flag → approve every phase. The repo must be ingested after the Agent 1 source-snapshot task, so the plan's source job has a snapshot. Agent 1 jobs already reach `done` live, so the Azure endpoint note in `tasks.md` Phase 4 is out of date (`design_agent2.md` §15: Laravel `hospital_test`, 2026-09-23). What's missing is a WordPress repo taken through to an approved plan. Until then, Phases 0–4 build against `tests/fakes.py::FakeClient` and `tests/fixtures/agent2_cycle_repo/`, extending `tests/test_agent2_pipeline_fixture.py`.
 - [ ] Colima (docker runtime) and the `docker` CLI client are installed on every machine that runs the executor — Docker Desktop is not used (2026-09-28) — and gVisor (`runsc`) is registered on the production host.
 
@@ -336,6 +336,14 @@ The same as `tasks_agent2.md`:
     - **Found and fixed — unbounded-height `<pre>` blocks for logs, generated code and tests.** `.ask-excerpt pre` (shared with Agent 1/2's short evidence excerpts) had no `max-height`, but Agent 3 is the first place showing content that can genuinely be huge: a sandbox log capped at 64 KB (design_agent3.md §7) or a multi-file generated unit — a long one would turn the whole page into one giant scroll with no way to see anything else. Added a new CSS rule (`.execution-file-pane pre, .execution-long-pre pre { max-height: 420px; overflow-y: auto; }`, `styles.css`) and the matching `execution-long-pre` class on the tests figures and the log's `<details>` (`main.jsx::ExecutionUnitPage`). Also added a character count to the log's `<summary>` ("Sandbox output (N characters)") so a reader knows how big it is before expanding it.
     - **Verified live**, not just by reading the code: `vite build` is clean, and a dev harness (`agent3_ui_audit_server.py` + a direct DOM check against the real compiled stylesheet, scratchpad) confirmed both fixes actually engage — a genuinely long generated file (80 functions) and log (200 lines) each render in a `420px`-capped, `overflow-y: auto` box (checked via `getComputedStyle`/`scrollHeight` vs `clientHeight`, not just visually), and the chips report the correct `aria-pressed`/`role`/`aria-label` in the DOM. **Not checked in a live signed-in browser session** — same blocker Phase 5's frontend tasks hit: the app gates every page behind a real Supabase sign-in (`AuthGate`), and this session has no real Supabase credentials.
     - No design doc change: frontend-only fixes, no new endpoint or contract.
+
+---
+
+## Assessment Report prerequisite (added 2026-10-01, `specs_report.md` §12)
+
+The Assessment Report's estimator (`tasks_report.md` Phase 2) calibrates unit runtime from past executions and is read-only on Agent 3 tables, so this is fixed here.
+
+- [x] Record unit timing: add `started_at` and `finished_at` (timestamptz, nullable) to `unit_executions` (migration + `design_agent3.md` §2 first). Set `started_at` when the units stage picks a unit up, and `finished_at` when it reaches a terminal verdict. Keep the first `started_at` across outer rounds and redeliveries. Today only `attempts` and the sandbox `duration_s` exist, so per-unit wall-clock time can't be measured. No endpoint change, so no frontend pair.
 
 ---
 

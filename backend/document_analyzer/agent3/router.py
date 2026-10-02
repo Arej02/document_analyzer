@@ -26,6 +26,8 @@ from postgrest.exceptions import APIError
 
 from ..auth import AuthContext, get_auth_context
 from ..queue import enqueue_execution_job
+from ..shared.cost_access import get_cost_operator
+from ..shared.cost_report import build_execution_unit_costs, build_job_cost_report
 from ..shared.plan_staleness import is_stale, mark_stale_plans
 from ..shared.unit_sources import unit_sources
 from ..supabase_client import get_service_role_client, insert_many_scoped, insert_scoped
@@ -229,6 +231,26 @@ async def get_execution(execution_job_id: str, auth: Annotated[AuthContext, Depe
     if job is None:
         raise HTTPException(status_code=404, detail="execution not found")
     return job
+
+
+@router.get("/executions/{execution_job_id}/cost")
+def get_execution_cost(execution_job_id: str, auth: Annotated[AuthContext, Depends(get_cost_operator)]):
+    """Operator-only (404 for everyone else): LLM spend of one execution job with a per-unit
+    breakdown (calls, rounds, attempts), design.md §7.4. A list-price estimate, not the invoice."""
+    rows = (
+        auth.client.table("execution_jobs")
+        .select("id")
+        .eq("org_id", auth.org_id)
+        .eq("id", execution_job_id)
+        .limit(1)
+        .execute()
+    ).data
+    if not rows:
+        raise HTTPException(status_code=404, detail="execution not found")
+    service = get_service_role_client()
+    report = build_job_cost_report(service, auth.org_id, "execution", execution_job_id)
+    report["by_unit"] = build_execution_unit_costs(service, auth.org_id, execution_job_id)
+    return report
 
 
 def get_execution_status(client, org_id: str, execution_job_id: str) -> dict | None:

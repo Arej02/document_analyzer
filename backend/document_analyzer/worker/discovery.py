@@ -39,47 +39,68 @@ def _line_count(path: Path) -> int:
     return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
 
 
-def _json_keys(path: Path, *sections: str) -> set[str]:
+def _json_packages(path: Path, *sections: str) -> list[tuple[str, str | None, str]]:
+    """(name, declared version, section) for every package under the given sections."""
     try:
         data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
     except (OSError, ValueError):
-        return set()
-    names: set[str] = set()
+        return []
+    found: list[tuple[str, str | None, str]] = []
     for section in sections:
         block = data.get(section) if isinstance(data, dict) else None
         if isinstance(block, dict):
-            names.update(block)
-    return names
+            found.extend((name, version if isinstance(version, str) else None, section) for name, version in block.items())
+    return found
 
 
-def _requirements(path: Path) -> set[str]:
+def _requirements(path: Path) -> list[tuple[str, str | None]]:
+    """(name, declared version spec) per requirement line, e.g. ("flask", ">=3")."""
     try:
         lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except OSError:
-        return set()
-    names = set()
+        return []
+    found = []
     for line in lines:
         if line.lstrip().startswith(("#", "-")):
             continue
         match = _REQUIREMENT_NAME.match(line)
         if match:
-            names.add(match.group(1).lower())
-    return names
+            rest = line[match.end():].split("#", 1)[0].split(";", 1)[0]
+            rest = re.sub(r"^\s*\[[^\]]*\]", "", rest).strip()  # drop extras: pkg[extra]>=1
+            found.append((match.group(1).lower(), rest or None))
+    return found
+
+
+def declared_packages(repo_path: Path) -> list[dict]:
+    """Packages declared by the repo's own manifests, one row per package per manifest:
+    `{name, ecosystem, version_spec, manifest_path, dev}`. `php` and `ext-*` pseudo-packages in
+    composer.json are platform requirements, not dependencies. Sorted for a stable order."""
+    rows: dict[tuple[str, str, str], dict] = {}
+
+    def add(manifest: Path, ecosystem: str, name: str, version_spec: str | None, dev: bool) -> None:
+        manifest_path = manifest.relative_to(repo_path).as_posix()
+        # A package listed twice in one manifest keeps its first entry.
+        rows.setdefault(
+            (manifest_path, ecosystem, name),
+            {"name": name, "ecosystem": ecosystem, "version_spec": version_spec, "manifest_path": manifest_path, "dev": dev},
+        )
+
+    for manifest in repo_path.rglob("composer.json"):
+        for name, version, section in _json_packages(manifest, "require", "require-dev"):
+            if name != "php" and not name.startswith("ext-"):
+                add(manifest, "composer", name, version, section == "require-dev")
+    for manifest in repo_path.rglob("package.json"):
+        for name, version, section in _json_packages(manifest, "dependencies", "devDependencies"):
+            add(manifest, "npm", name, version, section == "devDependencies")
+    for manifest in repo_path.rglob("requirements.txt"):
+        for name, version in _requirements(manifest):
+            add(manifest, "pip", name, version, False)
+    return sorted(rows.values(), key=lambda r: (r["manifest_path"], r["ecosystem"], r["name"]))
 
 
 def count_dependencies(repo_path: Path) -> int:
-    """Distinct packages declared by the repo's own manifests. `php` and `ext-*` pseudo-packages
-    in composer.json are platform requirements, not dependencies."""
-    packages: set[tuple[str, str]] = set()
-    for manifest in repo_path.rglob("composer.json"):
-        for name in _json_keys(manifest, "require", "require-dev"):
-            if name != "php" and not name.startswith("ext-"):
-                packages.add(("composer", name))
-    for manifest in repo_path.rglob("package.json"):
-        packages.update(("npm", name) for name in _json_keys(manifest, "dependencies", "devDependencies"))
-    for manifest in repo_path.rglob("requirements.txt"):
-        packages.update(("pip", name) for name in _requirements(manifest))
-    return len(packages)
+    """Distinct packages declared by the repo's own manifests (the same package in two manifests counts once)."""
+    return len({(row["ecosystem"], row["name"]) for row in declared_packages(repo_path)})
 
 
 def detect_frameworks(repo_path: Path) -> list[str]:
