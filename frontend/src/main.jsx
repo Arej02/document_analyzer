@@ -16,6 +16,8 @@ import { RunView } from './agent1/RunView.jsx'
 import { AppSidebar } from './Sidebar'
 import { OutlineSlotContext } from './OutlineSlot.jsx'
 import PlanPage from './agent2/PlanPage.jsx'
+import GithubConnectionPanel from './agent3/GithubConnectionPanel.jsx'
+import DeliverToGithubAction from './agent3/DeliverToGithubAction.jsx'
 import PlanningProgress from './agent2/PlanningProgress.jsx'
 import {
   ConfidenceBadge, DEFAULT_RISK_NODE_STYLE, LIVE_TREE_NODE_CAP, RISK_NODE_STYLE, UnverifiedBadge, formatJobErrorMessage,
@@ -708,7 +710,8 @@ function DeleteProjectAction({ project, onDeleted }) {
           <p className="reingest-hint">
             This permanently deletes all {project.jobs.length} run{project.jobs.length === 1 ? '' : 's'} of{' '}
             <code>{project.source_ref}</code>, their summaries, source snapshots, every migration plan built
-            from them, and the code generated from those plans. It can't be undone.
+            from them, the code generated from those plans, and the GitHub connection and stored token used for delivery.
+            Pull requests already opened on GitHub are not touched. It can't be undone.
           </p>
           <div className="delete-confirm-row">
             <button type="button" className="danger-button" onClick={remove} disabled={deleting}>
@@ -800,6 +803,11 @@ function ProjectDetailPage({ projectId, onSelectJob, onSelectPlanningJob, onSele
         </section>
       )}
       {project && <PlansList projectId={projectId} onSelectPlan={onSelectPlan} />}
+      {project && (
+        <section className="job-history" aria-label="GitHub delivery settings">
+          <GithubConnectionPanel projectId={projectId} />
+        </section>
+      )}
       {project && (
         <section className="job-history" aria-label="Danger zone">
           <DeleteProjectAction project={project} onDeleted={onBackToList} />
@@ -1395,6 +1403,7 @@ function ExecutionResultsPage({ executionJobId, job, selectedUnitId, onSelectUni
         )}
         <PrimaryButton label="Back to plan" type="button" onClick={onBackToPlan} style={{ marginTop: 8 }} />
         <DownloadProjectButton executionJobId={executionJobId} hasOutput={Boolean(job?.has_output)} />
+        <DeliverToGithubAction executionJobId={executionJobId} projectId={job?.project_id} hasOutput={Boolean(job?.has_output)} />
       </section>
     </main>
   )

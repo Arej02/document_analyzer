@@ -16,6 +16,7 @@ input, no code execution"); `assemble` only ever reads/writes file contents on
 disk.
 """
 
+import json
 import os
 import shutil
 import zipfile
@@ -25,12 +26,16 @@ from tempfile import mkdtemp
 
 from supabase import Client
 
+from ..project_layout import README_PATH, UNITS_INIT_PATH, render_units_init
 from .generate import GeneratedFile
+from .git_history import try_add_git_history
 from .sandbox import SandboxParams, SandboxResult, run_pytest
 from .status import counts_by_job, set_execution_output
 from .units import _TEMPLATE_DIR
 
 OUTPUT_BUCKET = "agent3-output"
+# design_agent3.md §15.3: the delivery manifest sits next to project.zip.
+MANIFEST_VERSION = 1
 
 # design_agent3.md §5: the assembled project's own runtime + test deps, pinned to
 # match the root pyproject.toml's constraints (the only place all seven already
@@ -82,30 +87,35 @@ def _copy_whole_template(dest: Path) -> None:
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
     shutil.copy2(_TEMPLATE_DIR / "pytest.ini", dest / "pytest.ini")
+    # design_agent3.md §15.2: the scaffold also carries the fixed CI workflow and .gitignore.
+    shutil.copy2(_TEMPLATE_DIR / ".gitignore", dest / ".gitignore")
+    (dest / ".github" / "workflows").mkdir(parents=True)
+    shutil.copy2(_TEMPLATE_DIR / ".github" / "workflows" / "ci.yml", dest / ".github" / "workflows" / "ci.yml")
+
+
+def _write_text(path: Path, text: str) -> None:
+    """UTF-8 bytes exactly as given. `Path.write_text` would translate "
+" to "
+" on
+    Windows, so the same run would yield different zips (and different git blobs, §15.14)
+    depending on the host OS, and CRLF would end up inside generated code."""
+    path.write_bytes(text.encode("utf-8"))
 
 
 def _write_files(dest: Path, files: list[GeneratedFile]) -> None:
     for f in files:
         path = dest / f.path
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f.content, encoding="utf-8")
+        _write_text(path, f.content)
 
 
 def _write_units_init(dest: Path, unit_slugs: list[str]) -> None:
     """§8's one unit-loading mechanism, over every item in plan order (unlike
     `units.py::_write_units_init`, which writes the same shape but only for one
-    unit's own transitive dependencies, for a per-unit sandbox workspace)."""
-    lines = [
-        '"""Written by stage `assemble` (design_agent3.md §5, §8): imports every '
-        'unit, in plan order, so hook registrations run at startup."""',
-        "",
-        "import importlib",
-        "",
-    ]
-    for slug in unit_slugs:
-        module_name = f"app.units.{slug}"
-        lines.append(f"importlib.import_module({module_name!r})")
-    (dest / "app" / "units" / "__init__.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    unit's own transitive dependencies, for a per-unit sandbox workspace). The text
+    comes from `project_layout.render_units_init`, shared with the commit plan
+    (§15.2) so every intermediate commit imports only the units committed so far."""
+    _write_text(dest / "app" / "units" / "__init__.py", render_units_init(unit_slugs))
 
 
 # --------------------------------------------------------------------------- #
@@ -185,10 +195,67 @@ def run_assemble_stage(client: Client, execution_job: dict, state) -> None:
     _write_units_init(dest, unit_slugs)
 
     unit_rows = _load_unit_rows(client, org_id, execution_job_id)
-    (dest / "README.md").write_text(_render_readme(state, unit_rows), encoding="utf-8")
-    (dest / "requirements.txt").write_text(REQUIREMENTS_TXT, encoding="utf-8")
+    _write_text(dest / "README.md", _render_readme(state, unit_rows))
+    _write_text(dest / "requirements.txt", REQUIREMENTS_TXT)
 
     state.project_dir = dest
+
+
+# --------------------------------------------------------------------------- #
+# Delivery manifest (design_agent3.md §15.3)
+# --------------------------------------------------------------------------- #
+
+
+def _project_file_paths(project_dir: Path) -> list[str]:
+    return sorted(p.relative_to(project_dir).as_posix() for p in project_dir.rglob("*") if p.is_file())
+
+
+def build_manifest(execution_job: dict, state, unit_rows: dict[str, dict], final_test_summary: dict) -> dict:
+    """The only link between `project.zip` and the plan: which files are scaffold, and for
+    each phase and unit (in plan order) its verdict and the files it owns. Pure over its
+    arguments plus a directory listing of `state.project_dir`; the commit plan
+    (`commit_plan.py`) validates all of it again before anything is committed."""
+    unit_paths: set[str] = set()
+    phases: list[dict] = []
+    for item in state.items:
+        files = sorted(f.path for f in state.unit_files[item["cluster_id"]]) + sorted(
+            f.path for f in state.unit_test_files.get(item["cluster_id"], [])
+        )
+        unit_paths.update(files)
+        if not phases or phases[-1]["phase_order"] != item["phase_order"]:
+            phase_cluster = state.clusters.get(item["phase_cluster_id"]) or {}
+            phases.append(
+                {
+                    "phase_order": item["phase_order"],
+                    "phase_cluster_id": item["phase_cluster_id"],
+                    "label": phase_cluster.get("label"),
+                    "units": [],
+                }
+            )
+        row = unit_rows.get(item["cluster_id"], {})
+        phases[-1]["units"].append(
+            {
+                "cluster_id": item["cluster_id"],
+                "unit_slug": item["unit_slug"],
+                "label": _unit_label(item, state),
+                "status": row.get("status", "unknown"),
+                "attempts": row.get("attempts", 0),
+                "flags": sorted(row.get("flags") or []),
+                "files": files,
+            }
+        )
+    scaffold = [
+        path
+        for path in _project_file_paths(state.project_dir)
+        if path not in unit_paths and path not in (README_PATH, UNITS_INIT_PATH)
+    ]
+    return {
+        "version": MANIFEST_VERSION,
+        "created_at": execution_job.get("created_at"),
+        "scaffold": scaffold,
+        "phases": phases,
+        "final_test_summary": final_test_summary,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -237,9 +304,20 @@ def run_final_test_stage(client: Client, execution_job: dict, state) -> None:
 
     counts = counts_by_job(client, org_id, [execution_job_id])[execution_job_id]
 
+    # §15.3: built from the tree as it is NOW, so the scaffold list never includes a .git.
+    manifest = build_manifest(execution_job, state, _load_unit_rows(client, org_id, execution_job_id), final_test_summary)
+    # §15.5: after the suite has run (the sandbox never sees a .git), before the zip is built.
+    # Never raises: no git, or a failed check, just means a zip without history.
+    try_add_git_history(state.project_dir, manifest)
+
     zip_bytes = _build_zip(state.project_dir)
     output_zip_path = f"{org_id}/{execution_job_id}/project.zip"
     client.storage.from_(OUTPUT_BUCKET).upload(output_zip_path, zip_bytes, {"content-type": "application/zip"})
+    client.storage.from_(OUTPUT_BUCKET).upload(
+        f"{org_id}/{execution_job_id}/manifest.json",
+        json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8"),
+        {"content-type": "application/json"},
+    )
 
     set_execution_output(
         client,

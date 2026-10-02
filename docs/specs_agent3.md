@@ -121,8 +121,8 @@ Written by Agent 3's worker, all scoped by `org_id` and an `execution_job_id`:
 
 ## 7. Out of scope (MVP)
 
-- **Executing legacy PHP**, and differential testing (running PHP and Python side by side). This was decided 2026-09-25. The design keeps it possible later (`design_agent3.md` §14), but there's no PHP sandbox in the MVP.
-- Opening GitHub pull requests or pushing to any repo. Output is Storage + download only (decided 2026-09-25).
+- ~~**Executing legacy PHP**, and differential testing (running PHP and Python side by side). This was decided 2026-09-25. The design keeps it possible later (`design_agent3.md` §14), but there's no PHP sandbox in the MVP.~~ **Reversed 2026-10-01 (scope change, not yet built or designed):** differential testing is now in scope as a planned feature, tracked in `tasks_agent3_delivery_and_parity.md` item 2. It stays out of the *current build* until its design pass (`design_agent3.md` §14) and tasks are written. When built, it keeps the 2026-09-25 safety constraint in spirit: legacy PHP runs only in a **separate** PHP runner image and sandbox, with the same hardening bar as the Python one (no network, read-only root, no capabilities, resource limits, a timeout, gVisor in production), and **never** in the Python runner or in the worker process. The CLAUDE.md rule "Agent 3 runs only the Python it generated, never the legacy code" is amended to match when that design lands, not before.
+- ~~Opening GitHub pull requests or pushing to any repo. Output is Storage + download only (decided 2026-09-25).~~ **Reversed 2026-10-01 (scope change):** GitHub PR delivery is now in scope, tracked in `tasks_agent3_delivery_and_parity.md` item 1. Constraints decided with the reversal: PRs go to a **separate target repo the customer points us at (new or empty), never into the legacy repo**; delivery is **additional** to the zip, not a replacement (the zip and `GET /executions/{id}/download` stay as they are); Agent 3 stays read-only on Agent 1/2 tables; the write-scoped GitHub token lives in Supabase Vault, never a plaintext column. Pushing to the legacy repo remains out of scope.
 - Database data migration (moving rows from the WordPress DB). Agent 3 generates models, not data transfers.
 - Editing generated code in the UI, and re-running a single unit. A per-unit retry endpoint is a later task (§9).
 - Writing to any Agent 1 or Agent 2 table.
@@ -131,7 +131,7 @@ Written by Agent 3's worker, all scoped by `org_id` and an `execution_job_id`:
 
 - Trigger: user-initiated `POST`, own queue `agent3_execution_jobs`, approved and non-stale plans only.
 - Verification: contract tests (deterministic) plus behaviour tests (LLM), generated Python only, in a sandbox. No legacy execution.
-- Output: Supabase Storage bucket `agent3-output` and a zip download.
+- Output: Supabase Storage bucket `agent3-output` and a zip download. *(2026-10-01: GitHub PR delivery to a separate target repo is being added alongside this, not replacing it — see §7's reversal.)*
 - Failures never block: `failed_verification` / `error` units are kept and flagged, and dependents continue.
 - Order: plan order, one unit at a time.
 - Legacy source: Agent 1 archives a source snapshot per ingestion job (new Agent 1 tasks in `tasks.md`).
