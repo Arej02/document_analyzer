@@ -361,7 +361,10 @@ def run_prepare_stage(client: Client, execution_job: dict, state) -> None:
     state.items = items
     state.cluster_reports = _load_cluster_reports(client, org_id, sorted(report_source_ids))
     state.clusters = _load_clusters(
-        client, org_id, sorted(report_source_ids | {item["cluster_id"] for item in items})
+        client,
+        org_id,
+        # phase_cluster_id: the delivery manifest labels each phase (design_agent3.md §15.3).
+        sorted(report_source_ids | {item["cluster_id"] for item in items} | {item["phase_cluster_id"] for item in items}),
     )
     for item in items:
         item["unit_slug"] = derive_unit_slug(item, state)

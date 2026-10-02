@@ -5,6 +5,8 @@ load_dotenv()  # must run before any of these import env-reading modules (e.g. r
 from fastapi import FastAPI
 
 from .agent2.router import router as agent2_router
+from .agent3.connection_router import router as agent3_connection_router
+from .agent3.delivery_router import router as agent3_delivery_router
 from .agent3.router import router as agent3_router
 from .config_router import router as config_router
 from .jobs import router as jobs_router
@@ -18,6 +20,8 @@ def create_app() -> FastAPI:
     app.include_router(projects_router)
     app.include_router(agent2_router)
     app.include_router(agent3_router)
+    app.include_router(agent3_connection_router)
+    app.include_router(agent3_delivery_router)
     return app
 
 
