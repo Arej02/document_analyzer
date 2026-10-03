@@ -214,6 +214,14 @@ def delete_project(client: Client, org_id: str, project_id: str) -> list[str]:
         .execute()
         .data
     )
+    deliveries = (
+        client.table("deliveries")
+        .select("id, status")
+        .eq("org_id", org_id)
+        .eq("project_id", project_id)
+        .execute()
+        .data
+    )
     report_jobs = (
         client.table("report_generation_jobs")
         .select("id, status")
@@ -222,9 +230,9 @@ def delete_project(client: Client, org_id: str, project_id: str) -> list[str]:
         .execute()
         .data
     )
-    if any(row["status"] in _ACTIVE_STATUSES for row in jobs + planning_jobs + execution_jobs + report_jobs):
+    if any(row["status"] in _ACTIVE_STATUSES for row in jobs + planning_jobs + execution_jobs + deliveries + report_jobs):
         raise ProjectBusyError(
-            "an ingestion, planning, code generation or report job for this project is still queued or running"
+            "an ingestion, planning, code generation, GitHub delivery or report job for this project is still queued or running"
         )
     token_refs = [
         row["token_ref"]

@@ -22,6 +22,8 @@ def create_app() -> FastAPI:
     app.include_router(projects_router)
     app.include_router(agent2_router)
     app.include_router(agent3_router)
+    app.include_router(agent3_connection_router)
+    app.include_router(agent3_delivery_router)
     app.include_router(report_router)
     app.include_router(report_public_router)
     return app

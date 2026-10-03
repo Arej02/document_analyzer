@@ -73,6 +73,9 @@ _ORG_SCOPED_TABLES = [
     # Agent 3 (design_agent3.md §2).
     "execution_jobs",
     "unit_executions",
+    # Agent 3 GitHub delivery (design_agent3.md §15.6).
+    "project_github_connections",
+    "deliveries",
     # Assessment Report (design_report.md §3). report_internal_estimates is deliberately
     # absent: not even its own org may read it (see the tests below).
     "report_generation_jobs",
@@ -464,6 +467,8 @@ def _delete_org(service_client, org_id: str) -> list[str]:
     # planning_jobs but are listed explicitly anyway.
     failures: list[str] = []
     for table in [
+        "deliveries",
+        "project_github_connections",
         # The report's rows reference the project and Agent 1 job; its estimates and
         # links cascade from the report but are listed explicitly anyway.
         "report_internal_estimates",
@@ -582,6 +587,7 @@ _ROW_ID_COLUMN = {
     "cluster_members": "cluster_id",
     "cluster_reports": "cluster_id",
     "migration_plan_items": "plan_id",
+    "project_github_connections": "project_id",
     "plan_dependency_targets": "plan_id",
 }
 
@@ -636,6 +642,36 @@ def test_authenticated_users_cannot_insert_agent3_rows(two_orgs, table):
         two_orgs["client_a"].table(table).insert({"org_id": two_orgs["org_a_id"]}).execute()
 
 
+def _delivery_row(two_orgs, **overrides) -> dict:
+    return {
+        "execution_job_id": two_orgs["seeded_ids"]["execution_jobs"],
+        "project_id": two_orgs["seeded_ids"]["projects"],
+        "repo_full_name": "rls-smoke/target-repo",
+        "default_branch": "main",
+        **overrides,
+    }
+
+
+def test_only_one_active_delivery_per_execution(two_orgs):
+    """deliveries_one_active_per_execution (design_agent3.md §15.6): a second queued/running
+    delivery for the same execution is refused, while finished ones don't count."""
+    service_client = get_service_role_client()
+    first = insert_scoped(service_client, "deliveries", two_orgs["org_a_id"], _delivery_row(two_orgs, status="running")).data[0]
+    try:
+        with pytest.raises(Exception, match="duplicate key|23505"):
+            insert_scoped(service_client, "deliveries", two_orgs["org_a_id"], _delivery_row(two_orgs, status="queued"))
+    finally:
+        service_client.table("deliveries").delete().eq("id", first["id"]).eq("org_id", two_orgs["org_a_id"]).execute()
+
+
+def test_delivery_rejects_an_unknown_status_and_a_malformed_repo_name(two_orgs):
+    service_client = get_service_role_client()
+    with pytest.raises(Exception, match="deliveries_status_known|check constraint"):
+        insert_scoped(service_client, "deliveries", two_orgs["org_a_id"], _delivery_row(two_orgs, status="bogus"))
+    with pytest.raises(Exception, match="deliveries_repo_format|check constraint"):
+        insert_scoped(
+            service_client, "deliveries", two_orgs["org_a_id"], _delivery_row(two_orgs, status="done", repo_full_name="../../etc")
+        )
 @pytest.mark.parametrize("who", ["a", "b"])
 def test_authenticated_users_cannot_write_plan_dependency_targets(two_orgs, who):
     """Written only by the planner worker (design_agent2.md §2): no insert, update or delete

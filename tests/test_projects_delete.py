@@ -28,7 +28,7 @@ AGENT2_TABLES = (
     "phase_approvals",
     "plan_overrides",
 )
-AGENT3_TABLES = ("execution_jobs", "unit_executions")
+AGENT3_TABLES = ("execution_jobs", "unit_executions", "deliveries", "project_github_connections")
 REPORT_TABLES = ("report_generation_jobs", "assessment_reports", "report_share_links", "report_internal_estimates")
 WORKFLOW_EVENTS_TABLE = ("workflow_events",)
 
@@ -119,6 +119,18 @@ def _seed_project(client, org_id="org-123", source_type="github", source_ref="ht
     )
     _insert(client, "unit_executions", org_id, {"execution_job_id": execution_job["id"], "cluster_id": unit["id"]})
     _insert(client, "workflow_events", org_id, {"workflow_kind": "agent3_execution", "workflow_id": execution_job["id"], "event_type": "activity"})
+    _insert(
+        client,
+        "deliveries",
+        org_id,
+        {"project_id": project["id"], "execution_job_id": execution_job["id"], "repo_full_name": "acme/target", "default_branch": "main", "status": "done"},
+    )
+    _insert(
+        client,
+        "project_github_connections",
+        org_id,
+        {"project_id": project["id"], "repo_full_name": "acme/target", "default_branch": "main", "token_ref": f"secret-{project['id']}", "created_by": "user-1"},
+    )
 
     report_job = _insert(
         client,
@@ -313,6 +325,91 @@ def test_list_objects_pages_through_large_folders(fake_client, monkeypatch):
     assert sorted(projects._list_objects(bucket, "org-123/job")) == [f"org-123/job/units/u{n}/log.txt" for n in range(5)]
 
 
+# --- GitHub delivery (design_agent3.md §15.11) ---------------------------------
+
+
+def test_delete_removes_deliveries_and_the_connection_and_its_vault_secret(api, fake_client, vault_deleted):
+    project, _, _ = _seed_project(fake_client)
+    other, _, _ = _seed_project(fake_client, source_ref="https://github.com/org/other")
+
+    assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
+
+    assert [r["project_id"] for r in _rows(fake_client, "deliveries")] == [other["id"]]
+    assert [r["project_id"] for r in _rows(fake_client, "project_github_connections")] == [other["id"]]
+    assert vault_deleted == [f"secret-{project['id']}"]  # only this project's secret, never the other's
+
+
+def test_a_project_without_a_connection_deletes_no_secret(api, fake_client, vault_deleted):
+    project, _, _ = _seed_project(fake_client)
+    fake_client.table("project_github_connections").rows.clear()
+
+    assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
+
+    assert vault_deleted == []
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_delete_is_refused_while_a_github_delivery_is_active(api, fake_client, vault_deleted, status):
+    project, _, _ = _seed_project(fake_client)
+    next(r for r in _rows(fake_client, "deliveries") if r["project_id"] == project["id"])["status"] = status
+
+    response = api.delete(f"/api/agent1/projects/{project['id']}")
+
+    assert response.status_code == 409 and "GitHub delivery" in response.json()["detail"]
+    assert len(_rows(fake_client, "projects")) == 1
+    assert len(_rows(fake_client, "deliveries")) == 1 and len(_rows(fake_client, "project_github_connections")) == 1
+    assert vault_deleted == []
+
+
+@pytest.mark.parametrize("status", ["done", "failed"])
+def test_a_finished_delivery_does_not_block_delete(api, fake_client, status):
+    project, _, _ = _seed_project(fake_client)
+    next(r for r in _rows(fake_client, "deliveries") if r["project_id"] == project["id"])["status"] = status
+
+    assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
+
+
+def test_another_projects_active_delivery_does_not_block_delete(api, fake_client):
+    project, _, _ = _seed_project(fake_client)
+    other, _, _ = _seed_project(fake_client, source_ref="https://github.com/org/other")
+    next(r for r in _rows(fake_client, "deliveries") if r["project_id"] == other["id"])["status"] = "running"
+
+    assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
+
+
+def test_a_vault_failure_does_not_fail_a_delete_whose_rows_are_gone(api, fake_client, monkeypatch):
+    project, _, _ = _seed_project(fake_client)
+
+    async def broken(ref):
+        raise RuntimeError("vault is down")
+
+    monkeypatch.setattr(projects_router_module.vault_secrets, "delete_secret", broken)
+
+    assert api.delete(f"/api/agent1/projects/{project['id']}").status_code == 204
+    assert _rows(fake_client, "projects") == [] and _rows(fake_client, "project_github_connections") == []
+
+
+def test_a_failed_delete_keeps_the_connection_so_a_retry_still_removes_the_secret(fake_client, vault_deleted):
+    from document_analyzer.projects import delete_project
+
+    project, _, _ = _seed_project(fake_client)
+    projects_table = fake_client.table("projects")  # the fake hands back the same table object every time
+    real_delete, state = projects_table.delete, {"fail": True}
+
+    def delete():
+        if state["fail"]:
+            state["fail"] = False
+            raise RuntimeError("database went away")
+        return real_delete()
+
+    projects_table.delete = delete
+
+    with pytest.raises(RuntimeError):
+        delete_project(fake_client, "org-123", project["id"])
+    assert len(_rows(fake_client, "project_github_connections")) == 1  # the reference survived the failure
+
+    assert delete_project(fake_client, "org-123", project["id"]) == [f"secret-{project['id']}"]
+    assert _rows(fake_client, "project_github_connections") == []
 # --- Assessment Report data (design_report.md §13) ---------------------------------------------------------
 
 
