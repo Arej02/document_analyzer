@@ -436,6 +436,16 @@ Added 2026-10-01 (`specs_agent3.md` §7 reversal; scope in `tasks_agent3_deliver
 
 Delivery is an **additional** output path. The zip, `output_zip_path` and `GET /executions/{id}/download` (§5, §9) are unchanged. A project with no GitHub connection behaves exactly as before.
 
+## 15. Cost accounting (added 2026-10-01)
+
+The shared design is in `design.md` §7 (tables, wrapper, pricing, internal-only access, "cost logging never blocks a job", `cost_usd` is a list-price estimate to reconcile with the Azure invoice). Agent 3 specifics:
+
+- **Call sites:** `agent3/worker/generate.py::generate_unit_code` (`code_generation`) and `agent3/worker/tests_gen.py::generate_behaviour_tests` (`behaviour_tests`), both in the `units` stage. The worker (`units.py`) builds one `MeteredLLMClient` per pickup with `agent='agent3'`, `job_type='execution'`, `job_id = execution_job.id`, a fresh `run_id` (pgmq redelivery can run an execution twice), and `org_id` from the job row. The deployment comes from `AGENT3_MODEL_DEPLOYMENT`, which is arbitrary, so pricing keys on `response.model` (with the per-deployment override as an escape hatch).
+- **Retry dimensions** (Agent 3 has the most): `cluster_id` is the unit, `round` is the outer sandbox-feedback round in `units.py`, `attempt` is the inner parse/validation attempt in `generate.py` / `tests_gen.py`, and `retry_reason` is `parse` or `sandbox_feedback`. Together they answer "what did the retries of unit X cost".
+- **Isolation:** costs are never written to `execution_jobs`, `unit_executions`, the `agent3-output` bucket or the zip, all of which are org-readable or downloadable. A unit's `attempts` column stays as it is.
+- **Recorder lifecycle:** flushed after each unit (so a crash in a long run loses little), at the end of `units`, and in a `finally` on success, failure and `JobCancelled`. Sandbox runs make no LLM calls and record nothing.
+- **Endpoint (operator-only, `404` otherwise):** `GET /api/agent3/executions/{execution_job_id}/cost` (router convention of §9), returning the `design.md` §7.4 shape plus `by_unit` with calls, rounds, attempts and cost. Paired frontend: a total cost chip and a by-unit table on the execution run view, shown only on `200`
+
 ### 15.1 Decisions
 
 | Question | Decision |
