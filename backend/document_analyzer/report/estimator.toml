@@ -1,0 +1,56 @@
+# Assessment Report estimator config (design_report.md §7). Loaded and validated by config.py.
+#
+# EVERY NUMBER BELOW IS A PLACEHOLDER. The real values are an operator's to set; the open
+# questions in specs_report.md §11 keep these defaults until confirmed. Changing any value changes
+# the config hash recorded in each report's `inputs`.
+version = "1"
+
+[buckets]
+# A unit's size (clusters.size) falls in the first bucket whose edge it does not exceed.
+size_edges = [3, 8, 20]
+size_labels = ["xs", "s", "m", "l"]
+unknown_risk = "medium"
+unknown_size = "s"
+
+# Cold-start numbers for a bucket with fewer than `min_samples` completed units of history.
+# `fallback` applies to every bucket; add [defaults.<size>.<risk>] tables to be more specific.
+[defaults.fallback]
+cost_usd = 4.0
+attempts = 2
+duration_s = 180.0
+failure_rate = 0.25
+
+[calibration]
+min_samples = 20
+unpriced_threshold = 0.2
+
+[simulation]
+seed = 1
+runs = 2000
+concurrency = 1
+
+[rework]
+hours_per_failed_unit = { low = 2, medium = 4, high = 8 }
+
+[manual_effort]
+per_entity = { function = 0.1, class = 0.3, route = 0.2, schema = 0.3, hook = 0.2 }
+risk_multiplier = { low = 1.0, medium = 1.5, high = 2.5 }
+per_facade_cycle = 2.0
+per_oversized_unit = 1.0
+p90_factor = 1.5
+
+# Optional. Without it the report shows no price. method = "markup" (on the internal AI cost) or "per_unit".
+# [pricing]
+# version = "1"
+# currency = "USD"
+# method = "markup"
+# markup = 3.0
+# rounding = 1000
+# minimum = 1000
+
+[sharing]
+default_expiry_days = 14
+max_expiry_days = 90
+
+[quality]
+sparse_calls_per_function = 0.5

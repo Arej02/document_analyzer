@@ -1,0 +1,72 @@
+/* Assessment report stylesheet (design_report.md §8.2). Inlined into the one HTML file with the fonts.
+   No external URLs, no scripts. Meaning never rides on colour alone: every pill and cell carries text,
+   so the report reads in greyscale and in print. Visual polish is a later Phase 5 task. */
+:root {
+  --ink: #16181d; --muted: #5d6573; --rule: #d8dce3; --soft: #f4f5f8; --accent: #3b3f8f;
+  --low: #2f6b3f; --medium: #8a5a00; --high: #a3271f;
+}
+* { box-sizing: border-box; }
+html { font: 15px/1.55 'Geist', 'Segoe UI', Helvetica, Arial, sans-serif; color: var(--ink); background: #fff; }
+body { margin: 0 auto; padding: 40px 32px 56px; max-width: 880px; position: relative; }
+h1, h2, h3 { line-height: 1.2; letter-spacing: -.01em; }
+h1 { font-size: 34px; margin: 6px 0 14px; }
+h2 { font-size: 22px; margin: 0 0 12px; padding-top: 18px; border-top: 2px solid var(--ink); }
+h3 { font-size: 15px; margin: 22px 0 8px; }
+p { margin: 8px 0; }
+sup a { color: var(--accent); text-decoration: none; }
+section { margin: 36px 0; }
+.mono { font-family: 'Geist Mono', ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; }
+.muted { color: var(--muted); }
+.eyebrow { margin: 0; font: 600 12px/1 'Geist Mono', ui-monospace, monospace; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+
+.cover { padding: 28px 0 24px; border-bottom: 1px solid var(--rule); }
+.cover-facts { display: flex; flex-wrap: wrap; gap: 8px 36px; margin: 0; }
+.cover-facts div { display: block; }
+.cover-facts dt { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.cover-facts dd { margin: 2px 0 0; font-weight: 600; }
+.draft-note { margin-top: 16px; padding: 10px 14px; border: 2px dashed var(--ink); font-weight: 600; }
+.watermark { position: absolute; top: 160px; left: 50%; transform: translateX(-50%) rotate(-24deg); font: 700 150px/1 'Geist', sans-serif; letter-spacing: .08em; text-transform: uppercase; color: rgba(22, 24, 29, .07); pointer-events: none; z-index: 0; }
+main, .cover, .foot { position: relative; z-index: 1; }
+
+.pill { display: inline-block; padding: 2px 9px; border: 1px solid currentColor; border-radius: 999px; font: 600 11px/1.5 'Geist Mono', ui-monospace, monospace; letter-spacing: .02em; white-space: nowrap; vertical-align: middle; }
+.pill-low { color: var(--low); } .pill-medium { color: var(--medium); } .pill-high { color: var(--high); font-weight: 700; }
+.pill-none { color: var(--muted); }
+.pill-unverified { color: var(--medium); border-style: dashed; }
+.pill-heuristic { color: var(--accent); border-style: dotted; }
+
+table { width: 100%; border-collapse: collapse; margin: 8px 0 14px; font-size: 13.5px; }
+th, td { padding: 6px 10px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+thead th { background: var(--soft); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+th.n, td.n { text-align: right; font-variant-numeric: tabular-nums; }
+table.kv th { width: 34%; font-weight: 600; background: none; text-transform: none; letter-spacing: 0; font-size: 13.5px; color: var(--ink); }
+table.heat td.n, table.heat th.n { width: 14%; }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 32px; }
+@media (max-width: 680px) { .cols { grid-template-columns: 1fr; } body { padding: 24px 16px 40px; } }
+.card { margin: 14px 0; padding: 4px 16px 10px; border: 1px solid var(--rule); border-radius: 8px; }
+.phases { list-style: none; padding: 0; margin: 0; }
+.hotspots { list-style: none; padding: 0; margin: 0; }
+.hotspots li { padding: 8px 0 10px; border-bottom: 1px solid var(--rule); }
+.hotspots p { margin: 3px 0; }
+.caveat { margin-top: 14px; padding: 10px 14px; background: var(--soft); border-left: 4px solid var(--ink); font-size: 13.5px; }
+.footnotes { margin-top: 18px; font-size: 12.5px; color: var(--muted); }
+.footnotes h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+.footnotes ol { padding-left: 20px; }
+ul { padding-left: 20px; }
+.foot { margin-top: 48px; padding-top: 14px; border-top: 1px solid var(--rule); font-size: 12px; color: var(--muted); }
+
+/* Print / PDF (rendered by report_renderer through headless Chromium). Page size and margins, the running
+   header (report id, date) and page numbers come from the renderer; here are page breaks and ink. */
+@media print {
+  html { font-size: 12.5px; }
+  body { max-width: none; padding: 0; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .watermark { position: fixed; top: 36%; }        /* fixed boxes repeat on every printed page */
+  .cover { break-after: page; padding-top: 22vh; }
+  section { margin: 22px 0; }
+  h2, h3 { break-after: avoid; }
+  .card, .hotspots li, .caveat, .footnotes li, table.kv tr, tbody tr, svg.chart { break-inside: avoid; }
+  thead { display: table-header-group; }          /* repeat column headings across a page break */
+  a { color: inherit; text-decoration: none; }
+  .foot { break-before: avoid; }
+}

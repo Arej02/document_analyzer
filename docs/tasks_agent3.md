@@ -13,7 +13,7 @@ The same as `tasks_agent2.md`:
 - Visual check: `vite build` plus a real browser pass.
 
 ### Prerequisites (outside this file)
-- [ ] **Agent 1 source snapshot** (`tasks.md`, "Agent 3 prerequisites"): commit SHA, snapshot upload, `end_line` in `raw_facts`. Nothing in Phase 2 onwards can run on real data without it.
+- [x] (2026-10-02: checked against the code; all four `tasks.md` "Agent 3 prerequisites" items exist and their tests pass) **Agent 1 source snapshot** (`tasks.md`, "Agent 3 prerequisites"): commit SHA, snapshot upload, `end_line` in `raw_facts`. Nothing in Phase 2 onwards can run on real data without it.
 - [ ] At least one plan reaches `approved` live, end to end, for a **WordPress** repo: ingest → plan → submit → clear every `needs_facade` flag → approve every phase. The repo must be ingested after the Agent 1 source-snapshot task, so the plan's source job has a snapshot. Agent 1 jobs already reach `done` live, so the Azure endpoint note in `tasks.md` Phase 4 is out of date (`design_agent2.md` §15: Laravel `hospital_test`, 2026-09-23). What's missing is a WordPress repo taken through to an approved plan. Until then, Phases 0–4 build against `tests/fakes.py::FakeClient` and `tests/fixtures/agent2_cycle_repo/`, extending `tests/test_agent2_pipeline_fixture.py`.
 - [ ] Colima (docker runtime) and the `docker` CLI client are installed on every machine that runs the executor — Docker Desktop is not used (2026-09-28) — and gVisor (`runsc`) is registered on the production host.
 
@@ -356,8 +356,9 @@ Design: `design_agent3.md` §15 (written 2026-10-01 before these tasks). Scope: 
     - `assemble.py` now uses the shared `render_units_init` and copies the fixed `.github/workflows/ci.yml` and `.gitignore` from `agent3/template/` into the tree; `final_test` writes `{org_id}/{execution_job_id}/manifest.json` after the zip (`build_manifest`). `prepare.py` also loads each item's phase cluster so the manifest can label phases.
     - CI workflow actions are pinned by full commit SHA, resolved from GitHub's API on 2026-10-01: `actions/checkout` v7.0.1 = `3d3c42e5…` and `actions/setup-python` v7.0.0 = `5fda3b95…`. A test fails if any `uses:` is not a 40-hex pin.
     - **Real bug found by the new strictness and fixed:** `Path.write_text` translated `
-` to `
-` on Windows, so the zip's `app/units/__init__.py` (and every generated file, README and requirements) differed by host OS and put CRLF into generated code. `assemble.py` now writes UTF-8 bytes exactly (`_write_text`); a test asserts no `` in what it writes. Template files copied with `shutil` are still byte-for-byte whatever the checkout has, so a Windows checkout with `core.autocrlf` would still put CRLF in the zip's template files. Production (Linux) is unaffected; adding a `.gitattributes` to the repo is the fix and is not done here.
+` to `
+` on Windows, so the zip's `app/units/__init__.py` (and every generated file, README and requirements) differed by host OS and put CRLF into generated code. `assemble.py` now writes UTF-8 bytes exactly (`_write_text`); a test asserts no `
+` in what it writes. Template files copied with `shutil` are still byte-for-byte whatever the checkout has, so a Windows checkout with `core.autocrlf` would still put CRLF in the zip's template files. Production (Linux) is unaffected; adding a `.gitattributes` to the repo is the fix and is not done here.
     - Tests: `tests/test_agent3_git_objects.py` (22) checks blobs, trees and commits against the real `git` binary over awkward input (a name that sorts differently as a directory, CRLF and binary bytes, `100755` and symlink modes, UTF-8 names, messages with and without trailing newlines) and against well-known vectors; breaking the directory sort rule makes it fail. `tests/test_agent3_commit_plan.py` (46) covers determinism, the last tree equalling the project files, cumulative `app/units/__init__.py`, labels never reaching a commit message, failed and stubbed tagging, group layout, a supplied base (parent, preserved modes, ours win), every path-validation case in §15.3 (`..`, absolute, `.git/`, other `.github/` files, another unit's directory, double claims, unclaimed files, mismatched units init), malformed manifest values, and a replay of the whole plan through real `git` plumbing reproducing every tree and commit SHA. `tests/test_agent3_assemble.py` gained the manifest-to-plan round trip over the three-unit state, the pinned-actions check and the LF check.
     - Ran: 218 passed, 4 skipped across the offline Agent 3 test files. Not run: the live-Docker, live-Supabase and `php`-dependent suites.
     - **Not changed, noticed:** the zip's `requirements.txt` lacks `pytest-timeout`, which `pytest.ini`'s `timeout` setting uses (the runner image has it). CI will only print an unknown-config warning. Left alone as outside this task.
@@ -413,6 +414,14 @@ Added 2026-10-02. Agent 3 has only ever been run end to end on a small synthetic
 - [ ] **1. A report that says why units fail.** A first version (`agent3/report.py`, a read-only tool grouping the failing tests of an execution by cause) was written and then **removed at the user's request on 2026-10-02**; nothing of it remains in the repository. The motivation still stands: a unit row only says "N test(s) still failing", the reason is in the stored `junit.xml` of its last attempt. Revisit only if asked.
 - [ ] **2. A baseline.** Run the report on a real execution (ideally from a real WordPress plan) and record the counts and top causes here, with the date, the model deployment and the plan. This is the number every later change is compared with.
 - [ ] **3. Fix the biggest cause**, then re-run the same plan and record the new numbers. Repeat for the next cause. Candidates from the design docs, to be confirmed or discarded by task 2: `app/models/` unreachable (design §4 known gap), `wp_compat` missing WordPress APIs (specs §9 open question), a sparse call graph, attempts and timeout tuned only on synthetic input, model-written behaviour tests that are wrong rather than the code.
+
+---
+
+## Assessment Report prerequisite (added 2026-10-01, `specs_report.md` §12)
+
+The Assessment Report's estimator (`tasks_report.md` Phase 2) calibrates unit runtime from past executions and is read-only on Agent 3 tables, so this is fixed here.
+
+- [x] Record unit timing: add `started_at` and `finished_at` (timestamptz, nullable) to `unit_executions` (migration + `design_agent3.md` §2 first). Set `started_at` when the units stage picks a unit up, and `finished_at` when it reaches a terminal verdict. Keep the first `started_at` across outer rounds and redeliveries. Today only `attempts` and the sandbox `duration_s` exist, so per-unit wall-clock time can't be measured. No endpoint change, so no frontend pair.
 
 ---
 

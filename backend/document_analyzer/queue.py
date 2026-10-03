@@ -164,3 +164,59 @@ async def delete_execution_job_message(msg_id: int) -> None:
         await conn.fetchval("select pgmq.delete($1, $2::bigint)", EXECUTION_QUEUE_NAME, msg_id)
     finally:
         await conn.close()
+
+
+# Assessment Report — design_report.md §4. Its own queue, never shared (CLAUDE.md);
+# FastAPI's POST /api/projects/{id}/reports enqueues, the reporter worker
+# (report/worker/run.py) reads and deletes.
+REPORT_QUEUE_NAME = "report_generation_jobs"
+
+# Same semantics as DEFAULT_VISIBILITY_TIMEOUT_SECONDS above (design_report.md §12).
+DEFAULT_REPORT_VISIBILITY_TIMEOUT_SECONDS = int(os.environ.get("REPORT_QUEUE_VISIBILITY_TIMEOUT_SECONDS", 900))
+
+
+async def enqueue_report_job(report_job_id: str, org_id: str, stage: str | None = None) -> None:
+    """`stage` is only ever "render_pdf": a PDF-only retry of an already published report
+    (design_report.md section 9.2). A message without one is a whole generation job."""
+    dsn = os.environ["SUPABASE_DB_URL"]
+    message = {"report_job_id": report_job_id, "org_id": org_id}
+    if stage:
+        message["stage"] = stage
+    payload = json.dumps(message)
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.fetchval("select pgmq.send($1, $2::jsonb)", REPORT_QUEUE_NAME, payload)
+    finally:
+        await conn.close()
+
+
+async def read_next_report_job(vt_seconds: int | None = None) -> dict | None:
+    """Report counterpart of `read_next_job`. Returns `{"msg_id", "report_job_id", "org_id", "stage"}`
+    (`stage` is None for a whole job), or None if the queue is empty."""
+    dsn = os.environ["SUPABASE_DB_URL"]
+    vt = vt_seconds if vt_seconds is not None else DEFAULT_REPORT_VISIBILITY_TIMEOUT_SECONDS
+    conn = await asyncpg.connect(dsn)
+    try:
+        row = await conn.fetchrow("select msg_id, message from pgmq.read($1, $2, 1)", REPORT_QUEUE_NAME, vt)
+        if row is None:
+            return None
+        message = json.loads(row["message"])
+        return {
+            "msg_id": row["msg_id"],
+            "report_job_id": message["report_job_id"],
+            "org_id": message["org_id"],
+            "stage": message.get("stage"),
+        }
+    finally:
+        await conn.close()
+
+
+async def delete_report_job_message(msg_id: int) -> None:
+    """Report counterpart of `delete_job_message`."""
+    dsn = os.environ["SUPABASE_DB_URL"]
+    conn = await asyncpg.connect(dsn)
+    try:
+        # Same explicit $2::bigint cast as delete_job_message (design.md §3 bug #2).
+        await conn.fetchval("select pgmq.delete($1, $2::bigint)", REPORT_QUEUE_NAME, msg_id)
+    finally:
+        await conn.close()

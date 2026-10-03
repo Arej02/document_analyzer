@@ -19,6 +19,7 @@ report risk levels) travel in a per-job `PlanningState`.
 """
 
 import asyncio
+import dataclasses
 import logging
 import time
 from collections.abc import Callable
@@ -31,6 +32,7 @@ load_dotenv()  # must run before any env-reading import below (design.md §3 bug
 from supabase import Client
 
 from document_analyzer.agent2.worker.cluster import ClusterResult, run_cluster_stage
+from document_analyzer.agent2.worker.dependency_targets import run_dependency_targets_stage
 from document_analyzer.agent2.worker.dependencies import run_dependencies_stage
 from document_analyzer.agent2.worker.graph import CanonicalGraph, run_graph_stage
 from document_analyzer.agent2.worker.ordering import delete_unfinished_plan, run_ordering_stage
@@ -43,6 +45,7 @@ from document_analyzer.agent2.worker.status import (
 )
 from document_analyzer.agent2.worker.test_contract import run_test_contract_stage
 from document_analyzer.queue import PLANNING_QUEUE_NAME, delete_planning_job_message, read_next_planning_job
+from document_analyzer.shared.llm import CallContext, LLMCostRecorder, MeteredLLMClient, new_run_id
 from document_analyzer.supabase_client import get_service_role_client
 from document_analyzer.worker.embed import embed_text
 from document_analyzer.worker.embedding_config_check import assert_embedding_config_in_sync
@@ -67,6 +70,10 @@ class PlanningState:
     # unit/phase cluster id -> cluster_reports.risk_level (§8 tie key)
     risk_by_cluster: dict[str, str] = field(default_factory=dict)
     plan_id: str | None = None
+    # Cost accounting (design_agent2.md section 17): set per pickup by process_planning_job.
+    # None when a stage is run on its own (tests), which leaves the client unmetered.
+    cost_recorder: LLMCostRecorder | None = None
+    cost_context: CallContext | None = None
 
 
 StageFn = Callable[[Client, dict, PlanningState], None]
@@ -87,9 +94,18 @@ def stage_cluster(client: Client, planning_job: dict, state: PlanningState) -> N
 def stage_report(client: Client, planning_job: dict, state: PlanningState) -> None:
     """design_agent2.md §6. The LLM client and embedder are looked up on this module
     at call time, so tests can swap them."""
-    outcomes = run_report_stage(
-        client, planning_job, state.graph, state.clusters, llm_client=get_azure_openai_client(), embed=embed_text
-    )
+    llm_client = get_azure_openai_client()
+    if state.cost_recorder is not None and state.cost_context is not None:
+        llm_client = MeteredLLMClient(
+            llm_client, dataclasses.replace(state.cost_context, stage="report"), state.cost_recorder
+        )
+    try:
+        outcomes = run_report_stage(
+            client, planning_job, state.graph, state.clusters, llm_client=llm_client, embed=embed_text
+        )
+    finally:
+        if state.cost_recorder is not None:
+            state.cost_recorder.flush()
     state.risk_by_cluster = {o.cluster_id: o.report.risk_level for o in outcomes}
 
 
@@ -99,6 +115,25 @@ def stage_order(client: Client, planning_job: dict, state: PlanningState) -> Non
     deps = run_dependencies_stage(client, planning_job, state.graph, state.clusters)
     contracts = run_test_contract_stage(client, planning_job, state.graph, deps.units)
     state.plan_id = run_ordering_stage(client, planning_job, state.clusters, deps, state.risk_by_cluster, contracts)
+    _propose_dependency_targets(client, planning_job, state)
+
+
+def _propose_dependency_targets(client: Client, planning_job: dict, state: PlanningState) -> None:
+    """design_agent2.md §6.4. Best effort: the plan already exists, so a failure here is
+    logged and the dependency inventory just has no targets."""
+    try:
+        llm_client = get_azure_openai_client()
+        if state.cost_recorder is not None and state.cost_context is not None:
+            llm_client = MeteredLLMClient(
+                llm_client, dataclasses.replace(state.cost_context, stage="order"), state.cost_recorder
+            )
+        try:
+            run_dependency_targets_stage(client, planning_job, state.plan_id, llm_client)
+        finally:
+            if state.cost_recorder is not None:
+                state.cost_recorder.flush()
+    except Exception:
+        logger.warning("dependency targets failed for planning job %s", planning_job["id"], exc_info=True)
 
 
 def _stages() -> list[tuple[str, StageFn]]:
@@ -123,6 +158,7 @@ def process_planning_job(planning_job_id: str, org_id: str) -> None:
     """Runs one planning job's stages to completion (or a handled failure). Never raises:
     any stage error is written to `planning_jobs.error` and the job is marked `failed`."""
     client = get_service_role_client()
+    cost_recorder: LLMCostRecorder | None = None
 
     try:
         planning_job = _fetch_planning_job(client, planning_job_id, org_id)
@@ -135,7 +171,14 @@ def process_planning_job(planning_job_id: str, org_id: str) -> None:
             return
 
         mark_planning_running(client, planning_job_id, org_id)
-        state = PlanningState()
+        # One recorder and one run_id per pickup; org_id comes from the job row.
+        cost_recorder = LLMCostRecorder(client, planning_job["org_id"])
+        state = PlanningState(
+            cost_recorder=cost_recorder,
+            cost_context=CallContext(
+                agent="agent2", job_type="planning", job_id=planning_job_id, run_id=new_run_id()
+            ),
+        )
         for stage_name, stage_fn in _stages():
             mark_planning_stage(client, planning_job_id, org_id, stage_name)
             stage_fn(client, planning_job, state)
@@ -144,6 +187,9 @@ def process_planning_job(planning_job_id: str, org_id: str) -> None:
     except Exception as exc:  # noqa: BLE001 — one bad job must never kill the loop
         logger.exception("planning job %s failed", planning_job_id)
         mark_planning_failed(client, planning_job_id, org_id, str(exc) or type(exc).__name__)
+    finally:
+        if cost_recorder is not None:
+            cost_recorder.close()  # never raises
 
 
 def run_once() -> bool:

@@ -566,6 +566,7 @@ def test_get_plan_shape(client, fake_client):
         "project_id": project["id"],
         "version": 1,
         "status": "in_review",
+        "created_at": plan["created_at"],
         "source_job_id": plan["source_job_id"],
         "is_stale": False,
         "open_facade_flags": 1,
@@ -1794,3 +1795,185 @@ def test_get_plan_names_the_version_it_was_made_from(client, fake_client):
     body = client.get(f"/api/agent2/plans/{v2['plan_id']}").json()
 
     assert (body["version"], body["parent_plan_id"], body["parent_version"]) == (2, plan["id"], 1)
+
+
+# --- staleness end to end (tasks_agent2.md Phase 6) -----------------------------------
+# The other stale tests move `latest_job_id` by hand. Here the project moves the way it
+# does in production: a re-ingestion job is queued, runs, and the real
+# `mark_job_done_if_ready` completes it and repoints the project.
+
+
+def _reingest_until_done(fake_client, project):
+    """Queues a new ingestion job. Returns a function that finishes it through the
+    real completion path (no entities, so it's vacuously ready)."""
+    from document_analyzer.worker.job_completion import mark_job_done_if_ready
+
+    job = _add_job(fake_client, project, status="running")
+
+    def finish():
+        assert mark_job_done_if_ready(fake_client, job["id"], "org-123")
+        return job
+
+    return finish
+
+
+def _plans_by_id(client, project_id):
+    return {p["id"]: p for p in client.get(f"/api/agent2/projects/{project_id}/plans").json()["plans"]}
+
+
+@pytest.mark.parametrize(
+    "seed,status,act",
+    [
+        (_seed_draft_plan, "draft", lambda c, plan, ids: c.post(f"/api/agent2/plans/{plan['id']}/submit")),
+        (
+            lambda fc: _seed_override_plan(fc, status="in_review"),
+            "in_review",
+            lambda c, plan, ids: _approve(c, plan, ids["P2"]),
+        ),
+        (
+            lambda fc: _seed_override_plan(fc, status="in_review"),
+            "in_review",
+            lambda c, plan, ids: _override(c, plan["id"], "reorder", {"cluster_id": ids["M"], "unit_order": 1}),
+        ),
+    ],
+    ids=["submit", "approval", "override"],
+)
+def test_reingestion_makes_the_older_plan_stale_and_blocks_every_action(client, fake_client, seed, status, act):
+    project, plan, ids = seed(fake_client)
+    approvals_before = len(fake_client.table("phase_approvals").rows)
+    finish_reingestion = _reingest_until_done(fake_client, project)
+
+    # While the new run is still going, the plan is current and nothing moves.
+    assert _plans_by_id(client, project["id"])[plan["id"]]["is_stale"] is False
+    assert client.get(f"/api/agent2/plans/{plan['id']}").json()["status"] == status
+
+    new_job = finish_reingestion()
+    assert project["latest_job_id"] == new_job["id"]
+
+    listed = _plans_by_id(client, project["id"])[plan["id"]]
+    assert (listed["status"], listed["is_stale"]) == ("stale", True)  # the Plans list badge
+    body = client.get(f"/api/agent2/plans/{plan['id']}").json()
+    assert (body["status"], body["is_stale"]) == ("stale", True)  # the PlanPage banner
+
+    response = act(client, plan, ids)
+    assert response.status_code == 409
+    assert "stale" in response.json()["detail"]
+    assert plan["status"] == "stale"
+    assert fake_client.table("plan_overrides").rows == []
+    assert len(fake_client.table("phase_approvals").rows) == approvals_before  # no new decision recorded
+
+
+# --- GET /plans/{plan_id}/dependencies (design_agent2.md §11) ---------------------------
+
+
+def _add_dependency(fake_client, project_job, name, *, org_id="org-123", ecosystem="composer", dev=False, manifest="composer.json"):
+    return insert_scoped(
+        fake_client,
+        "extracted_entities",
+        org_id,
+        {
+            "job_id": project_job["id"],
+            "entity_type": "dependency",
+            "name": name,
+            "file_path": manifest,
+            "raw_facts": {"ecosystem": ecosystem, "version_spec": "^1.0", "manifest_path": manifest, "dev": dev},
+        },
+    ).data[0]
+
+
+def _add_target(fake_client, plan, entity, *, target="structlog", status="verified", org_id="org-123"):
+    return insert_scoped(
+        fake_client,
+        "plan_dependency_targets",
+        org_id,
+        {"plan_id": plan["id"], "entity_id": entity["id"], "target_name": target, "rationale": "Logging.", "grounding_status": status},
+    ).data[0]
+
+
+def test_get_dependencies_missing_auth_returns_401():
+    assert TestClient(create_app()).get("/api/agent2/plans/any/dependencies").status_code == 401
+
+
+def test_get_dependencies_returns_facts_with_and_without_a_target(client, fake_client):
+    project, job = _seed_project_with_job(fake_client)
+    plan = _seed_plan_for_job(fake_client, project, job)
+    logging_dep = _add_dependency(fake_client, job, "monolog/monolog")
+    _add_dependency(fake_client, job, "phpunit/phpunit", dev=True)
+    _add_dependency(fake_client, job, "react", ecosystem="npm", manifest="web/package.json")
+    insert_scoped(fake_client, "extracted_entities", "org-123",
+                  {"job_id": job["id"], "entity_type": "function", "name": "not_a_package", "file_path": "a.php", "raw_facts": {}})
+    _add_target(fake_client, plan, logging_dep, status="unverified")
+
+    response = client.get(f"/api/agent2/plans/{plan['id']}/dependencies")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["plan_id"] == plan["id"]
+    rows = body["dependencies"]
+    assert [(r["manifest_path"], r["ecosystem"], r["name"]) for r in rows] == [
+        ("composer.json", "composer", "monolog/monolog"),
+        ("composer.json", "composer", "phpunit/phpunit"),
+        ("web/package.json", "npm", "react"),
+    ]
+    first = rows[0]
+    assert first == {
+        "entity_id": logging_dep["id"], "name": "monolog/monolog", "ecosystem": "composer", "version_spec": "^1.0",
+        "manifest_path": "composer.json", "dev": False, "target_name": "structlog", "rationale": "Logging.",
+        "grounding_status": "unverified",
+    }
+    assert rows[1]["dev"] is True
+    assert (rows[1]["target_name"], rows[1]["rationale"], rows[1]["grounding_status"]) == (None, None, None)
+
+
+def test_get_dependencies_is_an_empty_list_when_nothing_is_declared(client, fake_client):
+    project, job = _seed_project_with_job(fake_client)
+    plan = _seed_plan_for_job(fake_client, project, job)
+
+    response = client.get(f"/api/agent2/plans/{plan['id']}/dependencies")
+
+    assert response.status_code == 200 and response.json()["dependencies"] == []
+
+
+def test_get_dependencies_of_a_later_version_reads_the_root_plans_targets(client, fake_client):
+    project, job = _seed_project_with_job(fake_client)
+    v1 = _seed_plan_for_job(fake_client, project, job, version=1)
+    planning_job = {"id": v1["planning_job_id"], "project_id": project["id"], "source_job_id": job["id"]}
+    v2 = _seed_plan(fake_client, planning_job, version=2)
+    v3 = _seed_plan(fake_client, planning_job, version=3)
+    v2["parent_plan_id"], v3["parent_plan_id"] = v1["id"], v2["id"]
+    dep = _add_dependency(fake_client, job, "monolog/monolog")
+    _add_target(fake_client, v1, dep)
+
+    rows = client.get(f"/api/agent2/plans/{v3['id']}/dependencies").json()["dependencies"]
+
+    assert [r["target_name"] for r in rows] == ["structlog"]
+
+
+def test_get_dependencies_does_not_leak_another_orgs_targets_or_packages(client, fake_client):
+    project, job = _seed_project_with_job(fake_client)
+    plan = _seed_plan_for_job(fake_client, project, job)
+    dep = _add_dependency(fake_client, job, "monolog/monolog")
+    # Same plan and entity ids, but stamped for another org: must never be returned.
+    _add_target(fake_client, plan, dep, target="leaked", org_id="org-999")
+    _add_dependency(fake_client, job, "other/orgs-package", org_id="org-999")
+
+    rows = client.get(f"/api/agent2/plans/{plan['id']}/dependencies").json()["dependencies"]
+
+    assert [(r["name"], r["target_name"]) for r in rows] == [("monolog/monolog", None)]
+
+
+def test_get_dependencies_404_for_missing_and_other_org_plans(client, fake_client):
+    assert client.get("/api/agent2/plans/nope/dependencies").status_code == 404
+    project, job = _seed_project_with_job(fake_client, org_id="org-999")
+    plan = _seed_plan_for_job(fake_client, project, job, org_id="org-999")
+
+    assert client.get(f"/api/agent2/plans/{plan['id']}/dependencies").status_code == 404
+
+
+def test_get_dependencies_runs_the_stale_check(client, fake_client):
+    project, job = _seed_project_with_job(fake_client)
+    plan = _seed_plan_for_job(fake_client, project, job, status="draft")
+    project["latest_job_id"] = _add_job(fake_client, project)["id"]
+
+    assert client.get(f"/api/agent2/plans/{plan['id']}/dependencies").status_code == 200
+    assert plan["status"] == "stale"  # persisted, like the other reads

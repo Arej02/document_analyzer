@@ -75,12 +75,14 @@ def _fetch_all(query_factory) -> list[dict]:
 
 
 def _load_entities(client: Client, source_job_id: str, org_id: str) -> list[dict]:
-    return _fetch_all(
+    rows = _fetch_all(
         lambda: client.table("extracted_entities")
         .select("id, entity_type, name, file_path, raw_facts")
         .eq("job_id", source_job_id)
         .eq("org_id", org_id)
     )
+    # Declared packages (design.md section 5) are not code, so they never become part of a migration unit.
+    return [row for row in rows if row["entity_type"] != "dependency"]
 
 
 def _load_entity_summaries(client: Client, source_job_id: str, org_id: str) -> dict[str, dict]:

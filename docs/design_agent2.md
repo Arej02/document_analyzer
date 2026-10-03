@@ -137,6 +137,18 @@ PK `(plan_id, cluster_id)`. Override-merged units appear as a synthetic row (`cl
 ### `plan_overrides` *(user-writable)*
 `id`, `plan_id` (the version it was made against), `kind` enum(`merge`,`split`,`facade_ack`,`reorder`; `split` stays in the enum but the API refuses it, §9.2), `payload` jsonb (shape per kind, §11), `created_by` (= `auth.uid()`), `result_plan_id` (the version it produced; unique, so each version after 1 has exactly one override). `result_plan_id` was added once overrides were built: two overrides made against the same version *n* branch into separate versions, and a version's chain must only replay its own ancestors' overrides, which `plan_id` alone can't tell apart.
 
+### `plan_dependency_targets` *(service-role writes only; added 2026-10-02, §16)*
+| column | type | notes |
+|---|---|---|
+| `plan_id` | uuid, FK → `migration_plans`, `on delete cascade` | always the **version 1** plan of the planning job. Later versions (overrides, §9.2) read their root's rows, because an override never changes dependencies |
+| `entity_id` | uuid, FK → `extracted_entities` | an Agent 1 `dependency` entity of the plan's `source_job_id` |
+| `org_id` | uuid | |
+| `target_name` | text | the proposed equivalent in the target stack (PyPI), e.g. `monolog/monolog` → `structlog`. An inference, never a fact |
+| `rationale` | text, nullable | one sentence from the model |
+| `grounding_status` | enum(`verified`,`unverified`) | §6.4 |
+
+PK `(plan_id, entity_id)`. A dependency with no proposal has no row. RLS on, tenant `select` only. It is derived data, so unlike the other plan tables it cascades from `migration_plans` (a re-run's `delete_unfinished_plan` and a project delete both remove it with the plan).
+
 ### Queue
 `agent2_planning_jobs`, created with `pgmq.create` in its own migration. It is never shared with `agent1_ingestion_jobs` (`design.md` §3).
 
@@ -209,6 +221,14 @@ These are imported as library functions. Importing them is not an agent-to-agent
 - Embedding: `worker/embed.py::embed_text(summary_text)`. The worker calls `worker/embedding_config_check.py::assert_embedding_config_in_sync` once at startup.
 
 If any of these helpers need an Agent-2-specific change, move it into `document_analyzer/shared/` first instead of forking it.
+
+### 6.4 Dependency targets (tail of stage `order`, added 2026-10-02)
+
+Runs once the version 1 plan exists, because the rows hang off `plan_id`. It reads Agent 1's `dependency` entities for the `source_job_id` (read-only, `design.md` §5) and asks the model, in batches of `AGENT2_DEPENDENCY_BATCH` (25) through the same bounded pool as §6, for the target-stack equivalent of each package. Metered like the reports (`stage="order"`, `purpose="dependency_target"`).
+- **Untrusted input.** Package names and versions come from repo manifests, so the payload is fenced as untrusted data in the system prompt, never instructions.
+- **Grounding is deterministic, with no second LLM call.** A proposal is `verified` only if it is for a package that was asked about (same name and ecosystem) and every version number its rationale cites appears in that package's declared `version_spec`. Otherwise it is regenerated up to `REPORT_PARSE_RETRIES` times and then stored `unverified`. This checks the proposal against the manifest line. It cannot prove the equivalent is *right*, which is why the plan labels targets "proposed" and a reviewer decides.
+- **Never blocks.** A model error, malformed JSON after the retries, or no dependencies at all leaves those packages without a row (the section then shows them with no target) and the plan is still emitted. The failure is logged and does not fail the job.
+- Targets never feed ordering, risk or clustering.
 
 ## 7. Stage `order`, part 1 — cluster dependency graph & cycles
 
@@ -311,9 +331,10 @@ The conventions are the same as Agent 1 (`design.md` §4): Supabase JWT auth dep
 | `POST /projects/{project_id}/plans` | Create a planning job | Body optional `{source_job_id}` (defaults to `latest_job_id`). `202 {planning_job_id, status}`. `409` if the source isn't `done` or a planning job is already active. |
 | `GET /projects/{project_id}/plans` | List plans (all versions) for the project | `{plans: [{id, version, status, source_job_id, is_stale, created_at}]}` |
 | `GET /planning-jobs/{planning_job_id}` | Poll status | `{planning_job_id, project_id, status, progress_stage, error, plan_id \| null}` |
-| `GET /plans/{plan_id}` | Plan overview | `{id, project_id, version, status, source_job_id, is_stale, open_facade_flags, approved_by, approved_at, parent_plan_id, parent_version, facade_cycles: [{level, scc_id, cluster_ids}], phases: [{phase_cluster_id, phase_order, label, summary_text, risk_level, grounding_status, approval, units: [{cluster_id, unit_order, label, size, risk_level, grounding_status, flags}]}]}` |
+| `GET /plans/{plan_id}` | Plan overview | `{id, project_id, version, status, created_at, source_job_id, is_stale, open_facade_flags, approved_by, approved_at, parent_plan_id, parent_version, facade_cycles: [{level, scc_id, cluster_ids}], phases: [{phase_cluster_id, phase_order, label, summary_text, risk_level, grounding_status, approval, units: [{cluster_id, unit_order, label, size, risk_level, grounding_status, flags}]}]}` |
 | `GET /plans/{plan_id}/units/{cluster_id}` | Unit detail | `{plan_id, cluster_id, phase_cluster_id, phase_order, unit_order, kind, label, size, risk_level, grounding_status, flags, report, constituent_reports, members: [{id, entity_type, name, file_path, grounding_status}], test_contract, edges: [{id, from_cluster_id, to_cluster_id, direction, call_count, hook_binding_count, weight, flag, scc_id}]}`. `404` for a unit that isn't an item of this plan. |
 | `GET /plans/{plan_id}/graph?level=phase\|unit[&phase_id=]` | Graph for visualization | `{nodes: [{id, label, size, risk_level}], edges: [{from, to, weight, flag}]}`. `phase_id` limits a `unit`-level graph to one phase (drill-down). `422` on a missing or invalid `level`, or `phase_id` with `level=phase`. `404` for a `phase_id` that isn't a phase of this plan. |
+| `GET /plans/{plan_id}/dependencies` | Dependency inventory | `{plan_id, dependencies: [{entity_id, name, ecosystem, version_spec, manifest_path, dev, target_name \| null, rationale \| null, grounding_status \| null}]}`, sorted by manifest, ecosystem, name. Facts come from Agent 1's `dependency` entities of the plan's `source_job_id`, the target from `plan_dependency_targets` of the root (version 1) plan. Same stale check as the other reads. `404` for a missing or other-org plan, an empty list when the repo declares nothing. |
 | `POST /plans/{plan_id}/submit` | `draft → in_review` | `200 {plan_id, status: "in_review"}`. `409` from any other state or when stale. |
 | `POST /plans/{plan_id}/overrides` | Record an override, get a new version | `{kind: merge\|facade_ack\|reorder, payload}` → `201 {plan_id, version, parent_plan_id, parent_version, override_id, status: "draft", open_facade_flags}`. Only on `draft`/`in_review` (`409` otherwise or when stale). `422` on an invalid or DAG-inconsistent override, and for `split` (out of the MVP, §9.2). `404` for a missing or other-org plan. |
 | `POST /plans/{plan_id}/phases/{phase_cluster_id}/approval` | Approve or reject a phase | `{status: approved\|rejected, note}`. Only on `in_review`, `409` if `stale`. `404` for a phase not in this plan. `200 {plan_id, phase_cluster_id, approval: {status, note, reviewer_id, created_at}, status}`, where `status` is the plan's resulting status. |
@@ -333,6 +354,7 @@ The conventions are the same as Agent 1 (`design.md` §4): Supabase JWT auth dep
 - Phases come from the plan's items, not from `clusters.parent_cluster_id`, because a `reorder`/`merge` override can move a unit (§2). Phases are sorted by `phase_order` and units by `unit_order`. Items, clusters and edges are paged (1000 rows), and the `cluster_reports` lookup is chunked `in_` filters (200 ids).
 - **Unit fields.** A unit with its own report uses that report's `risk_level`/`grounding_status` and the cluster's `label`/`size`. A unit without one stands in its constituents' reports: the originals from `graph_stats.merged_into` for a `merged_scc` unit, or `test_contract.merged_cluster_ids` for an override merge. `risk_level` is their `rollup_risk`, `grounding_status` is `unverified` if any is and otherwise `verified` once all are present, and `label` is the constituents' labels sorted and joined with ` + `. A `merged_scc` unit uses its cluster's own label first. An override merge always joins, because its item keeps the lowest unit id, and that unit's label alone would hide the rest. `size` is the cluster's own for `merged_scc`, and the constituents' sum for an override merge.
 - **`approved_by` / `approved_at`** are the plan row's columns, set by the approval auto-transition (below) and `null` until the plan is `approved`. `approved_by` is the reviewer's user id; the frontend shows "you" when it matches the signed-in user.
+- **`created_at`** (added 2026-10-02) is the plan row's own timestamp: when this version was generated. It feeds the "Generated from `<commit>` `<time ago>`" line in the outline footer (`Provenance.jsx`); the commit half is `source_commit_sha` on Agent 1's `GET /api/agent1/jobs/{source_job_id}` (`design.md` §4), read by the frontend, not joined here (Agent 2 stays read-only on Agent 1 tables).
 - **`parent_plan_id` / `parent_version`** name the version this one was made from by an override (§9.2), and are `null` for version 1. They drive `PlanPage`'s "Version N (from M)" note and its link back.
 - **`facade_cycles`** are the still-open `needs_facade` SCCs (§7) at both levels, in `(level, scc_id)` order: what a `facade_ack` override can take (§9.2). Acknowledged cycles, and unit-level cycles an override merge folded into one plan item, are left out, the same rule as `open_facade_flags`. `cluster_ids` are the plan items (unit level) or phases (phase level) the cycle runs through. Added for the override controls on `PlanPage`.
 - **`flags`**, in this order: `foundation` (the `kind = foundation` unit), `merged` (either kind of merge), `needs_facade` (the unit or one of its constituents is an end of a unit-level `needs_facade` edge). Phase-level `needs_facade` edges don't flag units, and they're counted in `open_facade_flags` anyway. A unit-level SCC stops flagging its units once a `facade_ack` in this version's override chain acknowledges it, or once an override merge folds all of its units into one plan item (§9.2).
@@ -386,6 +408,7 @@ All values are frozen into `planning_jobs.params` at creation, so later env chan
 | `AGENT2_HUB_PERCENTILE` | 99 | Degree percentile for hubs |
 | `AGENT2_LEIDEN_RESOLUTION` | 1.0 | Base resolution |
 | `AGENT2_REPORT_CONCURRENCY` | 10 | Unit-report fan-out cap |
+| `AGENT2_DEPENDENCY_BATCH` | 25 | Packages per dependency-target LLM call (§6.4). Not frozen into `params`: it changes cost, not results the plan depends on |
 | `AGENT2_QUEUE_VISIBILITY_TIMEOUT_SECONDS` | 1800 | Same semantics as Agent 1's |
 
 ## 13. Dependencies on Agent 1 & known gaps (not fixed by Agent 2)
@@ -422,13 +445,20 @@ Agent 2 is read-only on Agent 1 tables. These are gaps it works around. Fixing t
 - **`max_unit_size` = 25 was never binding** (largest unit: 12). A cap of 10 split one unit and changed nothing else.
 - **§9 defaults: no change yet.** A Laravel repo isn't representative of the WordPress target, and the real bottleneck is edge sparsity, not a parameter. Revisit after the first WordPress ingestion reaches `done` (`tasks_agent2.md` Phase 4).
 
+**Load run (automated, `tests/test_agent2_load.py`, 2026-10-01).** `tests/test_load_large_repo.py`'s synthetic 15-plugin WordPress site goes through Agent 1's real extractors and persist step, then through the real planner worker. Run with `-s` to print the numbers. Seed 42, §12 defaults, `AGENT2_REPORT_CONCURRENCY` = 10:
+- **Scale:** 6,315 entities produced 540 units in 15 phases (555 report calls).
+- **Stage seconds:** graph 0.0, cluster 0.1, report 0.4, order 0.1, total 0.6.
+- **Peak memory:** 141 MB peak RSS for the whole test process, up from 126 MB before the planner started (that includes the extraction results and the in-memory fake DB).
+- **Fan-out:** peak in-flight report calls was 10, equal to the cap, and never above it. The cap is binding at this scale, so the report stage's cost is bounded by `AGENT2_REPORT_CONCURRENCY`.
+- **Caveat:** these timings are a floor, not a production estimate. The DB is an in-memory fake (no Postgres round trips), the embedder is faked, and the fake LLM holds each call for only 5 ms. Real run time will be dominated by LLM latency, roughly `report_calls / cap` × per-call latency (555 / 10 × a few seconds ≈ minutes), plus DB I/O. The graph, Leiden and ordering code itself is not a bottleneck at this size. A real-Postgres load run is not done.
+
 ## 16. Plan document sections: data mapping and gap decisions
 
 Decided 2026-09-29 for the plan document redesign (`tasks_frontend.md` A2.1). Nothing here is built yet. The backend tasks are in `tasks_agent2.md` "Phase 7".
 
 **Findings that changed the plan** (checked against the code, not the spec):
 
-- **No extractor emits `dependency` entities.** `EntityType` (`worker/extract.py`) allows it, but the only dependency data Agent 1 has is the transient `dependencies` count in `stats.updated` (`worker/discovery.py`: distinct packages in composer.json / package.json / requirements.txt). There are no package names or versions in the database. The dependency inventory therefore has no source until Agent 1 persists one.
+- ~~**No extractor emits `dependency` entities.**~~ Fixed 2026-10-02 in Agent 1 (`DependencyExtractor`, `design.md` §5). Agent 2's graph stage skips them, since a package is not code to cluster. Original finding: `EntityType` (`worker/extract.py`) allows it, but the only dependency data Agent 1 has is the transient `dependencies` count in `stats.updated` (`worker/discovery.py`: distinct packages in composer.json / package.json / requirements.txt). There are no package names or versions in the database. The dependency inventory therefore has no source until Agent 1 persists one.
 - **`schema` entities are WordPress post types and meta keys only** (`wordpress_extractor.py`, `raw_facts.kind` = `post_type` / `meta`). They are not database tables, so "tables with row counts" has no source. Row counts don't exist at all (nothing reads a database).
 - **Risk is `low` / `medium` / `high`** (`risk_rollup._RISK_ORDER`). "critical" is dropped from the UI. The roll-up isn't extended.
 
@@ -440,3 +470,13 @@ Decided 2026-09-29 for the plan document redesign (`tasks_frontend.md` A2.1). No
 4. **Repository overview and dependency count** read Agent 1's existing endpoints directly (read-only, allowed): `GET /api/agent1/jobs/{source_job_id}` and the job's `stats.updated` events. No plan-scoped read model. The plan's `source_job_id` (§11) is the key.
 5. **Executive summary** composes phase and unit `summary_text` from `GET /plans/{plan_id}` plus Agent 1's job summary. Reports with `grounding_status = unverified` carry the badge.
 6. **Reviewer notes on a phase (decided 2026-09-29, `tasks_frontend.md` A2.4).** Already supported, no new table or endpoint: `phase_approvals.note` (§2) is written by `POST /plans/{plan_id}/phases/{phase_cluster_id}/approval` (§11) as part of the decision, and read back as `approval.note` on the plan overview. So a note is **saved, never a local draft, but only together with an approve or reject**. There is no note without a decision, and deciding again overwrites the previous note (one row per plan and phase, last write wins). A standalone comment thread per phase would need a new table (RLS, `org_id`, insert policy) and an endpoint. That is not built, and nothing in the frontend should pretend otherwise. The Markdown export includes a phase's note exactly as stored.
+
+## 17. Cost accounting (added 2026-10-01)
+
+The shared design (tables, wrapper, pricing, internal-only access, "cost logging never blocks a job", the caveat that `cost_usd` is a list-price estimate) is in `design.md` §7. Agent 2 specifics:
+
+- **Call sites:** `agent2/worker/report.py::_generate` (purposes `cluster_report` and `phase_report`, run in a `ThreadPoolExecutor`) and, through Agent 1's grounding helper, `grounding_check`. The planning worker builds one `MeteredLLMClient` per pickup with `agent='agent2'`, `job_type='planning'`, `job_id = planning_job.id`, a fresh `run_id`, and `org_id` from the job row. Each call binds `cluster_id`, `purpose`, and `attempt` on parse retries. The grounding helper needs no change: `agent` comes from the client it is handed (`CLAUDE.md`: shared helpers are not forked).
+- **Stage:** `report` is the only stage that calls the LLM. The recorder is flushed at the end of `report` and in a `finally` around the job (success, failure, `JobCancelled`).
+- **Isolation:** cost lives only in `llm_invocations` / `llm_job_costs`. Nothing is added to `planning_jobs`, `workflow_events`, `graph_stats` or any plan table, so plans stay free of cost data and immutable.
+- **Endpoint (operator-only, `404` otherwise):** `GET /api/agent2/planning-jobs/{planning_job_id}/cost` (router convention of §11), returning the shape in `design.md` §7.4. Paired frontend: a cost chip and by-stage table on the planning run view, shown only when the endpoint returns `200`.
+- Applying overrides makes no LLM calls today, so override versions add no cost rows.

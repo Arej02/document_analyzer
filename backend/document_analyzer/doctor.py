@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from document_analyzer.agent3.worker.sandbox import SandboxParams  # noqa: E402
+from document_analyzer.report.pdf import PdfParams  # noqa: E402
 from document_analyzer.shared import container_engine  # noqa: E402
 from document_analyzer.shared.container_engine import ContainerEngineUnavailable  # noqa: E402
 from document_analyzer.worker.graphify.runner import GraphifyParams  # noqa: E402
@@ -108,8 +109,16 @@ def run() -> int:
         report.line("OK" if present[work] else "FAIL", f"{work} image {image}",
                     "" if present[work] else f"uv run {command} (images are per engine: build once on each)")
 
-    probe_image = next((images[k] for k in ("agent3", "graphify") if present[k]), None)
-    for work in ("graphify", "agent3"):
+    # The report renderer only ever fails the PDF, never the report (design_report.md §4), so a
+    # missing image is a WARN, not a FAIL.
+    report_image = PdfParams.from_job_params().image
+    present["report"] = _image_present(report_image)
+    images["report"] = report_image
+    report.line("OK" if present["report"] else "WARN", f"report renderer image {report_image}",
+                "" if present["report"] else "uv run document-analyzer-build-report-image (without it reports have no PDF; images are per engine)")
+
+    probe_image = next((images[k] for k in ("agent3", "graphify", "report") if present[k]), None)
+    for work in ("graphify", "agent3", "report"):
         if probe_image is None:
             report.line("WARN", f"{work} work dir mount", "skipped: no image to probe with")
             continue

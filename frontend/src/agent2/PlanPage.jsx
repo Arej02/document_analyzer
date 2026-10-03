@@ -6,6 +6,7 @@ import { ArrowLeft } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useApiFetch, useAuth } from '../AuthProvider'
 import PrimaryButton from '../PrimaryButton'
+import { ReportsSection } from '../report/ReportsSection.jsx'
 import {
   ConfidenceBadge, GroundingIssuesList, UnverifiedBadge, formatJobErrorMessage,
 } from '../shared.jsx'
@@ -72,8 +73,8 @@ function PlanUnitDetail({ planId, clusterId, unitLabel, onClose }) {
         <p className="eyebrow">UNIT</p>
         <button type="button" className="token-toggle plan-unit-close" onClick={onClose}>Close ✕</button>
       </div>
-      {error && <p className="error">{error}</p>}
-      {!error && !unit && <p className="summary-loading">Loading unit…</p>}
+      {error && <p className="error" role="alert">{error}</p>}
+      {!error && !unit && <p className="summary-loading" role="status">Loading unit…</p>}
       {unit && (
         <>
           <h3 className="plan-unit-detail-title">
@@ -300,7 +301,7 @@ function SubmitPlanAction({ planId, onSubmitted }) {
         This plan is a draft. Submitting it opens each phase for approval; overrides still make a new version.
       </p>
       <PrimaryButton label="Submit for review" type="submit" loading={submitting} style={{ marginTop: 14 }} />
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error" role="alert">{error}</p>}
     </form>
   )
 }
@@ -425,7 +426,7 @@ function PhaseApprovalControls({ planId, phase, onDecided }) {
           </button>
         ))}
       </div>
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error" role="alert">{error}</p>}
     </div>
   )
 }
@@ -463,7 +464,7 @@ function FacadeAcknowledgeForm({ cycle, pending, onAcknowledge }) {
       <button type="submit" className="plan-phase-decide" disabled={pending || !note.trim()}>
         Acknowledge
       </button>
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error" role="alert">{error}</p>}
     </form>
   )
 }
@@ -537,7 +538,7 @@ function useCreateOverride(planId, onCreated) {
 // A unit click sets `&unit=`, which opens PlanUnitDetail at the top of the document.
 export default function PlanPage({
   planId, selectedUnitId, onSelectUnit, onCloseUnit, onBackToProject, onBackToForm, onOpenPlan,
-  onExecutionCreated, onProjectId,
+  onExecutionCreated, onOpenReport, onProjectId,
 }) {
   const [plan, setPlan] = useState(null)
   const [error, setError] = useState(null)
@@ -756,6 +757,14 @@ export default function PlanPage({
                   <GenerateCodeAction plan={plan} onExecutionCreated={onExecutionCreated} />
                 </div>
               </section>
+              {onOpenReport && (
+                <ReportsSection
+                  projectId={plan.project_id}
+                  onOpenReport={onOpenReport}
+                  tiers={['full']}
+                  intro="The Full Assessment adds this migration plan and an estimate to the codebase X-ray, as a shareable report with a PDF."
+                />
+              )}
               <button type="button" className="a2-back" onClick={() => onBackToProject(plan.project_id)}>
                 <ArrowLeft size={14} className="ui-icon" aria-hidden="true" /> Back to project
               </button>

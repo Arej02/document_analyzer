@@ -42,7 +42,7 @@ through the same endpoints an uncached entity's summary is.
 
 from typing import Callable
 
-from openai import AzureOpenAI
+from document_analyzer.shared.llm import LLMClient
 from supabase import Client
 
 from document_analyzer.supabase_client import insert_scoped
@@ -98,6 +98,7 @@ def copy_cached_summary_forward(client: Client, job_id: str, org_id: str, entity
         "entity_id": entity_id,
         "summary_text": cached["summary_text"],
         "risk_level": cached["risk_level"],
+        "risk_factors": cached.get("risk_factors") or [],
         "embedding": cached["embedding"],
         # design.md §2: NOT NULL, defaults to "unverified" — .get() covers a cached row
         # that (like this one might) never went through persist_grounding_status itself.
@@ -113,7 +114,7 @@ def summarize_entity_cached(
     entity: ExtractedEntity,
     entity_db_id: str,
     content_hash: str,
-    llm_client: AzureOpenAI | None = None,
+    llm_client: LLMClient | None = None,
     embed: Callable[[str], list[float]] | None = None,
 ) -> dict:
     """Entity-level summarize, short-circuited by summary_cache. Returns the

@@ -32,6 +32,8 @@ from pydantic import BaseModel
 from ..auth import AuthContext, get_auth_context
 from ..queue import enqueue_planning_job
 from ..supabase_client import get_service_role_client, insert_many_scoped, insert_scoped
+from ..shared.cost_access import get_cost_operator
+from ..shared.cost_report import build_job_cost_report
 from ..shared.plan_staleness import STALEABLE_STATUSES as _STALEABLE_STATUSES
 from ..shared.plan_staleness import is_stale as _is_stale
 from ..shared.plan_staleness import mark_stale_plans
@@ -191,7 +193,7 @@ def load_plan(client, org_id: str, plan_id: str) -> dict | None:
         client.table("migration_plans")
         .select(
             "id, project_id, planning_job_id, source_job_id, version, parent_plan_id, status, open_facade_flags, "
-            "approved_by, approved_at"
+            "approved_by, approved_at, created_at"
         )
         .eq("org_id", org_id)
         .eq("id", plan_id)
@@ -288,6 +290,7 @@ def build_plan_overview(client, org_id: str, plan: dict) -> dict:
         "project_id": plan["project_id"],
         "version": plan["version"],
         "status": plan["status"],
+        "created_at": plan.get("created_at"),
         "source_job_id": plan["source_job_id"],
         "is_stale": plan["is_stale"],
         "open_facade_flags": plan["open_facade_flags"],
@@ -650,6 +653,80 @@ def _unit_members(client, org_id: str, source_job_id: str, member_cluster_ids: l
             }
         )
     return sorted(members, key=lambda m: (m["file_path"] or "", m["name"] or "", m["entity_type"], m["id"]))
+
+
+@router.get("/plans/{plan_id}/dependencies")
+async def get_plan_dependencies(plan_id: str, auth: Annotated[AuthContext, Depends(get_auth_context)]):
+    """design_agent2.md §11: Agent 1's declared packages for the plan's source job (facts), with the
+    proposed target from the root (version 1) plan where there is one (inference)."""
+    plan = load_plan(auth.client, auth.org_id, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="plan not found")
+    return {"plan_id": plan_id, "dependencies": build_plan_dependencies(auth.client, auth.org_id, plan)}
+
+
+def _root_plan_id(client, org_id: str, plan: dict) -> str:
+    """Follows `parent_plan_id` to version 1, whose id the targets hang off (overrides never change packages)."""
+    current = plan
+    for _ in range(1000):  # a chain is as long as the override count; the bound only stops a corrupt cycle
+        parent_id = current.get("parent_plan_id")
+        if not parent_id:
+            return current["id"]
+        rows = (
+            client.table("migration_plans")
+            .select("id, parent_plan_id")
+            .eq("org_id", org_id)
+            .eq("id", parent_id)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if not rows:
+            return current["id"]
+        current = rows[0]
+    return current["id"]
+
+
+def build_plan_dependencies(client, org_id: str, plan: dict) -> list[dict]:
+    entities = [
+        row
+        for row in _fetch_all(
+            lambda: client.table("extracted_entities")
+            .select("id, entity_type, name, raw_facts")
+            .eq("org_id", org_id)
+            .eq("job_id", plan["source_job_id"])
+        )
+        if row["entity_type"] == "dependency"
+    ]
+    root_id = _root_plan_id(client, org_id, plan)
+    targets = {
+        row["entity_id"]: row
+        for row in _fetch_all(
+            lambda: client.table("plan_dependency_targets")
+            .select("entity_id, target_name, rationale, grounding_status")
+            .eq("org_id", org_id)
+            .eq("plan_id", root_id),
+            order_column="entity_id",
+        )
+    }
+    rows = []
+    for entity in entities:
+        facts = entity.get("raw_facts") or {}
+        target = targets.get(entity["id"])
+        rows.append(
+            {
+                "entity_id": entity["id"],
+                "name": entity["name"],
+                "ecosystem": facts.get("ecosystem"),
+                "version_spec": facts.get("version_spec"),
+                "manifest_path": facts.get("manifest_path"),
+                "dev": bool(facts.get("dev")),
+                "target_name": target["target_name"] if target else None,
+                "rationale": target["rationale"] if target else None,
+                "grounding_status": target["grounding_status"] if target else None,
+            }
+        )
+    return sorted(rows, key=lambda r: (r["manifest_path"] or "", r["ecosystem"] or "", r["name"]))
 
 
 @router.get("/plans/{plan_id}/graph")
@@ -1025,6 +1102,23 @@ async def get_planning_job(planning_job_id: str, auth: Annotated[AuthContext, De
     if job is None:
         raise HTTPException(status_code=404, detail="planning job not found")
     return job
+
+
+@router.get("/planning-jobs/{planning_job_id}/cost")
+def get_planning_job_cost(planning_job_id: str, auth: Annotated[AuthContext, Depends(get_cost_operator)]):
+    """Operator-only (404 for everyone else): LLM spend of one planning job, design.md §7.4.
+    A list-price estimate, not the Azure invoice."""
+    rows = (
+        auth.client.table("planning_jobs")
+        .select("id")
+        .eq("org_id", auth.org_id)
+        .eq("id", planning_job_id)
+        .limit(1)
+        .execute()
+    ).data
+    if not rows:
+        raise HTTPException(status_code=404, detail="planning job not found")
+    return build_job_cost_report(get_service_role_client(), auth.org_id, "planning", planning_job_id)
 
 
 def get_planning_job_status(client, org_id: str, planning_job_id: str) -> dict | None:

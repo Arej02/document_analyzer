@@ -33,7 +33,7 @@ schema question for whoever wires this up, not addressed here.
 
 from dataclasses import dataclass
 
-from openai import AzureOpenAI
+from document_analyzer.shared.llm import LLMClient
 
 from document_analyzer.worker.summarize_module import ModuleEntitySummary, ModuleSummary, summarize_module
 from document_analyzer.worker.summarize_subsystem import (
@@ -60,7 +60,7 @@ def regenerate_ancestors(
     module_entity_summaries: list[ModuleEntitySummary],
     sibling_module_summaries: list[ChildSummary],
     sibling_subsystem_summaries: list[ChildSummary],
-    client: AzureOpenAI | None = None,
+    client: LLMClient | None = None,
 ) -> CascadeResult:
     """Regenerates every ancestor of a changed entity — its module, that module's
     subsystem, and the repo — in that order, always folding the just-regenerated child

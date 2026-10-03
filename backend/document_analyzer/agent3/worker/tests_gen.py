@@ -34,10 +34,10 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from openai import AzureOpenAI
+from document_analyzer.shared.llm import LLMClient
 
 from .context import UnitContext
-from .generate import GeneratedFile, GeneratedUnit
+from .generate import GeneratedFile, GeneratedUnit, _attempt_client
 
 _NON_IDENT = re.compile(r"[^a-z0-9]+")
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -443,7 +443,7 @@ def generate_behaviour_tests(
     context: UnitContext,
     unit_slug: str,
     generated: GeneratedUnit,
-    llm_client: AzureOpenAI,
+    llm_client: LLMClient,
     model_deployment: str,
     max_attempts: int,
 ) -> BehaviourTestResult:
@@ -453,7 +453,7 @@ def generate_behaviour_tests(
     messages = _initial_behaviour_messages(context, unit_slug, generated)
 
     for attempt in range(1, max_attempts + 1):
-        response = llm_client.chat.completions.create(
+        response = _attempt_client(llm_client, attempt).chat.completions.create(
             model=model_deployment,
             response_format={"type": "json_object"},
             messages=messages,

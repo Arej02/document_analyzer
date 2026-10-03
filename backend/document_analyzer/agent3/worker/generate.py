@@ -24,7 +24,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-from openai import AzureOpenAI
+
+from document_analyzer.shared.llm import LLMClient, bind_if_metered
 
 from .context import UnitContext
 
@@ -169,10 +170,17 @@ def _initial_messages(context: UnitContext, unit_slug: str, extra_feedback: str 
     ]
 
 
+def _attempt_client(llm_client, attempt: int):
+    """Cost accounting (design_agent3.md section 15): record the inner attempt number. A
+    retry within this loop is a 'parse' retry; the first attempt keeps whatever
+    `retry_reason` the caller bound (e.g. 'sandbox_feedback' for an outer round > 1)."""
+    return bind_if_metered(llm_client, attempt=attempt, **({"retry_reason": "parse"} if attempt > 1 else {}))
+
+
 def generate_unit_code(
     context: UnitContext,
     unit_slug: str,
-    llm_client: AzureOpenAI,
+    llm_client: LLMClient,
     model_deployment: str,
     max_attempts: int,
     extra_feedback: str | None = None,
@@ -188,7 +196,7 @@ def generate_unit_code(
     problem = ""
 
     for attempt in range(1, max_attempts + 1):
-        response = llm_client.chat.completions.create(
+        response = _attempt_client(llm_client, attempt).chat.completions.create(
             model=model_deployment,
             response_format={"type": "json_object"},
             messages=messages,

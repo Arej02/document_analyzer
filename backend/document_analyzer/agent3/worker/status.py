@@ -7,6 +7,8 @@ client (bypasses RLS). Every update filters on both `id` and `org_id`
 org" is a no-op, never a write to another org's row.
 """
 
+from datetime import datetime, timezone
+
 from supabase import Client
 
 # execution_stage enum order (20260925100000_agent3_execution_tables.sql).
@@ -69,14 +71,31 @@ def mark_execution_done(client: Client, execution_job_id: str, org_id: str) -> N
     )
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def mark_unit_running(client: Client, execution_job_id: str, org_id: str, cluster_id: str) -> None:
     """§4 step 6, run once at the start of a unit's processing. `unit_executions` has
     no `id` loaded anywhere in `ExecutionState` (`prepare.py` never selects it), so
     every unit update here is filtered by `(execution_job_id, cluster_id, org_id)` —
-    the table's own unique constraint (§2) — instead of `id` + `org_id`."""
+    the table's own unique constraint (§2) — instead of `id` + `org_id`.
+
+    `started_at` is set only the first time, so it survives outer rounds and redeliveries."""
+    existing = (
+        client.table("unit_executions")
+        .select("started_at")
+        .eq("execution_job_id", execution_job_id)
+        .eq("cluster_id", cluster_id)
+        .eq("org_id", org_id)
+        .execute()
+    ).data
+    fields: dict = {"status": "running"}
+    if not (existing and existing[0].get("started_at")):
+        fields["started_at"] = _now()
     (
         client.table("unit_executions")
-        .update({"status": "running"})
+        .update(fields)
         .eq("execution_job_id", execution_job_id)
         .eq("cluster_id", cluster_id)
         .eq("org_id", org_id)
@@ -88,7 +107,9 @@ def update_unit_execution(client: Client, execution_job_id: str, org_id: str, cl
     """§4 step 6: the terminal (or in-progress) update — `status`, `attempts`,
     `symbol_map`, `test_summary`, `last_error`, `flags`, `storage_prefix`, whichever
     the caller passes. Same `(execution_job_id, cluster_id, org_id)` filter as
-    `mark_unit_running`."""
+    `mark_unit_running`. A terminal `status` also stamps `finished_at`."""
+    if fields.get("status") in TERMINAL_UNIT_STATUSES:
+        fields = {**fields, "finished_at": _now()}
     (
         client.table("unit_executions")
         .update(fields)

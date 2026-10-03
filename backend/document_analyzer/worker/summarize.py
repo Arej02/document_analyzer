@@ -40,8 +40,8 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
-from openai import AzureOpenAI
 
+from document_analyzer.shared.llm import LLMClient, get_azure_openai_client  # noqa: F401  (re-exported)
 from document_analyzer.worker.extract import ExtractedEntity
 
 RiskLevel = Literal["low", "medium", "high"]
@@ -103,14 +103,6 @@ class EntitySummary:
     risk_factors: list[str]
 
 
-def get_azure_openai_client() -> AzureOpenAI:
-    return AzureOpenAI(
-        azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
-        api_key=os.environ["AZURE_OPENAI_API_KEY"],
-        api_version=os.environ["AZURE_OPENAI_API_VERSION"],
-    )
-
-
 def _entity_facts_payload(entity: ExtractedEntity, excerpt: dict | None = None) -> dict:
     """Only this entity's own fields — no edges, no other entities (specs.md FR4 scoping).
     `excerpt` is the entity's own persisted source evidence (evidence.py), still scoped to
@@ -133,7 +125,7 @@ def _entity_facts_payload(entity: ExtractedEntity, excerpt: dict | None = None) 
 
 
 def summarize_entity(
-    entity: ExtractedEntity, client: AzureOpenAI | None = None, excerpt: dict | None = None
+    entity: ExtractedEntity, client: LLMClient | None = None, excerpt: dict | None = None
 ) -> EntitySummary:
     """Summarizes one entity from its own facts (and source excerpt, when there is one).
     One LLM call, independent of repo size."""

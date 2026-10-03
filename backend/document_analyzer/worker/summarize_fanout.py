@@ -31,7 +31,7 @@ batch of entities and returns their results in memory.
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-from openai import AzureOpenAI
+from document_analyzer.shared.llm import LLMClient
 
 from document_analyzer.worker.extract import ExtractedEntity
 from document_analyzer.worker.summarize import EntitySummary, get_azure_openai_client, summarize_entity
@@ -44,7 +44,7 @@ SUMMARY_CONCURRENCY = int(os.environ.get("AGENT1_SUMMARY_CONCURRENCY", 10))
 
 def summarize_entities(
     entities: list[ExtractedEntity],
-    client: AzureOpenAI | None = None,
+    client: LLMClient | None = None,
     max_workers: int | None = None,
 ) -> list[EntitySummary]:
     """Runs summarize_entity for every entity concurrently, bounded by at most

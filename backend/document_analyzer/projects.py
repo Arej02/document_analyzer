@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 # `{org_id}/{execution_job_id}/...`. Named here rather than imported so Agent 1
 # doesn't import from Agent 3.
 AGENT3_OUTPUT_BUCKET = "agent3-output"
+# The Assessment Report's private bucket (design_report.md §2), objects under
+# `{org_id}/{report_id}/`. Named here for the same reason.
+REPORTS_BUCKET = "reports"
 
 _PROJECT_COLUMNS = "id, org_id, source_type, source_ref, latest_job_id, created_at, updated_at"
 _JOB_COLUMNS = (
@@ -117,7 +120,7 @@ _ACTIVE_STATUSES = ("queued", "running")
 
 
 class ProjectBusyError(Exception):
-    """The project still has an ingestion, planning or execution job in flight."""
+    """The project still has an ingestion, planning, execution or report job in flight."""
 
 
 def _chunks(ids: list[str]):
@@ -171,6 +174,10 @@ def delete_project(client: Client, org_id: str, project_id: str) -> list[str]:
     source tarball, every execution job of the project with its unit rows, and
     their `agent3-output` objects, and refuses while an execution job is active.
 
+    Assessment Report (design_report.md §13): also removes the project's reports (and
+    their internal estimates and share links), report jobs and `reports` bucket
+    objects, and refuses while a report job is active.
+
     Also removes `workflow_events` (design.md §2) for every ingestion, planning
     and execution job of the project, keyed by (workflow_kind, workflow_id)
     since the table has no FK to any job table.
@@ -207,17 +214,17 @@ def delete_project(client: Client, org_id: str, project_id: str) -> list[str]:
         .execute()
         .data
     )
-    deliveries = (
-        client.table("deliveries")
+    report_jobs = (
+        client.table("report_generation_jobs")
         .select("id, status")
         .eq("org_id", org_id)
         .eq("project_id", project_id)
         .execute()
         .data
     )
-    if any(row["status"] in _ACTIVE_STATUSES for row in jobs + planning_jobs + execution_jobs + deliveries):
+    if any(row["status"] in _ACTIVE_STATUSES for row in jobs + planning_jobs + execution_jobs + report_jobs):
         raise ProjectBusyError(
-            "an ingestion, planning, code generation or GitHub delivery job for this project is still queued or running"
+            "an ingestion, planning, code generation or report job for this project is still queued or running"
         )
     token_refs = [
         row["token_ref"]
@@ -229,6 +236,16 @@ def delete_project(client: Client, org_id: str, project_id: str) -> list[str]:
         .data
         if row.get("token_ref")
     ]
+
+    # Reports first: they reference the plans and ingestion jobs deleted below. Share links
+    # and internal estimates are children of a report, and a report points at its job.
+    report_ids = _ids(client, "assessment_reports", org_id, "project_id", project_id)
+    report_job_ids = [row["id"] for row in report_jobs]
+    _delete_workflow_events(client, org_id, "report_generation", report_job_ids)
+    for table in ("report_share_links", "report_internal_estimates"):
+        _delete_in(client, table, org_id, "report_id", report_ids)
+    client.table("assessment_reports").delete().eq("org_id", org_id).eq("project_id", project_id).execute()
+    client.table("report_generation_jobs").delete().eq("org_id", org_id).eq("project_id", project_id).execute()
 
     # Agent 3 first: unit_executions reference the plan's clusters and execution_jobs
     # reference its plans, and neither cascades from Agent 2's rows.
@@ -284,6 +301,15 @@ def delete_project(client: Client, org_id: str, project_id: str) -> list[str]:
             client.storage.from_(SNAPSHOT_BUCKET).remove(snapshot_paths)
         except Exception:  # noqa: BLE001 — the rows are gone; an orphaned snapshot isn't worth failing over
             logger.warning("project %s deleted but its source snapshots could not be removed", project_id, exc_info=True)
+
+    if report_ids:
+        try:
+            bucket = client.storage.from_(REPORTS_BUCKET)
+            report_paths = [path for report_id in report_ids for path in _list_objects(bucket, f"{org_id}/{report_id}")]
+            for chunk in _chunks(report_paths):
+                bucket.remove(chunk)
+        except Exception:  # noqa: BLE001 — the rows are gone; orphaned report files aren't worth failing over
+            logger.warning("project %s deleted but its report files could not be removed", project_id, exc_info=True)
 
     if execution_job_ids:
         try:

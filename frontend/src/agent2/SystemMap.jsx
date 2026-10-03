@@ -145,6 +145,20 @@ export default function SystemMap({ plan, phaseGraph, graphError, routes, schema
         <li><i className="sm-key sm-key-flow" />Calls: the arrow points at what is called, the number counts call links</li>
         <li><i className="sm-key sm-key-ctx" />Dashed: applies to the whole application, not to one phase</li>
       </ul>
+      {/* The canvas nodes are not reachable by keyboard, so every phase is also a button here. */}
+      <div className="sm-picker" role="group" aria-label="Phases">
+        {map.nodes.map((n) => (
+          <button
+            key={n.id}
+            type="button"
+            className="sm-pick"
+            aria-pressed={n.id === selected}
+            onClick={() => setSelected((cur) => (cur === n.id ? null : n.id))}
+          >
+            Phase {n.order}
+          </button>
+        ))}
+      </div>
       {picked ? (
         <div className="sm-detail" role="region" aria-label={`Phase ${picked.order} detail`}>
           <h4 className="a2-h4">Phase {picked.order} · {picked.title}</h4>
@@ -171,7 +185,7 @@ export default function SystemMap({ plan, phaseGraph, graphError, routes, schema
             </div>
           </div>
         </div>
-      ) : <p className="a2-note">Select a phase to see what it calls, what calls it, and its units.</p>}
+      ) : <p className="a2-note">Select a phase, on the map or from the buttons above, to see what it calls, what calls it, and its units.</p>}
     </div>
   )
 }

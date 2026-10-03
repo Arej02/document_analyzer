@@ -1,0 +1,41 @@
+# LLM list prices, USD per 1,000,000 tokens (design.md §7.2).
+#
+# These drive `cost_usd` in `llm_invocations`, which is a LIST-PRICE ESTIMATE, not
+# the Azure invoice. Fill in the prices from your Azure OpenAI price sheet.
+#
+# Matching (shared/llm_pricing.py):
+#   - against the model id the API returns (`response.model`), NOT the deployment
+#     name, which is arbitrary (e.g. AZURE_OPENAI_DEPLOYMENT, AGENT3_MODEL_DEPLOYMENT);
+#   - an entry with `deployment` set wins over prefix-only entries for that deployment;
+#   - otherwise the longest `model_prefix` that matches wins;
+#   - among candidates, the newest `effective_from` that is not in the future wins.
+# `id` is stored on every row as `pricing_version`. Never edit a price in place:
+# add a new entry with a new `id` and a later `effective_from`, so old rows stay
+# explainable.
+#
+# A model with no matching entry gets cost_usd = NULL and one warning. It is never an
+# error. Until an entry exists for the model you use, costs are recorded as unknown.
+#
+# Template (uncomment and fill in):
+#
+# [[entry]]
+# id = "gpt-example-2026-10"
+# model_prefix = "gpt-example"          # matched against response.model
+# # deployment = "my-deployment-name"   # optional per-deployment override
+# effective_from = "2026-10-01"
+# input_per_million = "0.00"
+# cached_input_per_million = "0.00"
+# output_per_million = "0.00"
+#
+# Prices are strings so they are parsed as Decimal without float rounding.
+
+# gpt-5.6-luna: the model id Azure reports in response.model is "gpt-5.6-luna-2026-07-09".
+# Cache writes ($0.25 per million) are not modelled: cache-write tokens are charged at the
+# input rate here ($0.20), so each cache-write token is underpriced by $0.05 per million.
+[[entry]]
+id = "gpt-5.6-luna-2026-10"
+model_prefix = "gpt-5.6-luna"
+effective_from = "2026-10-01"
+input_per_million = "0.20"
+cached_input_per_million = "0.02"
+output_per_million = "1.20"

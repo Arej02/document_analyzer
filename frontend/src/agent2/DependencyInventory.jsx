@@ -1,6 +1,7 @@
-// Dependency inventory body. `rows` is null until the planned dependencies endpoint exists
-// (tasks_agent2.md Phase 7); then only the declared-package count from the job's stats is shown,
-// never a made-up table. Sortable (`aria-sort`) and filterable, status is icon + text.
+// Dependency inventory body, from GET /plans/{id}/dependencies (design_agent2.md §11). `rows` is null while
+// loading or when the request failed, and an analysis run before packages were recorded returns an empty list
+// although the manifests declare some: in both cases only the declared-package count from the job's stats is
+// shown, never a made-up table. The target column only appears when some row has a proposed target. Sortable (`aria-sort`) and filterable, status is icon + text.
 import { Fragment, useMemo, useState } from 'react'
 import { ArrowDown, ArrowUp, ArrowUpDown, CircleAlert, CircleCheck, CircleDashed } from 'lucide-react'
 import { STATUS_KEYS, ariaSort, filterRows, nextSort, sortRows, statusOf, visibleColumns } from './dependencyModel.js'
@@ -19,7 +20,8 @@ export default function DependencyInventory({ rows, declaredCount }) {
   const ecosystems = useMemo(() => [...new Set(list.map((r) => r.ecosystem).filter(Boolean))].sort(), [list])
   const shown = useMemo(() => sortRows(filterRows(list, filter), sort), [list, filter, sort])
 
-  if (rows == null) {
+  const notRecorded = rows != null && rows.length === 0 && declaredCount > 0
+  if (rows == null || notRecorded) {
     return (
       <p className="a2-note">
         {declaredCount != null

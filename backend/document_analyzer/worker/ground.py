@@ -35,7 +35,7 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
-from openai import AzureOpenAI
+from document_analyzer.shared.llm import LLMClient
 
 from document_analyzer.worker.summarize import RiskLevel, get_azure_openai_client
 
@@ -101,7 +101,7 @@ def check_grounding(
     summary_text: str,
     risk_level: RiskLevel,
     risk_factors: list[str],
-    client: AzureOpenAI | None = None,
+    client: LLMClient | None = None,
 ) -> GroundingResult:
     """Checks one already-generated summary against the same `facts` payload its
     summarizer call was scoped to. Level-agnostic: works for an entity's raw_facts

@@ -72,7 +72,7 @@ def _bare_calls(unit_slug, name):
 
 
 @pytest.mark.contract
-def test_public_interface_billing_format_134ed88b():
+def test_public_interface_billing_format_a03a3b66():
     module = importlib.import_module('app.units.01_01_billing.module')
     obj = getattr(module, 'billing_format', None)
     assert obj is not None, 'app.units.01_01_billing.module.billing_format not found'
@@ -83,7 +83,7 @@ def test_public_interface_billing_format_134ed88b():
 
 
 @pytest.mark.contract
-def test_public_interface_billing_total_ae16edbf():
+def test_public_interface_billing_total_e40753d3():
     module = importlib.import_module('app.units.01_01_billing.module')
     obj = getattr(module, 'billing_total', None)
     assert obj is not None, 'app.units.01_01_billing.module.billing_total not found'
@@ -94,7 +94,7 @@ def test_public_interface_billing_total_ae16edbf():
 
 
 @pytest.mark.contract
-def test_incoming_call_site_billing_format_134ed88b():
+def test_incoming_call_site_billing_format_a03a3b66():
     module = importlib.import_module('app.units.01_01_billing.module')
     obj = getattr(module, 'billing_format', None)
     assert obj is not None, 'app.units.01_01_billing.module.billing_format not found'
@@ -102,7 +102,7 @@ def test_incoming_call_site_billing_format_134ed88b():
 
 
 @pytest.mark.contract
-def test_incoming_call_site_billing_total_ae16edbf():
+def test_incoming_call_site_billing_total_e40753d3():
     module = importlib.import_module('app.units.01_01_billing.module')
     obj = getattr(module, 'billing_total', None)
     assert obj is not None, 'app.units.01_01_billing.module.billing_total not found'
@@ -110,7 +110,7 @@ def test_incoming_call_site_billing_total_ae16edbf():
 
 
 @pytest.mark.contract
-def test_outgoing_dependency_aa39ff11_78b7_4ba4_973c_ec5bac27ffb6_78035188():
+def test_outgoing_dependency_b0e8a0ea_3f1a_4248_999c_1b865e614855_88bfd63d():
     forbidden = ['tax_rate']
     shadowed = sorted(set(_unit_top_level_names('01_01_billing')) & set(forbidden))
     assert not shadowed, 're-implements %r instead of importing them from the dependency' % (shadowed,)

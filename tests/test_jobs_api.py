@@ -220,7 +220,22 @@ def test_get_job_returns_status_progress_and_error(client, fake_client, enqueued
         "changed_file_count": None,
         "unchanged_file_count": None,
         "removed_file_count": None,
+        "discovery_stats": None,
+        "source_commit_sha": None,
     }
+
+
+def test_get_job_returns_source_commit_sha_once_recorded(client, fake_client, enqueued):
+    created = client.post(
+        "/api/agent1/jobs",
+        json={"source_type": "github", "repo_url": "https://github.com/org/repo"},
+    ).json()
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    fake_client.table("ingestion_jobs").rows[0]["source_commit_sha"] = sha
+
+    body = client.get(f"/api/agent1/jobs/{created['job_id']}").json()
+
+    assert body["source_commit_sha"] == sha
 
 
 def test_get_job_returns_its_project_id(client, fake_client, enqueued):

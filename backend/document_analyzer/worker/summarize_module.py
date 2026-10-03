@@ -31,7 +31,7 @@ import json
 import os
 from dataclasses import dataclass
 
-from openai import AzureOpenAI
+from document_analyzer.shared.llm import LLMClient
 
 from document_analyzer.worker.extract import EntityType
 from document_analyzer.worker.risk_rollup import rollup_risk
@@ -100,7 +100,7 @@ def _module_facts_payload(file_path: str, entity_summaries: list[ModuleEntitySum
 def summarize_module(
     file_path: str,
     entity_summaries: list[ModuleEntitySummary],
-    client: AzureOpenAI | None = None,
+    client: LLMClient | None = None,
 ) -> ModuleSummary:
     """Folds one module's (already-generated) entity summaries into a module summary.
     One LLM call, independent of repo size, scoped to only this module's entities."""
