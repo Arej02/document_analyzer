@@ -9,7 +9,7 @@ It WRITES to a real repository, so it does nothing unless every one of these is 
     AGENT3_RUN_GITHUB_LIVE=1
     AGENT3_LIVE_GITHUB_REPO=<owner>/<name>            a brand-new EMPTY repository you created for this and will delete after
     AGENT3_LIVE_GITHUB_CONFIRM=<owner>/<name>         the same value again: proof you mean this repository
-    AGENT3_LIVE_GITHUB_TOKEN=<token>                  fine-grained, limited to that one repository: Contents and Pull requests
+    AGENT3_LIVE_GITHUB_TOKEN=<token>                  fine-grained, limited to that one repository: Contents, Pull requests and Workflows
                                                       read/write, plus Actions read; add Administration write to also run the
                                                       "auto-delete off" pass (without it that pass is skipped and reported)
     AGENT3_LIVE_REPORT=<path>                         optional: also write the report to this file

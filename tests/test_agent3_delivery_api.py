@@ -187,6 +187,11 @@ def test_branch_deletion_turned_off_since_connecting_is_refused(monkeypatch):
     _assert_refused(world, make_client(world, monkeypatch), "Automatically delete head branches")
 
 
+def test_a_token_that_lost_pull_request_access_is_refused(monkeypatch):
+    world = build_world(with_delivery=False, repo=FakeRepo(REPO, pulls_permission=False))
+    _assert_refused(world, make_client(world, monkeypatch), "pull requests")
+
+
 def test_a_vault_secret_that_is_gone_is_refused(monkeypatch):
     world = build_world(with_delivery=False)
     _assert_refused(world, make_client(world, monkeypatch, token=None), "could not be read")

@@ -239,7 +239,8 @@ def _units_for_phase(manifest: dict, phase_order: int) -> list[dict]:
     return []
 
 
-def _deliver(service, client: GitHubClient, delivery: dict, execution_job: dict) -> None:
+def _deliver(service, client: GitHubClient, delivery: dict, execution_job: dict, progress: dict | None = None) -> None:
+    progress = progress if progress is not None else {}
     org_id, delivery_id, repo = delivery["org_id"], delivery["id"], delivery["repo_full_name"]
     default = delivery["default_branch"]
     execution_job_id = execution_job["id"]
@@ -247,9 +248,24 @@ def _deliver(service, client: GitHubClient, delivery: dict, execution_job: dict)
     def touch(**values: Any) -> None:
         _update(service, org_id, delivery_id, heartbeat_at=_now(), **values)
 
+    progress["step"] = "checking the repository"
     _recheck_repo(client, delivery)
+    progress["step"] = "reading the generated project"
     manifest, files = _load_artifacts(service, org_id, execution_job["output_zip_path"])
 
+    # Executions finished before the worker recorded `created_at` have a manifest without it. The execution row has the
+    # same value the worker would have written, so use it instead of asking the user to regenerate.
+    if not manifest.get("created_at") and isinstance(execution_job.get("created_at"), str) and execution_job["created_at"]:
+        manifest = {**manifest, "created_at": execution_job["created_at"]}
+
+    # Validate everything that can be validated WITHOUT touching GitHub before the first write. A bad manifest or file set
+    # must never leave an initial commit behind in the customer's repository.
+    try:
+        build_commit_plan(manifest, files)
+    except (CommitPlanError, GitObjectError) as exc:
+        raise DeliveryError(f"the generated project could not be turned into commits: {neutralize(exc, 200)}") from exc
+
+    progress["step"] = "working out where the stack of branches starts"
     try:
         root_sha = _resolve_root(client, delivery, manifest, execution_job_id)
         root_commit = client.get_commit(repo, root_sha)
@@ -268,6 +284,7 @@ def _deliver(service, client: GitHubClient, delivery: dict, execution_job: dict)
     for group in plan.groups:
         branch = branch_name(execution_job_id, group.key, group.label)
         tip = group.commits[-1].commit_sha
+        progress["step"] = f"checking branch {branch}"
         existing = client.get_ref_sha(repo, f"heads/{branch}")
         if existing is not None and existing != tip:
             raise DeliveryError(
@@ -275,6 +292,7 @@ def _deliver(service, client: GitHubClient, delivery: dict, execution_job: dict)
                 "it was not changed. Delete or rename that branch, or run code generation again for a fresh delivery."
             )
         if existing is None and client.find_pull_request(repo, branch) is None:
+            progress["step"] = f"pushing branch {branch}"
             _push_group(client, repo, group, previous_tree, blobs_done, touch)
             try:
                 client.create_ref(repo, f"refs/heads/{branch}", tip)
@@ -282,6 +300,7 @@ def _deliver(service, client: GitHubClient, delivery: dict, execution_job: dict)
                 if exc.kind != "validation" or client.get_ref_sha(repo, f"heads/{branch}") != tip:
                     raise
 
+        progress["step"] = f"opening the pull request for {branch}"
         pull = client.find_pull_request(repo, branch)
         if pull is None:
             if previous_branch != default and client.get_ref_sha(repo, f"heads/{previous_branch}") is None:
@@ -331,16 +350,34 @@ def _deliver(service, client: GitHubClient, delivery: dict, execution_job: dict)
 # --------------------------------------------------------------------------- #
 
 
-def _describe_github_error(exc: GitHubError) -> str:
+def _describe_github_error(exc: GitHubError, step: str | None = None) -> str:
+    """What failed, where, and what GitHub itself said (already redacted by the client), so a refusal can be acted on."""
+    where = f" while {step}" if step else ""
+    if step and step.startswith("pushing branch") and exc.kind in ("permission", "not_found", "validation"):
+        workflow = (
+            " The first branch adds the CI file .github/workflows/ci.yml, and GitHub only lets a token create or change workflow "
+            "files if it has the separate Workflows permission (fine-grained: Workflows, read and write; classic: the workflow scope)."
+        )
+    else:
+        workflow = ""
     if exc.kind == "rate_limit":
-        return "GitHub's rate limit was reached. Start the delivery again later; the steps already completed are reused."
+        return f"GitHub's rate limit was reached{where}. Start the delivery again later; the steps already completed are reused."
     if exc.kind == "auth":
-        return "GitHub rejected the stored token. Reconnect the repository with a new token and start the delivery again."
-    if exc.kind in ("permission", "not_found"):
-        return "GitHub refused access to the repository or one of the objects needed. Check the token's repository access."
+        return f"GitHub rejected the stored token{where}. Reconnect the repository with a new token and start the delivery again."
+    if exc.kind == "permission":
+        return (
+            f"GitHub refused access{where} ({exc}). The token is missing a permission for this step, or does not include this "
+            "repository. A fine-grained token needs Metadata: read, Contents: read and write, Pull requests: read and write and "
+            "Workflows: read and write, with this repository selected under Repository access." + workflow
+        )
+    if exc.kind == "not_found":
+        return (
+            f"GitHub could not find what it was asked for{where} ({exc}). GitHub also answers 404 when the token cannot see the "
+            "repository or the object, so check the token's Repository access and its Contents, Pull requests and Workflows permissions." + workflow
+        )
     if exc.kind == "redirect":
-        return "GitHub redirected the request (the repository may have been renamed). Reconnect it under its current name."
-    return f"GitHub error: {exc}"
+        return f"GitHub redirected the request{where} (the repository may have been renamed). Reconnect it under its current name."
+    return f"GitHub error{where}: {exc}.{workflow}" if workflow else f"GitHub error{where}: {exc}"
 
 
 def run_delivery(
@@ -353,6 +390,7 @@ def run_delivery(
 ) -> None:
     """Runs one delivery to completion. Never raises: every outcome is written to the row."""
     token: str | None = None
+    progress: dict = {"step": None}
     try:
         delivery = _get_delivery(service, org_id, delivery_id)
         if delivery is None or delivery["status"] in ("done", "failed"):
@@ -378,7 +416,7 @@ def run_delivery(
 
         jobs = (
             service.table("execution_jobs")
-            .select("id, output_zip_path")
+            .select("id, output_zip_path, created_at")
             .eq("org_id", org_id)
             .eq("id", delivery["execution_job_id"])
             .limit(1)
@@ -390,14 +428,14 @@ def run_delivery(
 
         client = github_factory(token)
         try:
-            _deliver(service, client, delivery, jobs[0])
+            _deliver(service, client, delivery, jobs[0], progress)
         finally:
             client.close()
         _update(service, org_id, delivery_id, status="done", error=None, heartbeat_at=_now())
     except DeliveryError as exc:
         _fail(service, org_id, delivery_id, redact(str(exc), token))
     except GitHubError as exc:
-        _fail(service, org_id, delivery_id, redact(_describe_github_error(exc), token))
+        _fail(service, org_id, delivery_id, redact(_describe_github_error(exc, progress["step"]), token))
     except Exception:  # noqa: BLE001 — a background task must not die silently; the row says what to do
         logger.exception("delivery %s failed unexpectedly", delivery_id)
         _fail(service, org_id, delivery_id, "the delivery stopped because of an unexpected error; see the server log, then start it again")

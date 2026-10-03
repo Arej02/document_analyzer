@@ -295,7 +295,25 @@ def _build_zip(project_dir: Path) -> bytes:
     return buf.getvalue()
 
 
+def _with_created_at(client: Client, execution_job: dict) -> dict:
+    """The manifest's commit dates derive from the execution's `created_at` (design_agent3.md §15.2). The worker's own row
+    does not always carry it, so read it from the table rather than ever writing a manifest without one."""
+    if execution_job.get("created_at"):
+        return execution_job
+    rows = (
+        client.table("execution_jobs")
+        .select("created_at")
+        .eq("org_id", execution_job["org_id"])
+        .eq("id", execution_job["id"])
+        .limit(1)
+        .execute()
+        .data
+    )
+    return {**execution_job, "created_at": rows[0].get("created_at") if rows else None}
+
+
 def run_final_test_stage(client: Client, execution_job: dict, state) -> None:
+    execution_job = _with_created_at(client, execution_job)
     org_id, execution_job_id = execution_job["org_id"], execution_job["id"]
     params = execution_job["params"]
 

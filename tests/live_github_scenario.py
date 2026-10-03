@@ -26,7 +26,7 @@ import httpx
 
 from document_analyzer.agent3.commit_plan import baseline_commit, tree_sha_of_files
 from document_analyzer.agent3.delivery.deliver import run_delivery
-from document_analyzer.agent3.delivery.github_api import GitHubClient, GitHubError
+from document_analyzer.agent3.delivery.github_api import GitHubClient, GitHubError, validate_repo_full_name
 from document_analyzer.agent3.project_layout import CI_WORKFLOW_PATH
 from fastapi import HTTPException
 
@@ -84,8 +84,26 @@ def run_scenario(
 ) -> Observations:
     obs = Observations()
 
-    # ---- preconditions: the repository must be empty and have auto-delete on -------------------------------
-    info = _json(http.get(f"/repos/{repo}"))
+    # ---- preconditions: the repository must be readable, empty, and have auto-delete on -------------------
+    try:
+        validate_repo_full_name(repo)
+    except GitHubError:
+        obs.expect(False, f"AGENT3_LIVE_GITHUB_REPO must look like owner/name (it was {repo[:60]!r})")
+        return obs
+    response = http.get(f"/repos/{repo}")
+    obs.note("repo.get", f"HTTP {response.status_code}")
+    if response.status_code != 200:
+        reason = {
+            401: "GitHub rejected the token (wrong, expired or revoked)",
+            403: "the token is not allowed to read this repository",
+            404: "GitHub reports the repository as not found, which is also what it says when the token cannot see it: check the "
+                 "owner/name spelling, and that the token's Repository access includes this repository (for an organisation's "
+                 "repository the token's resource owner must be that organisation, and the organisation may have to approve it)",
+        }.get(response.status_code, "unexpected answer from GitHub")
+        obs.note("repo.get_message", str(_json(response).get("message"))[:120])
+        obs.expect(False, f"precondition: cannot read {repo}: HTTP {response.status_code}, {reason}")
+        return obs
+    info = _json(response)
     default = info.get("default_branch", "main")
     obs.note("repo.default_branch", default)
     obs.note("repo.delete_branch_on_merge", info.get("delete_branch_on_merge"))
@@ -93,7 +111,16 @@ def run_scenario(
     obs.note("repo.permissions", info.get("permissions"))
     branches = http.get(f"/repos/{repo}/branches")
     obs.note("repo.branches_before", _json(branches) if branches.status_code == 200 else f"HTTP {branches.status_code}")
-    if not obs.expect(info.get("delete_branch_on_merge") is True, "precondition: the throwaway repository must have “Automatically delete head branches” ON"):
+    setting = info.get("delete_branch_on_merge")
+    if setting is None:
+        obs.expect(
+            False,
+            "precondition: GitHub did not report “Automatically delete head branches” for this token. Delivery treats that as unverifiable "
+            "and refuses, so this is itself an important finding: this token's permissions do not expose the setting (try adding "
+            "Administration: read)",
+        )
+        return obs
+    if not obs.expect(setting is True, "precondition: the throwaway repository must have “Automatically delete head branches” ON"):
         return obs
     if not obs.expect(branches.status_code in (404, 409) or _json(branches) == [], "precondition: the repository must be completely empty (no branches)"):
         return obs

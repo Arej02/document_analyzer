@@ -132,6 +132,18 @@ def _validate_with_github(repo_full_name: str, token: str) -> tuple[str, list[st
                 status_code=422,
                 detail="this token cannot push to the repository (it needs write access to contents and pull requests)",
             )
+        try:
+            client.check_pull_request_access(repo_full_name)
+        except GitHubError as exc:
+            if exc.kind in ("permission", "not_found"):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "this token cannot read pull requests on the repository. Give it the Pull requests permission "
+                        "(read and write), along with Contents (read and write), and try again."
+                    ),
+                ) from None
+            raise
         branches = client.list_branch_names(repo_full_name, limit=2)
         if len(branches) > 1:
             raise HTTPException(

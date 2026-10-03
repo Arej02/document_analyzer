@@ -115,6 +115,49 @@ def test_a_repository_that_is_not_empty_is_refused_before_any_write(monkeypatch)
     assert obs.steps == [] and not [r for r in github.requests if r["method"] in ("POST", "PUT", "PATCH", "DELETE")]
 
 
+def test_a_repository_that_cannot_be_read_is_reported_as_that_not_as_a_setting_problem(monkeypatch):
+    github = FakeGitHub(FakeRepo("someone/else"))  # REPO is not in the fake: GitHub answers 404 for it
+
+    def factory(token):
+        return GitHubClient(token, transport=github.transport, sleep=lambda s: None)
+
+    http = httpx.Client(base_url="https://api.github.com", transport=github.transport, headers={"Authorization": f"Bearer {TOKEN}"})
+    obs = run_scenario(http=http, github_factory=factory, token=TOKEN, repo=REPO, validate_connection=None, check_ready=None, sleep=lambda s: None)
+
+    assert obs.steps == [] and obs.facts["repo.get"] == "HTTP 404"
+    [failure] = obs.failures
+    assert "cannot read" in failure and "not found" in failure and "Repository access" in failure
+    assert "Automatically delete head branches" not in failure
+    assert not [r for r in github.requests if r["method"] != "GET"]
+
+
+def test_a_rejected_token_is_reported_as_a_token_problem(monkeypatch):
+    github = FakeGitHub(FakeRepo(REPO))
+    http = httpx.Client(base_url="https://api.github.com", transport=github.transport, headers={"Authorization": "Bearer ghp_" + "Q" * 36})
+    obs = run_scenario(
+        http=http, github_factory=lambda t: GitHubClient(t, transport=github.transport), token=TOKEN, repo=REPO,
+        validate_connection=None, check_ready=None, sleep=lambda s: None,
+    )  # fmt: skip
+
+    assert obs.facts["repo.get"] == "HTTP 401" and "rejected the token" in obs.failures[0]
+
+
+@pytest.mark.parametrize("bad", ["owner/name/extra", "https://github.com/acme/x", "", "../x"])
+def test_a_malformed_repo_setting_is_caught_before_any_request(monkeypatch, bad):
+    github = FakeGitHub(FakeRepo(REPO))
+    http = httpx.Client(base_url="https://api.github.com", transport=github.transport, headers={"Authorization": f"Bearer {TOKEN}"})
+    obs = run_scenario(http=http, github_factory=lambda t: None, token=TOKEN, repo=bad, validate_connection=None, check_ready=None, sleep=lambda s: None)
+
+    assert "must look like owner/name" in obs.failures[0] and github.requests == []
+
+
+def test_a_setting_that_the_token_cannot_see_is_its_own_finding(monkeypatch):
+    obs, github = scenario(monkeypatch, FakeRepo(REPO, delete_branch_on_merge=None))
+
+    assert any("did not report" in failure and "Administration: read" in failure for failure in obs.failures)
+    assert obs.steps == [] and not [r for r in github.requests if r["method"] != "GET"]
+
+
 def test_the_report_lists_observations_and_failures_and_never_contains_the_token(monkeypatch):
     obs, _ = scenario(monkeypatch, FakeRepo(REPO, retarget_on_merge=False))
     obs.note("accidentally", f"leaked {TOKEN}")  # even if a value somehow carried the token

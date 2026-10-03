@@ -194,6 +194,7 @@ def test_merge_commits_disabled_gives_a_warning_and_still_connects(fake_client, 
         ({"delete_branch_on_merge": None}, "could not verify"),
         ({"can_push": False}, "cannot push"),
         ({"archived": True}, "archived"),
+        ({"pulls_permission": False}, "pull requests"),
     ],
 )
 def test_repo_settings_that_would_break_delivery_are_refused_and_nothing_is_stored(

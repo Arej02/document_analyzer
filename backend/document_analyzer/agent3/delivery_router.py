@@ -134,6 +134,18 @@ def _check_github_still_ready(token: str, repo_full_name: str) -> None:
         client.close()
     if info.archived or not info.can_push:
         raise HTTPException(status_code=409, detail="the stored token can no longer push to the repository; reconnect it")
+    probe = make_github_client(token)
+    try:
+        probe.check_pull_request_access(repo_full_name)
+    except GitHubError as exc:
+        if exc.kind in ("permission", "not_found"):
+            raise HTTPException(
+                status_code=409,
+                detail="the stored token cannot read pull requests on the repository; reconnect it with the Pull requests permission (read and write)",
+            ) from None
+        raise HTTPException(status_code=502, detail="GitHub could not be reached; try again") from None
+    finally:
+        probe.close()
     if info.delete_branch_on_merge is not True:
         raise HTTPException(
             status_code=409,

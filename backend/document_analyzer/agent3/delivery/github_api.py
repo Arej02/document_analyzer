@@ -230,6 +230,12 @@ class GitHubClient:
             allow_merge_commit=optional_bool("allow_merge_commit"),
         )
 
+    def check_pull_request_access(self, full_name: str) -> None:
+        """Reads at most one pull request, which needs the Pull requests permission. Raises GitHubError (kind `permission` or
+        `not_found`) when the token has not been given it. Opening a pull request needs WRITE access, which cannot be probed
+        without opening one, so a missing write permission still shows up at the first pull request."""
+        self._json(self._request("GET", f"{self._repo_path(full_name)}/pulls", params={"state": "all", "per_page": 1}), ok=(200,))
+
     def list_branch_names(self, full_name: str, *, limit: int = 3) -> list[str]:
         """At most `limit` branch names; an empty repo (GitHub answers 404 or 409 for it) is []."""
         response = self._request("GET", f"{self._repo_path(full_name)}/branches", params={"per_page": limit})

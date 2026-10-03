@@ -130,7 +130,8 @@ export default function GithubConnectionPanel({ projectId }) {
       />
       <p className="reingest-hint github-connection-help">
         Use a <strong>new or empty</strong> repository, not your existing codebase. A fine-grained token limited to that one
-        repository works best, with <strong>Contents</strong> and <strong>Pull requests</strong> set to read and write. In the
+        repository works best, with <strong>Contents</strong>, <strong>Pull requests</strong> and <strong>Workflows</strong> set to read and write
+        (Workflows is needed because the first pull request adds a CI workflow file). In the
         repository's settings turn on {SETTINGS_PATH}, so stacked pull requests reach the default branch as you merge them.
         The token is stored encrypted and is never shown again.
       </p>

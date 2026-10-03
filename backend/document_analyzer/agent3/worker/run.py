@@ -145,7 +145,7 @@ def _stages() -> list[tuple[str, StageFn]]:
 def _fetch_execution_job(client: Client, execution_job_id: str, org_id: str) -> dict | None:
     result = (
         client.table("execution_jobs")
-        .select("id, org_id, project_id, plan_id, source_job_id, status, params")
+        .select("id, org_id, project_id, plan_id, source_job_id, status, params, created_at")
         .eq("id", execution_job_id)
         .eq("org_id", org_id)
         .limit(1)

@@ -352,8 +352,59 @@ def test_a_manifest_that_would_plant_a_workflow_is_refused_before_any_write():
 
     row = delivery_row(world.client, world.delivery_id)
     assert row["status"] == "failed" and "could not be turned into commits" in row["error"]
-    assert not any(r["json"] and ".github/workflows/pwn.yml" in json.dumps(r["json"]) for r in writes(world))
-    assert [r for r in writes(world) if "/git/" in r["path"]] == []
+    assert writes(world) == []  # not even the initial commit: nothing may be written for a project that cannot be committed
+    assert world.github.repos[REPO].refs == {}
+
+
+ISO_CREATED_AT = "2026-10-01T12:00:00+00:00"
+
+
+def _manifest_without_created_at(world_manifest: dict) -> dict:
+    manifest = json.loads(json.dumps(world_manifest))
+    manifest["created_at"] = None
+    return manifest
+
+
+def test_a_manifest_written_without_created_at_is_completed_from_the_execution_row():
+    """Executions finished before the worker recorded created_at have a manifest with null; delivery must not make the user
+    regenerate them when the execution row has the value."""
+    from test_agent3_commit_plan import _project
+
+    manifest, files = _project()
+    world = build_world(manifest=_manifest_without_created_at(manifest), files=files)
+    world.client.table("execution_jobs").rows[0]["created_at"] = ISO_CREATED_AT
+
+    run(world)
+
+    row = delivery_row(world.client, world.delivery_id)
+    assert row["status"] == "done", row["error"]
+    repo = world.github.repos[REPO]
+    assert repo.commits[repo.refs[f"refs/heads/{row['prs'][-1]['branch']}"]]["tree"] == tree_sha_of_files(files)
+
+
+@pytest.mark.parametrize("case", ["no created_at anywhere", "unsafe path", "unclaimed file", "unknown status"])
+def test_nothing_is_written_to_an_empty_repo_when_the_project_cannot_be_turned_into_commits(case):
+    """Regression: the initial commit used to be pushed first, and the error came after it."""
+    from test_agent3_commit_plan import _project
+
+    manifest, files = _project()
+    if case == "no created_at anywhere":
+        manifest = _manifest_without_created_at(manifest)  # and the fake's execution row has no ISO date either
+    elif case == "unsafe path":
+        manifest["phases"][0]["units"][0]["files"].append("app/units/01_01_cart/../../../x.py")
+        files = {**files, "app/units/01_01_cart/../../../x.py": b"x"}
+    elif case == "unclaimed file":
+        files = {**files, "app/stowaway.py": b"x"}
+    else:
+        manifest["phases"][0]["units"][0]["status"] = "pending"
+    world = build_world(manifest=manifest, files=files)
+
+    run(world)
+
+    row = delivery_row(world.client, world.delivery_id)
+    # An unsafe path is refused even earlier, while the archive is read, with its own readable message.
+    assert row["status"] == "failed" and ("could not be turned into commits" in row["error"] or "unsafe path" in row["error"])
+    assert writes(world) == [] and world.github.repos[REPO].refs == {}
 
 
 def test_a_missing_manifest_or_garbage_zip_fails_readably():
@@ -375,6 +426,72 @@ def test_github_echoing_the_token_never_reaches_the_stored_error():
 
     row = delivery_row(world.client, world.delivery_id)
     assert row["status"] == "failed" and TOKEN not in row["error"] and "ghp_" not in row["error"]
+
+
+def test_a_token_without_pull_request_access_says_which_step_what_github_said_and_what_to_grant():
+    """Regression: the message used to be the generic "GitHub refused access ... check the token's repository access"."""
+    world = build_world(repo=FakeRepo(REPO, pulls_permission=False))
+
+    run(world)
+
+    row = delivery_row(world.client, world.delivery_id)
+    assert row["status"] == "failed"
+    assert "while working out where the stack of branches starts" in row["error"]
+    assert "403" in row["error"] and "Resource not accessible by personal access token" in row["error"]
+    assert "Pull requests: read and write" in row["error"] and "Repository access" in row["error"]
+    assert TOKEN not in row["error"]
+    assert writes(world) == []  # the permission is found before anything, including the initial commit, is written
+
+
+@pytest.mark.parametrize(
+    "kind,status,must_contain",
+    [
+        ("permission", 403, ["while pushing branch b", "HTTP", "Contents: read and write"]),
+        ("not_found", 404, ["while pushing branch b", "404", "Repository access"]),
+        ("auth", 401, ["while pushing branch b", "reconnect"]),
+        ("rate_limit", 429, ["while pushing branch b", "rate limit"]),
+        ("server", 500, ["while pushing branch b", "GitHub error"]),
+    ],
+)
+def test_every_github_failure_names_the_step_it_happened_in(kind, status, must_contain):
+    from document_analyzer.agent3.delivery.deliver import _describe_github_error
+    from document_analyzer.agent3.delivery.github_api import GitHubError
+
+    text = _describe_github_error(GitHubError(kind, f"GitHub {status}: HTTP detail from GitHub", status), "pushing branch b")
+
+    for fragment in must_contain:
+        assert fragment.lower() in text.lower() or fragment.replace("HTTP", "GitHub") in text, (fragment, text)
+
+
+def test_a_token_without_the_workflows_permission_is_told_so_when_the_first_branch_is_pushed():
+    """The scaffold adds .github/workflows/ci.yml, which GitHub only lets a token write if it has the Workflows permission."""
+    world = build_world(repo=FakeRepo(REPO, workflows_permission=False))
+
+    run(world)
+
+    row = delivery_row(world.client, world.delivery_id)
+    assert row["status"] == "failed"
+    assert f"while pushing branch migrate/{exec8(world)}/scaffold" in row["error"]
+    assert "Workflows" in row["error"] and ".github/workflows/ci.yml" in row["error"] and "workflow scope" in row["error"]
+    repo = world.github.repos[REPO]
+    assert set(repo.refs) == {"refs/heads/main"} and repo.pulls == []  # only the initial commit exists; no branch, no PR
+
+    repo.workflows_permission = True  # the user fixes the token and starts again: it resumes cleanly
+    second = new_delivery(world.client, world.project_id, world.execution_job_id)
+    run(world, delivery_id=second)
+    assert delivery_row(world.client, second)["status"] == "done"
+    assert len(repo.pulls) == 3
+
+
+def test_the_workflows_hint_appears_only_for_a_push_step():
+    from document_analyzer.agent3.delivery.deliver import _describe_github_error
+    from document_analyzer.agent3.delivery.github_api import GitHubError
+
+    refused = GitHubError("permission", "GitHub 403: Resource not accessible by personal access token", 403)
+
+    assert "workflow scope" in _describe_github_error(refused, "pushing branch migrate/ab/scaffold")
+    assert "workflow scope" not in _describe_github_error(refused, "checking the repository")
+    assert "workflow scope" not in _describe_github_error(refused, None)
 
 
 def test_a_rate_limit_fails_readably_and_a_second_run_finishes():

@@ -44,6 +44,10 @@ class FakeRepo:
     # Behaviours the live scenario (tests/live_github_scenario.py) observes. MODELLED from GitHub's documentation, not observed.
     retarget_on_merge: bool = True  # an open PR whose base branch is deleted after a merge is retargeted at the merged PR's base
     can_admin: bool = True  # whether a token may change repository settings
+    pulls_permission: bool = True  # False: no Pull requests permission, so /pulls answers 403 as GitHub does for a fine-grained token
+    # False: the token lacks the Workflows permission, so creating a tree that adds .github/workflows/* is refused. MODELLED:
+    # GitHub documents the restriction, but at which call it is enforced (tree, commit or ref) is unverified.
+    workflows_permission: bool = True
     ci_enabled: bool = True  # whether a pull request whose branch contains .github/workflows/ci.yml gets a workflow run
 
     @property
@@ -125,6 +129,8 @@ class FakeGitHub:
 
     def _route(self, repo: FakeRepo, request: httpx.Request, rest: str, body) -> httpx.Response:
         method = request.method
+        if rest == "/pulls" and not repo.pulls_permission:
+            return _json(403, {"message": "Resource not accessible by personal access token"})
         if rest == "" and method == "GET":
             return self._repo_json(repo)
         if rest == "/branches" and method == "GET":
@@ -203,6 +209,8 @@ class FakeGitHub:
         return _json(201, {"sha": sha})
 
     def _create_tree(self, repo: FakeRepo, body: dict) -> httpx.Response:
+        if not repo.workflows_permission and any(e["path"].startswith(".github/workflows/") for e in body["tree"]):
+            return _json(403, {"message": "Resource not accessible by personal access token"})
         flat: dict[str, FileRef] = {}
         if body.get("base_tree"):
             if body["base_tree"] not in repo.trees:

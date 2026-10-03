@@ -310,6 +310,22 @@ def test_assembled_text_files_are_written_byte_exact_with_lf_endings(client, thr
         assert b"\r" not in (project / relative).read_bytes(), relative
 
 
+def test_the_manifest_gets_created_at_from_the_table_when_the_workers_row_lacks_it(monkeypatch, client, three_unit_state):
+    """Regression: the worker loaded the execution row without created_at, so every real manifest said null and could not
+    be turned into commits."""
+    from document_analyzer.agent3.worker import run as run_module
+
+    worker_row = {k: v for k, v in _execution_job().items() if k != "created_at"}  # what _fetch_execution_job returned
+    assert "created_at" in __import__("inspect").getsource(run_module._fetch_execution_job)  # and it now selects it
+    run_assemble_stage(client, worker_row, three_unit_state)
+    monkeypatch.setattr(assemble_module, "run_pytest", lambda workspace, params: _sandbox_result(passed=3))
+
+    run_final_test_stage(client, worker_row, three_unit_state)
+
+    uploads = {path: contents for path, contents, _ in client.storage.from_(assemble_module.OUTPUT_BUCKET).uploads}
+    assert json.loads(uploads[f"{ORG}/{JOB_ID}/manifest.json"])["created_at"] == "2026-10-01T12:00:00+00:00"
+
+
 def test_the_zip_ships_the_fixed_ci_workflow_with_pinned_actions(client, three_unit_state):
     run_assemble_stage(client, _execution_job(), three_unit_state)
     workflow = (three_unit_state.project_dir / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
